@@ -15,6 +15,38 @@ const JWT_SECRET = process.env.JWT_SECRET || 'teleguard-secret-key-2026';
 app.use(cors());
 app.use(express.json());
 
+let detectedAppUrl: string | null = null;
+
+app.use(async (req: any, res: any, next: any) => {
+  const xForwardedHost = req.headers['x-forwarded-host'];
+  const xForwardedProto = req.headers['x-forwarded-proto'] || 'https';
+  if (xForwardedHost) {
+    const hostStr = Array.isArray(xForwardedHost) ? xForwardedHost[0] : xForwardedHost;
+    const currentUrl = `${xForwardedProto}://${hostStr}`;
+    
+    if (detectedAppUrl !== currentUrl) {
+      console.log(`Auto-detected public App URL: ${currentUrl}`);
+      detectedAppUrl = currentUrl;
+      
+      const cfWorkerUrl = (typeof settings !== 'undefined' && settings.cfWorkerUrl) || process.env.CF_WORKER_URL;
+      if (bot && cfWorkerUrl) {
+        try {
+          const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
+          const targetWebhookUrl = `${cleanWorkerUrl}/webhook?target=${encodeURIComponent(currentUrl + "/telegram")}`;
+          console.log(`Re-registering Telegram Webhook with target: ${targetWebhookUrl}`);
+          await bot.telegram.setWebhook(targetWebhookUrl, {
+            allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
+          });
+          console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
+        } catch (err: any) {
+          console.error(`Failed to auto-update webhook with target URL:`, err.message || err);
+        }
+      }
+    }
+  }
+  next();
+});
+
 // Auth Middleware
 const authenticateToken = (req: any, res: any, next: any) => {
   const authHeader = req.headers['authorization'];
@@ -2781,10 +2813,17 @@ async function initBot(token: string) {
 
     if (cfWorkerUrl) {
       try {
-        await bot.telegram.setWebhook(cfWorkerUrl, {
+        const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
+        const targetUrl = detectedAppUrl || appUrl;
+        const targetWebhookUrl = targetUrl 
+          ? `${cleanWorkerUrl}/webhook?target=${encodeURIComponent(targetUrl.replace(/\/$/, "") + "/telegram")}`
+          : cleanWorkerUrl;
+        
+        console.log(`Setting initial Telegram webhook via Cloudflare Worker target: ${targetWebhookUrl}`);
+        await bot.telegram.setWebhook(targetWebhookUrl, {
           allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
         });
-        console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cfWorkerUrl}`);
+        console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
       } catch (err) {
         console.error('Failed to set webhook on Telegram directly (expected due to sandboxed container network limits):', err);
         console.log('Skipping active direct webhook registration. The webhook handler endpoint (/telegram) remains fully active, and if Cloudflare is already configured to route events here, the bot will process updates successfully!');
