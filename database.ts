@@ -3,7 +3,7 @@ dotenv.config();
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
-import { adminDb as firebaseDb } from './firebase-admin.ts';
+import { adminDb as firebaseDb } from './firebase-admin.js';
 
 const DB_TYPE = (process.env.DB_TYPE || 'FIREBASE').toUpperCase();
 const SQLITE_PATH = process.env.SQLITE_PATH || './data/database.sqlite';

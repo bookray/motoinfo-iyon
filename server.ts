@@ -6,7 +6,7 @@ import { Telegraf } from 'telegraf';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { db } from './database.ts';
+import { db } from './database.js';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
