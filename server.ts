@@ -1619,10 +1619,24 @@ async function initBot(token: string) {
   try {
     if (bot) {
       console.log('Stopping existing bot instance...');
-      await bot.stop();
+      try {
+        await bot.stop();
+      } catch (err) {
+        console.warn('Existing bot instance stop command failed (expected if it is not currently running):', err);
+      }
     }
 
-    bot = new Telegraf(token);
+    const cfWorkerUrl = settings.cfWorkerUrl || process.env.CF_WORKER_URL;
+    const telegrafOptions: any = {};
+    if (cfWorkerUrl) {
+      const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
+      telegrafOptions.telegram = {
+        apiRoot: cleanWorkerUrl
+      };
+      console.log(`Configuring Telegraf with apiRoot proxy: ${cleanWorkerUrl}`);
+    }
+
+    bot = new Telegraf(token, telegrafOptions);
     
     // Get bot information
     try {
@@ -2762,7 +2776,6 @@ async function initBot(token: string) {
       }
     });
 
-    const cfWorkerUrl = settings.cfWorkerUrl || process.env.CF_WORKER_URL;
     const appUrl = process.env.VITE_APP_URL || process.env.APP_URL;
     const useWebhooks = process.env.USE_WEBHOOKS === 'true' || !!cfWorkerUrl;
 
