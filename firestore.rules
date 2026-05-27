@@ -1,0 +1,122 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: chats
+    // Fields: id, title, active, type, memberCount, messagesCount, lastActive
+    //
+    // Collection: tasks
+    // Fields: id, text, chatIds, intervalDays, time, active, lastRun, imageUrl, buttons
+    //
+    // Collection: bans
+    // Fields: id, username, reason, timestamp
+    //
+    // Collection: logs
+    // Fields: id, timestamp, type, message, chatId
+    //
+    // Collection: config/moderation
+    // Fields: autoApprove, captchaEnabled, blockLinks, blockMedia, blockForwards, forbiddenWords
+    //
+    // Collection: stats
+    // Fields: date, users, messages
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.email == "bookray1114@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    function isValidChat(data) {
+      return data.id is string && data.title is string && data.active is bool;
+    }
+
+    function isValidTask(data) {
+      return data.id is string && data.text is string && data.chatIds is list && data.intervalDays is number && data.time is string && data.active is bool;
+    }
+
+    function isValidBan(data) {
+      return data.id is string;
+    }
+
+    function isValidLog(data) {
+      return data.id is string && data.timestamp is string && data.type in ['info', 'warning', 'error', 'success'] && data.message is string;
+    }
+
+    function isValidSettings(data) {
+      return data.autoApprove is bool && data.captchaEnabled is bool && data.blockLinks is bool && data.blockMedia is bool && data.blockForwards is bool && data.forbiddenWords is list;
+    }
+
+    function isValidStats(data) {
+      return data.date is string;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /chats/{chatId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /tasks/{taskId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /bans/{userId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /logs/{logId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /config/moderation {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /config/settings {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /config/broadcast {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /stats/{date} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /whitelist/{userId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /memberships/{membershipId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /{path=**} {
+      allow read, write: if true;
+    }
+  }
+}
