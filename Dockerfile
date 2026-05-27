@@ -29,8 +29,10 @@ COPY --from=build /app/dist ./dist
 # Copy backend source files
 # Note: Node 22 native TS stripping requires the .ts files at runtime
 COPY --from=build /app/server.ts ./
+COPY --from=build /app/database.ts ./
 COPY --from=build /app/firebase-admin.ts ./
 COPY --from=build /app/types.ts ./
+COPY --from=build /app/sqlite-init.sql ./
 COPY --from=build /app/firebase-applet-config.json ./
 
 EXPOSE 3000
