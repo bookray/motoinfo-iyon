@@ -154,6 +154,8 @@ export interface BotSettings {
   dbPort: number;
   maintenanceMode: boolean;
   cfWorkerUrl?: string;
+  disableCloudflare?: boolean;
+  adminTelegramUsername?: string;
 }
 
 export interface ChatBan {

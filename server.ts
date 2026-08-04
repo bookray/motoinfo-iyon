@@ -2,6 +2,7 @@ import dotenv from 'dotenv';
 dotenv.config();
 import express from 'express';
 import path from 'path';
+import fs from 'fs';
 import { Telegraf } from 'telegraf';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
@@ -13,34 +14,64 @@ const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'teleguard-secret-key-2026';
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '20mb' }));
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 let detectedAppUrl: string | null = null;
+let isPollingMode = false;
 
-app.use(async (req: any, res: any, next: any) => {
+app.use((req: any, res: any, next: any) => {
   const xForwardedHost = req.headers['x-forwarded-host'];
   const xForwardedProto = req.headers['x-forwarded-proto'] || 'https';
-  if (xForwardedHost) {
-    const hostStr = Array.isArray(xForwardedHost) ? xForwardedHost[0] : xForwardedHost;
-    const currentUrl = `${xForwardedProto}://${hostStr}`;
+  if ((xForwardedHost || process.env.APP_URL) && !isPollingMode) {
+    let currentUrl = '';
+    if (process.env.APP_URL) {
+      currentUrl = process.env.APP_URL;
+    } else {
+      const hostStr = Array.isArray(xForwardedHost) ? xForwardedHost[0] : xForwardedHost;
+      currentUrl = `${xForwardedProto}://${hostStr}`;
+    }
     
     if (detectedAppUrl !== currentUrl) {
       console.log(`Auto-detected public App URL: ${currentUrl}`);
       detectedAppUrl = currentUrl;
       
-      const cfWorkerUrl = (typeof settings !== 'undefined' && settings.cfWorkerUrl) || process.env.CF_WORKER_URL;
-      if (bot && cfWorkerUrl) {
-        try {
-          const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
-          const targetWebhookUrl = `${cleanWorkerUrl}/webhook?target=${encodeURIComponent(currentUrl + "/telegram")}`;
-          console.log(`Re-registering Telegram Webhook with target: ${targetWebhookUrl}`);
-          await bot.telegram.setWebhook(targetWebhookUrl, {
-            allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
-          });
-          console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
-        } catch (err: any) {
-          console.error(`Failed to auto-update webhook with target URL:`, err.message || err);
-        }
+      const cfWorkerUrl = (typeof settings !== 'undefined' && settings.disableCloudflare) 
+        ? null 
+        : ((typeof settings !== 'undefined' && settings.cfWorkerUrl) || process.env.CF_WORKER_URL);
+
+      if (bot) {
+        // Run webhook registration asynchronously in the background so it doesn't block the HTTP request
+        (async () => {
+          if (cfWorkerUrl) {
+            try {
+              const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
+              const targetWebhookUrl = `${cleanWorkerUrl}/webhook?target=${encodeURIComponent(currentUrl + "/telegram")}`;
+              console.log(`Re-registering Telegram Webhook with target (background): ${targetWebhookUrl}`);
+              await bot.telegram.setWebhook(targetWebhookUrl, {
+                allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
+              });
+              console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
+            } catch (err: any) {
+              console.error(`Failed to auto-update webhook with target URL:`, err.message || err);
+            }
+          } else if (currentUrl.startsWith('https')) {
+            // If Cloudflare is disabled but we have a secure public URL, we can set up direct webhooks
+            try {
+              const token = settings.botToken || process.env.TELEGRAM_BOT_TOKEN || '';
+              if (token) {
+                const secretPath = `/telegraf-webhook/${token.split(':')[1]}`;
+                console.log(`Re-registering direct Telegram Webhook at (background): ${currentUrl}${secretPath}`);
+                await bot.telegram.setWebhook(`${currentUrl}${secretPath}`, {
+                  allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
+                });
+                console.log(`Telegram bot webhook directly configured at: ${currentUrl}${secretPath}`);
+              }
+            } catch (err: any) {
+              console.error(`Failed to auto-update direct webhook URL:`, err.message || err);
+            }
+          }
+        })();
       }
     }
   }
@@ -64,9 +95,12 @@ const authenticateToken = (req: any, res: any, next: any) => {
 // API Routes
 app.get('/api/health', async (req, res) => {
   let cfStatus = 'offline';
-  const cfWorkerUrl = (typeof settings !== 'undefined' && settings.cfWorkerUrl) || process.env.CF_WORKER_URL;
+  const isCfDisabled = typeof settings !== 'undefined' && settings.disableCloudflare;
+  const cfWorkerUrl = isCfDisabled ? null : ((typeof settings !== 'undefined' && settings.cfWorkerUrl) || process.env.CF_WORKER_URL);
   
-  if (cfWorkerUrl) {
+  if (isCfDisabled) {
+    cfStatus = 'disabled';
+  } else if (cfWorkerUrl) {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 2000);
@@ -88,6 +122,55 @@ app.get('/api/health', async (req, res) => {
     dbType: process.env.DB_TYPE || 'FIREBASE',
     cfStatus
   });
+});
+
+app.post('/api/upload', authenticateToken, async (req: any, res: any) => {
+  try {
+    const { base64, filename } = req.body;
+    if (!base64) {
+      return res.status(400).json({ error: 'Данные изображения отсутствуют' });
+    }
+
+    const matches = base64.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
+    if (!matches || matches.length !== 3) {
+      return res.status(400).json({ error: 'Неверный формат изображения (Base64)' });
+    }
+
+    const contentType = matches[1];
+    const base64Data = matches[2];
+    const buffer = Buffer.from(base64Data, 'base64');
+
+    let ext = 'png';
+    if (contentType.includes('jpeg') || contentType.includes('jpg')) {
+      ext = 'jpg';
+    } else if (contentType.includes('png')) {
+      ext = 'png';
+    } else if (contentType.includes('gif')) {
+      ext = 'gif';
+    } else if (contentType.includes('webp')) {
+      ext = 'webp';
+    }
+
+    const uploadDir = path.join(process.cwd(), 'uploads');
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+
+    const randomName = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${ext}`;
+    const filePath = path.join(uploadDir, randomName);
+
+    await fs.promises.writeFile(filePath, buffer);
+
+    const host = req.headers.host;
+    const protocol = req.headers['x-forwarded-proto'] || 'http';
+    const appUrl = (process.env.VITE_APP_URL || process.env.APP_URL || `${protocol}://${host}`).replace(/\/$/, '');
+    const url = `${appUrl}/uploads/${randomName}`;
+
+    res.json({ success: true, url });
+  } catch (err: any) {
+    console.error('Error handling upload:', err);
+    res.status(500).json({ error: 'Ошибка сервера при загрузке файла' });
+  }
 });
 
 app.get('/api/bot/verify', authenticateToken, async (req, res) => {
@@ -144,6 +227,15 @@ app.post('/telegram', express.json(), async (req, res) => {
     if (!res.headersSent) {
       res.status(500).send('Error');
     }
+  }
+});
+
+// Dynamic wildcard handler for direct Telegraf webhook callback paths
+app.post('/telegraf-webhook/{*all}', (req, res, next) => {
+  if (bot) {
+    bot.webhookCallback(req.path)(req, res, next);
+  } else {
+    res.status(503).send('Bot not initialized');
   }
 });
 
@@ -1078,8 +1170,8 @@ app.delete('/api/chats/:id', async (req, res) => {
 app.put('/api/chats/:id', async (req, res) => {
   try {
     const updatedChat = req.body;
-    console.log(`Updating chat ${req.params.id}:`, updatedChat);
-    await updateChat(updatedChat);
+    console.log(`Updating chat ${req.params.id} (immediate):`, updatedChat);
+    await updateChat(updatedChat, true);
     res.json({ success: true });
   } catch (err) {
     console.error(`Failed to update chat ${req.params.id}:`, err);
@@ -1197,7 +1289,13 @@ let scheduledDeletions: { chatId: string, messageId: number, deleteAt: string }[
 let captchaSessions = new Map<string, { chatId: string, answer: string, timestamp: number }>();
 let broadcastSessions = new Map<string, { 
   message: any, 
+  messages?: any[],
   options: { pin: boolean, delay: number, silent: boolean, selectedChats: string[] } 
+}>();
+let mediaGroupBuffers = new Map<string, {
+  mediaGroupId: string,
+  messages: any[],
+  timer: NodeJS.Timeout
 }>();
 let activeVotes = new Map<string, {
   targetUserId: number,
@@ -1252,7 +1350,9 @@ let settings = {
   dbName: 'teleguard',
   maintenanceMode: false,
   infoChatId: '',
-  cfWorkerUrl: process.env.CF_WORKER_URL || ''
+  cfWorkerUrl: process.env.CF_WORKER_URL || '',
+  disableCloudflare: false,
+  adminTelegramUsername: 'bookray'
 };
 
 // Sync functions
@@ -1658,16 +1758,9 @@ async function initBot(token: string) {
       }
     }
 
-    const cfWorkerUrl = settings.cfWorkerUrl || process.env.CF_WORKER_URL;
+    const cfWorkerUrl = settings.disableCloudflare ? null : (settings.cfWorkerUrl || process.env.CF_WORKER_URL);
     const telegrafOptions: any = {};
-    if (cfWorkerUrl) {
-      const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
-      telegrafOptions.telegram = {
-        apiRoot: cleanWorkerUrl
-      };
-      console.log(`Configuring Telegraf with apiRoot proxy: ${cleanWorkerUrl}`);
-    }
-
+    
     bot = new Telegraf(token, telegrafOptions);
     
     // Get bot information
@@ -1733,8 +1826,11 @@ async function initBot(token: string) {
       const userId = ctx.from.id.toString();
       const username = ctx.from.username;
 
+      const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
+      const isCurrentAdmin = username && username.toLowerCase() === adminUsername;
+
       // Set Info Chat for notifications
-      if (username === 'bookray' && (ctx.message as any)?.text === '/setinfo') {
+      if (isCurrentAdmin && (ctx.message as any)?.text === '/setinfo') {
         settings.infoChatId = chatId;
         await db.collection('config').doc('settings').update({ infoChatId: chatId }).catch(e => console.error('Failed to save infoChatId:', e));
         return ctx.reply('✅ Этот чат установлен как информационный для уведомлений о входах/выходах.');
@@ -1755,49 +1851,97 @@ async function initBot(token: string) {
         }
       }
 
-      // Store bookray's chatId for reports
-      if (username === 'bookray' && chatType === 'private') {
+      // Store admin's chatId for reports
+      if (isCurrentAdmin && chatType === 'private') {
         process.env.BOOKRAY_CHAT_ID = chatId;
       }
 
-      // Restrict bot communication to @bookray
-      // If it's a private chat and not @bookray, ignore or notify
-      if (chatType === 'private' && username !== 'bookray') {
+      // Restrict bot communication to admin
+      // If it's a private chat and not admin, ignore or notify
+      if (chatType === 'private' && !isCurrentAdmin) {
         // If they are in a captcha session, we must allow it
         const session = captchaSessions.get(userId);
         if (!session) {
-          console.log(`Unauthorized private interaction from @${username} (${userId})`);
+          console.log(`Unauthorized private interaction from @${username || 'No Username'} (${userId})`);
+          await ctx.reply(`❌ Доступ запрещен.\nВаш Telegram-логин: @${username || '(не установлен)'}\n\nЭтот бот может управляться только администратором, указанным в настройках панели (текущий: @${settings.adminTelegramUsername || 'bookray'}). Если вы являетесь владельцем бота, укажите ваш точный никнейм в настройках панели управления (раздел Настройки).`).catch(e => console.error('Failed to send auth warning:', e));
           return; 
         }
       }
 
       // Handle Broadcast from Admin
-      if (chatType === 'private' && username === 'bookray') {
+      if (chatType === 'private' && isCurrentAdmin) {
         // If it's a command, handle it normally. 
         if (ctx.message && 'text' in ctx.message && ctx.message.text.startsWith('/')) {
            // allow commands to pass through
         } else if (ctx.message) {
-          // Treat any other message/forward as a broadcast source
-          broadcastSessions.set(userId, { 
-            message: ctx.message, 
-            options: { 
-              pin: false, 
-              delay: 10, 
-              silent: false, 
-              selectedChats: chats.filter(c => c.active).map(c => String(c.id))
-            } 
-          });
-          
-          return ctx.reply('📢 Вы прислали сообщение для рассылки. Выберите действие:', {
-            reply_markup: {
-              inline_keyboard: [
-                [{ text: '🚀 Начать рассылку', callback_data: 'bc_start' }],
-                [{ text: '👥 Выбор чатов', callback_data: 'bc_select_chats' }],
-                [{ text: '⚙️ Настройки', callback_data: 'bc_options' }],
-                [{ text: '❌ Отмена', callback_data: 'bc_cancel' }]
-              ]
+          const mediaGroupId = (ctx.message as any).media_group_id;
+
+          if (mediaGroupId) {
+            let buffer = mediaGroupBuffers.get(mediaGroupId);
+            if (!buffer) {
+              buffer = {
+                mediaGroupId,
+                messages: [ctx.message],
+                timer: setTimeout(async () => {
+                  const buf = mediaGroupBuffers.get(mediaGroupId);
+                  mediaGroupBuffers.delete(mediaGroupId);
+                  if (!buf || !buf.messages.length) return;
+
+                  buf.messages.sort((a, b) => a.message_id - b.message_id);
+
+                  broadcastSessions.set(userId, {
+                    message: buf.messages[0],
+                    messages: buf.messages,
+                    options: {
+                      pin: false,
+                      delay: 10,
+                      silent: false,
+                      selectedChats: chats.filter(c => c.active).map(c => String(c.id))
+                    }
+                  });
+
+                  const count = buf.messages.length;
+                  await ctx.reply(`📢 Вы прислали альбом из ${count} медиафайлов для рассылки. Выберите действие:`, {
+                    reply_markup: {
+                      inline_keyboard: [
+                        [{ text: '🚀 Начать рассылку', callback_data: 'bc_start' }],
+                        [{ text: '👥 Выбор чатов', callback_data: 'bc_select_chats' }],
+                        [{ text: '⚙️ Настройки', callback_data: 'bc_options' }],
+                        [{ text: '❌ Отмена', callback_data: 'bc_cancel' }]
+                      ]
+                    }
+                  });
+                }, 500)
+              };
+              mediaGroupBuffers.set(mediaGroupId, buffer);
+            } else {
+              buffer.messages.push(ctx.message);
             }
-          });
+            return;
+          } else {
+            // Single message (text, single photo, document, etc.)
+            broadcastSessions.set(userId, { 
+              message: ctx.message,
+              messages: [ctx.message], 
+              options: { 
+                pin: false, 
+                delay: 10, 
+                silent: false, 
+                selectedChats: chats.filter(c => c.active).map(c => String(c.id))
+              } 
+            });
+            
+            return ctx.reply('📢 Вы прислали сообщение для рассылки. Выберите действие:', {
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '🚀 Начать рассылку', callback_data: 'bc_start' }],
+                  [{ text: '👥 Выбор чатов', callback_data: 'bc_select_chats' }],
+                  [{ text: '⚙️ Настройки', callback_data: 'bc_options' }],
+                  [{ text: '❌ Отмена', callback_data: 'bc_cancel' }]
+                ]
+              }
+            });
+          }
         }
       }
 
@@ -2544,7 +2688,8 @@ async function initBot(token: string) {
         return;
       }
 
-      if (username !== 'bookray') return ctx.answerCbQuery('У вас нет прав.');
+      const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
+      if (!username || username.toLowerCase() !== adminUsername) return ctx.answerCbQuery('У вас нет прав.');
 
       const session = broadcastSessions.get(userId);
       if (!session && data.startsWith('bc_')) {
@@ -2654,7 +2799,11 @@ async function initBot(token: string) {
       }
 
       if (data === 'bc_back') {
-        return ctx.editMessageText('📢 Вы прислали сообщение для рассылки. Выберите действие:', {
+        const msgCount = session?.messages?.length || 1;
+        const label = msgCount > 1
+          ? `📢 Вы прислали альбом из ${msgCount} медиафайлов для рассылки. Выберите действие:`
+          : '📢 Вы прислали сообщение для рассылки. Выберите действие:';
+        return ctx.editMessageText(label, {
           reply_markup: {
             inline_keyboard: [
               [{ text: '🚀 Начать рассылку', callback_data: 'bc_start' }],
@@ -2689,7 +2838,7 @@ async function initBot(token: string) {
 
       if (data === 'bc_start') {
         const targetChatIds = session!.options.selectedChats;
-        const targetChats = chats.filter(c => targetChatIds.includes(String(c.id)));
+        const targetChats = Array.from(new Map(chats.filter(c => targetChatIds.includes(String(c.id))).map(c => [String(c.id), c])).values());
         
         if (targetChats.length === 0) {
           return ctx.answerCbQuery('Не выбрано ни одного чата для рассылки.');
@@ -2698,7 +2847,8 @@ async function initBot(token: string) {
         await ctx.editMessageText(`🚀 Начинаю рассылку в ${targetChats.length} чатов...`);
         
         const { pin, delay, silent } = session!.options;
-        const message = session!.message;
+        const messages = session!.messages || (session!.message ? [session!.message] : []);
+        const primaryMessage = messages[0] || session!.message;
         
         broadcastSessions.delete(userId);
 
@@ -2712,27 +2862,54 @@ async function initBot(token: string) {
 
           for (const chat of targetChats) {
             try {
-              // copyMessage sends a copy without "Forwarded from"
-              const sentMsg = await ctx.telegram.copyMessage(chat.id, ctx.chat!.id, message.message_id, {
-                disable_notification: silent
-              });
-              
-              currentBroadcastMessages.push({ chatId: chat.id, messageId: sentMsg.message_id });
-              messageIds.push({ chatId: String(chat.id), messageId: sentMsg.message_id });
-              
+              let sentMsgIds: number[] = [];
+
+              if (messages.length === 1) {
+                const sentMsg = await ctx.telegram.copyMessage(chat.id, ctx.chat!.id, messages[0].message_id, {
+                  disable_notification: silent
+                });
+                sentMsgIds = [sentMsg.message_id];
+              } else if (messages.length > 1) {
+                const msgIds = messages.map((m: any) => m.message_id);
+                try {
+                  const res: any = await ctx.telegram.callApi('copyMessages', {
+                    chat_id: chat.id,
+                    from_chat_id: ctx.chat!.id,
+                    message_ids: msgIds,
+                    disable_notification: silent
+                  });
+                  const resArray = Array.isArray(res) ? res : [res];
+                  sentMsgIds = resArray.map((item: any) => typeof item === 'number' ? item : (item.message_id || item));
+                } catch (copyErr) {
+                  console.warn('copyMessages API failed, falling back to sequential copyMessage:', copyErr);
+                  for (const m of messages) {
+                    const s = await ctx.telegram.copyMessage(chat.id, ctx.chat!.id, m.message_id, { disable_notification: silent });
+                    sentMsgIds.push(s.message_id);
+                  }
+                }
+              }
+
+              for (const mId of sentMsgIds) {
+                currentBroadcastMessages.push({ chatId: chat.id, messageId: mId });
+                messageIds.push({ chatId: String(chat.id), messageId: mId });
+              }
+
+              const mainMsgId = sentMsgIds[0];
+
               // Generate link
               let link = '';
-              if (chat.id.toString().startsWith('-100')) {
-                const cleanId = chat.id.toString().replace('-100', '');
-                link = `https://t.me/c/${cleanId}/${sentMsg.message_id}`;
-              } else {
-                // Try to get chat username if available
-                try {
-                  const chatInfo = await ctx.telegram.getChat(chat.id);
-                  if ('username' in chatInfo && chatInfo.username) {
-                    link = `https://t.me/${chatInfo.username}/${sentMsg.message_id}`;
-                  }
-                } catch (e) {}
+              if (mainMsgId) {
+                if (chat.id.toString().startsWith('-100')) {
+                  const cleanId = chat.id.toString().replace('-100', '');
+                  link = `https://t.me/c/${cleanId}/${mainMsgId}`;
+                } else {
+                  try {
+                    const chatInfo = await ctx.telegram.getChat(chat.id);
+                    if ('username' in chatInfo && chatInfo.username) {
+                      link = `https://t.me/${chatInfo.username}/${mainMsgId}`;
+                    }
+                  } catch (e) {}
+                }
               }
               
               if (link) {
@@ -2741,13 +2918,11 @@ async function initBot(token: string) {
                 reportLinks.push(`${chat.title}: (ссылка недоступна)`);
               }
 
-              if (pin) {
+              if (pin && mainMsgId) {
                 try {
-                  // Small delay before pinning to ensure message is indexed
                   await new Promise(resolve => setTimeout(resolve, 2000));
-                  
                   console.log(`[Pin Bot] Attempting to pin in ${chat.id}`);
-                  await ctx.telegram.pinChatMessage(chat.id, sentMsg.message_id, { disable_notification: false });
+                  await ctx.telegram.pinChatMessage(chat.id, mainMsgId, { disable_notification: false });
                   console.log(`[Pin Bot] Successfully pinned in ${chat.id}`);
                 } catch (e) {
                   console.error(`[Pin Bot] Failed to pin in ${chat.id}:`, (e as any).message || e);
@@ -2762,12 +2937,21 @@ async function initBot(token: string) {
             }
           }
 
+          let textSummary = 'Media message';
+          if (primaryMessage) {
+            if ('text' in primaryMessage && primaryMessage.text) textSummary = primaryMessage.text;
+            else if ('caption' in primaryMessage && primaryMessage.caption) textSummary = primaryMessage.caption;
+          }
+          if (messages.length > 1) {
+            textSummary = `[Альбом из ${messages.length} медиа] ${textSummary}`;
+          }
+
           // Save to history
           const historyEntry = {
             id: Math.random().toString(36).substr(2, 9),
             userId: userId,
             username: username || userId,
-            text: ('text' in message ? message.text : ('caption' in message ? message.caption : 'Media message')) || 'Media message',
+            text: textSummary,
             timestamp: new Date().toISOString(),
             chatIds: targetChats.map(c => String(c.id)),
             messageIds: messageIds,
@@ -2808,10 +2992,11 @@ async function initBot(token: string) {
       }
     });
 
-    const appUrl = process.env.VITE_APP_URL || process.env.APP_URL;
-    const useWebhooks = process.env.USE_WEBHOOKS === 'true' || !!cfWorkerUrl;
+    const appUrl = process.env.APP_URL || process.env.VITE_APP_URL;
+    const isDevelopmentPreview = process.env.NODE_ENV !== 'production' || !!process.env.APPLET_ID;
+    const useWebhooks = !isDevelopmentPreview && (process.env.USE_WEBHOOKS === 'true' || !!cfWorkerUrl || (appUrl && appUrl.startsWith('https')));
 
-    if (cfWorkerUrl) {
+    if (useWebhooks && cfWorkerUrl) {
       try {
         const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
         const targetUrl = detectedAppUrl || appUrl;
@@ -2830,19 +3015,19 @@ async function initBot(token: string) {
       }
     } else if (useWebhooks && appUrl && appUrl.startsWith('https')) {
       const secretPath = `/telegraf-webhook/${token.split(':')[1]}`;
-      app.use(bot.webhookCallback(secretPath));
       try {
         await bot.telegram.setWebhook(`${appUrl}${secretPath}`, {
           allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
         });
-        console.log(`Telegram bot initialized with webhooks at ${appUrl}${secretPath}`);
+        console.log(`Telegram bot initialized with direct webhook at ${appUrl}${secretPath}`);
       } catch (err) {
-        console.error('Failed to register webhook directly (expected due to sandboxed container network limits):', err);
+        console.error('Failed to register webhook directly:', err);
         console.log('Skipping active direct webhook registration. Webhook endpoint is registered and ready to receive requests.');
       }
     } else {
       try {
         console.log('Starting Telegram bot in polling mode...');
+        isPollingMode = true;
         // Delete webhook first to ensure polling works
         try {
           await bot.telegram.deleteWebhook({ drop_pending_updates: true });
@@ -2887,7 +3072,7 @@ function fixUrl(url: string): string {
   if (!url) return '';
   // Telegram doesn't allow localhost URLs
   if (url.includes('localhost')) {
-    const appUrl = process.env.VITE_APP_URL || process.env.APP_URL || '';
+    const appUrl = process.env.APP_URL || process.env.VITE_APP_URL || '';
     if (appUrl) {
       return url.replace(/https?:\/\/localhost(:\d+)?/, appUrl);
     }
@@ -2971,7 +3156,18 @@ app.post('/api/broadcast', authenticateToken, async (req, res) => {
 
           let sentMsg;
           if (imageUrl) {
-            sentMsg = await bot.telegram.sendPhoto(chatId, imageUrl, { 
+            let photoInput: any = imageUrl;
+            if (imageUrl.includes('/uploads/')) {
+              const filename = imageUrl.split('/uploads/').pop();
+              if (filename) {
+                const filePath = path.join(process.cwd(), 'uploads', filename);
+                if (fs.existsSync(filePath)) {
+                  photoInput = { source: filePath };
+                }
+              }
+            }
+
+            sentMsg = await bot.telegram.sendPhoto(chatId, photoInput, { 
               caption: text, 
               parse_mode: 'HTML',
               ...extra 
@@ -3298,7 +3494,17 @@ async function startServer() {
 
               let sentMsg;
               if (task.imageUrl) {
-                sentMsg = await bot.telegram.sendPhoto(chatId, task.imageUrl, { caption: task.text, ...extra });
+                let photoInput: any = task.imageUrl;
+                if (task.imageUrl.includes('/uploads/')) {
+                  const filename = task.imageUrl.split('/uploads/').pop();
+                  if (filename) {
+                    const filePath = path.join(process.cwd(), 'uploads', filename);
+                    if (fs.existsSync(filePath)) {
+                      photoInput = { source: filePath };
+                    }
+                  }
+                }
+                sentMsg = await bot.telegram.sendPhoto(chatId, photoInput, { caption: task.text, ...extra });
               } else {
                 const messageText = task.text || task.message || '';
               sentMsg = await bot.telegram.sendMessage(chatId, messageText, extra);

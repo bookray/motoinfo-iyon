@@ -559,6 +559,7 @@ const App: React.FC = () => {
             }}
             dateRange={dateRange}
             onDateRangeChange={setDateRange}
+            onUpdateChat={handleUpdateChat}
           />
         )}
               {activeTab === Tab.CHATS && (
@@ -600,7 +601,7 @@ const App: React.FC = () => {
                 />
               )}
               {activeTab === Tab.BROADCAST && <Broadcast chats={filteredChats} currentUser={currentUser} />}
-              {activeTab === Tab.LOGS && <Logs logs={logs} />}
+              {activeTab === Tab.LOGS && <Logs logs={logs} chats={filteredChats} />}
               {activeTab === Tab.USERS && <UserManagement chats={chats} />}
               {activeTab === Tab.SETTINGS && (
                 <Settings 

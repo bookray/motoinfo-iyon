@@ -153,18 +153,54 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
 
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                Имя пользователя Telegram (Администратор)
+              </label>
+              <div className="relative">
+                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-mono text-sm">@</span>
+                <input
+                  type="text"
+                  value={localSettings.adminTelegramUsername || ''}
+                  onChange={(e) => setLocalSettings({ ...localSettings, adminTelegramUsername: e.target.value.replace(/^@/, '') })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono text-sm"
+                  placeholder="bookray"
+                />
+              </div>
+              <p className="mt-1.5 text-[10px] text-slate-500 leading-normal">
+                Бот будет реагировать на команды в личных сообщениях только от этого пользователя.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
                 Cloudflare Worker URL (Проброс вебхуков)
               </label>
               <input
                 type="text"
                 value={localSettings.cfWorkerUrl || ''}
+                disabled={localSettings.disableCloudflare}
                 onChange={(e) => setLocalSettings({ ...localSettings, cfWorkerUrl: e.target.value })}
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono text-sm"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono text-sm disabled:opacity-40"
                 placeholder="https://your-worker.your-subdomain.workers.dev"
               />
               <p className="mt-1.5 text-[10px] text-slate-500 leading-relaxed leading-normal">
                 Заполните это поле, если вы используете Cloudflare Worker для проброса вебхуков на адрес <code className="bg-slate-950 text-blue-400 px-1 py-0.5 rounded font-mono">/telegram</code> вашего сервера.
               </p>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-slate-950/50 rounded-xl border border-slate-800">
+              <div>
+                <p className="text-xs font-bold text-slate-200 uppercase tracking-wide">Отключить Cloudflare</p>
+                <p className="text-[10px] text-slate-500 mt-1">
+                  Запросы будут отправляться напрямую на сервер (webhooks или polling) без использования Cloudflare.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLocalSettings({ ...localSettings, disableCloudflare: !localSettings.disableCloudflare })}
+                className={`w-12 h-6 rounded-full transition-colors relative flex-shrink-0 ${localSettings.disableCloudflare ? 'bg-amber-500' : 'bg-slate-800'}`}
+              >
+                <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${localSettings.disableCloudflare ? 'left-7' : 'left-1'}`} />
+              </button>
             </div>
 
             <div>

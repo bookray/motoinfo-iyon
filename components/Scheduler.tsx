@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { ScheduledMessage, Chat } from '../types';
-import { Calendar, Play, Pause, Trash2, Plus, Clock, Pin } from 'lucide-react';
+import { Calendar, Play, Pause, Trash2, Plus, Clock, Pin, Upload } from 'lucide-react';
 
 interface SchedulerProps {
   tasks: ScheduledMessage[];
@@ -24,6 +24,62 @@ export const Scheduler: React.FC<SchedulerProps> = ({ tasks, chats, onAddTask, o
     deleteAfterDays: 0,
     deleteAfterHours: 0
   });
+
+  const [uploadingImage, setUploadingImage] = useState(false);
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)) {
+      alert('Пожалуйста, выберите файл изображения (JPG, PNG, GIF, WEBP)');
+      return;
+    }
+
+    if (file.size > 15 * 1024 * 1024) {
+      alert('Размер файла не должен превышать 15 МБ');
+      return;
+    }
+
+    setUploadingImage(true);
+    try {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        const token = localStorage.getItem('token');
+        
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            base64,
+            filename: file.name
+          })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setNewTask({ ...newTask, imageUrl: data.url });
+        } else {
+          const error = await response.json().catch(() => ({ error: 'Ошибка сервера' }));
+          alert(`Ошибка при загрузке: ${error.error}`);
+        }
+        setUploadingImage(false);
+      };
+      reader.onerror = () => {
+        alert('Ошибка при чтении файла');
+        setUploadingImage(false);
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('Upload error:', err);
+      alert('Произошла ошибка при загрузке изображения');
+      setUploadingImage(false);
+    }
+  };
 
   const handleCreate = () => {
     if (!newTask.text || (newTask.chatIds?.length || 0) === 0) return;
@@ -105,14 +161,49 @@ export const Scheduler: React.FC<SchedulerProps> = ({ tasks, chats, onAddTask, o
 
               <div className="space-y-4 pt-2">
                 <div>
-                  <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Ссылка на изображение (URL)</label>
-                  <input
-                    type="text"
-                    value={newTask.imageUrl}
-                    onChange={(e) => setNewTask({...newTask, imageUrl: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-600 rounded-lg p-2 text-white text-sm"
-                    placeholder="https://example.com/image.jpg"
-                  />
+                  <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Изображение (URL или файл с компьютера)</label>
+                  <div className="space-y-2">
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={newTask.imageUrl || ''}
+                        onChange={(e) => setNewTask({...newTask, imageUrl: e.target.value})}
+                        className="flex-1 bg-slate-900 border border-slate-600 rounded-lg p-2 text-white text-sm focus:outline-none focus:border-blue-500"
+                        placeholder="https://example.com/image.jpg или выберите файл..."
+                      />
+                      <label className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-lg px-3 py-2 text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors select-none">
+                        <Upload className="w-3.5 h-3.5" />
+                        Загрузить
+                        <input
+                          type="file"
+                          accept="image/png, image/jpeg, image/jpg, image/gif, image/webp"
+                          onChange={handleImageUpload}
+                          className="hidden"
+                        />
+                      </label>
+                    </div>
+                    {uploadingImage && (
+                      <p className="text-[10px] text-blue-400 animate-pulse">Загрузка изображения...</p>
+                    )}
+                    {newTask.imageUrl && (
+                      <div className="relative inline-block mt-1 group">
+                        <img 
+                          src={newTask.imageUrl} 
+                          alt="Превью" 
+                          className="max-h-32 rounded-lg border border-slate-700 object-contain bg-slate-950 p-1"
+                          referrerPolicy="no-referrer"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setNewTask({...newTask, imageUrl: ''})}
+                          className="absolute -top-1.5 -right-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold cursor-pointer transition-colors shadow-md"
+                          title="Удалить изображение"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Кнопки (Текст | URL)</label>

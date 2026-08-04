@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
 import { Chat, User, UserRole, BroadcastHistory } from '../types';
-import { Send, Pin, Clock, Trash2, AlertTriangle, MessageSquare, History, User as UserIcon, ExternalLink, PinOff } from 'lucide-react';
+import { Send, Pin, Clock, Trash2, AlertTriangle, MessageSquare, History, User as UserIcon, ExternalLink, PinOff, Upload, Copy, Download, Check } from 'lucide-react';
 import { formatDateTime } from '../src/utils/dateUtils';
 
 interface BroadcastProps {
@@ -26,6 +26,46 @@ export const Broadcast: React.FC<BroadcastProps> = ({ chats, currentUser }) => {
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
   const [confirmingUnpin, setConfirmingUnpin] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const getUniqueLinks = (item: BroadcastHistory) => {
+    const uniqueMap = new Map<string, { chatId: string; messageId: number; link: string; title: string }>();
+    if (item.messageIds && Array.isArray(item.messageIds)) {
+      for (const msg of item.messageIds) {
+        const sChatId = String(msg.chatId);
+        if (!uniqueMap.has(sChatId)) {
+          const chat = chats.find(c => String(c.id) === sChatId);
+          const cleanId = sChatId.replace('-100', '');
+          const link = `https://t.me/c/${cleanId}/${msg.messageId}`;
+          const title = chat?.title || sChatId;
+          uniqueMap.set(sChatId, { chatId: sChatId, messageId: msg.messageId, link, title });
+        }
+      }
+    }
+    return Array.from(uniqueMap.values());
+  };
+
+  const handleCopyLinks = (item: BroadcastHistory) => {
+    const uniqueLinks = getUniqueLinks(item);
+    if (uniqueLinks.length === 0) return;
+    const text = uniqueLinks.map(l => `${l.title}: ${l.link}`).join('\n');
+    navigator.clipboard.writeText(text);
+    setCopiedId(item.id);
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const handleDownloadLinks = (item: BroadcastHistory) => {
+    const uniqueLinks = getUniqueLinks(item);
+    if (uniqueLinks.length === 0) return;
+    const text = uniqueLinks.map(l => `${l.title}: ${l.link}`).join('\n');
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `broadcast_links_${item.id}.txt`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const fetchHistory = useCallback(async () => {
     try {
@@ -59,6 +99,62 @@ export const Broadcast: React.FC<BroadcastProps> = ({ chats, currentUser }) => {
       setSelectedChats(selectedChats.filter(c => c !== id));
     } else {
       setSelectedChats([...selectedChats, id]);
+    }
+  };
+
+  const [uploadingImage, setUploadingImage] = useState(false);
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'].includes(file.type)) {
+      alert('Пожалуйста, выберите файл изображения (JPG, PNG, GIF, WEBP)');
+      return;
+    }
+
+    if (file.size > 15 * 1024 * 1024) {
+      alert('Размер файла не должен превышать 15 МБ');
+      return;
+    }
+
+    setUploadingImage(true);
+    try {
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        const token = localStorage.getItem('token');
+        
+        const response = await fetch('/api/upload', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            base64,
+            filename: file.name
+          })
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          setImageUrl(data.url);
+        } else {
+          const error = await response.json().catch(() => ({ error: 'Ошибка сервера' }));
+          alert(`Ошибка при загрузке: ${error.error}`);
+        }
+        setUploadingImage(false);
+      };
+      reader.onerror = () => {
+        alert('Ошибка при чтении файла');
+        setUploadingImage(false);
+      };
+      reader.readAsDataURL(file);
+    } catch (err) {
+      console.error('Upload error:', err);
+      alert('Произошла ошибка при загрузке изображения');
+      setUploadingImage(false);
     }
   };
 
@@ -257,14 +353,49 @@ export const Broadcast: React.FC<BroadcastProps> = ({ chats, currentUser }) => {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Ссылка на изображение (URL)</label>
-              <input
-                type="text"
-                value={imageUrl}
-                onChange={(e) => setImageUrl(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-600 rounded-lg p-2 text-white focus:outline-none focus:border-blue-500 text-sm"
-                placeholder="https://example.com/image.jpg"
-              />
+              <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Изображение (URL или файл с компьютера)</label>
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={imageUrl}
+                    onChange={(e) => setImageUrl(e.target.value)}
+                    className="flex-1 bg-slate-900 border border-slate-600 rounded-lg p-2 text-white focus:outline-none focus:border-blue-500 text-sm"
+                    placeholder="https://example.com/image.jpg или выберите файл..."
+                  />
+                  <label className="bg-slate-700 hover:bg-slate-600 border border-slate-600 rounded-lg px-3 py-2 text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer shrink-0 transition-colors select-none">
+                    <Upload className="w-3.5 h-3.5" />
+                    Загрузить
+                    <input
+                      type="file"
+                      accept="image/png, image/jpeg, image/jpg, image/gif, image/webp"
+                      onChange={handleImageUpload}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+                {uploadingImage && (
+                  <p className="text-[10px] text-blue-400 animate-pulse">Загрузка изображения...</p>
+                )}
+                {imageUrl && (
+                  <div className="relative inline-block mt-1 group">
+                    <img 
+                      src={imageUrl} 
+                      alt="Превью" 
+                      className="max-h-32 rounded-lg border border-slate-700 object-contain bg-slate-950 p-1"
+                      referrerPolicy="no-referrer"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setImageUrl('')}
+                      className="absolute -top-1.5 -right-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold cursor-pointer transition-colors shadow-md"
+                      title="Удалить изображение"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-2">Кнопки (Текст | URL)</label>
@@ -536,37 +667,68 @@ export const Broadcast: React.FC<BroadcastProps> = ({ chats, currentUser }) => {
                   </p>
                 </div>
 
-                <div className="flex flex-wrap gap-2">
-                  {item.messageIds.map((msg, idx) => {
-                    const chat = chats.find(c => String(c.id) === String(msg.chatId));
-                    const cleanId = String(msg.chatId).replace('-100', '');
-                    const link = `https://t.me/c/${cleanId}/${msg.messageId}`;
-                    
-                    const pinRes = item.pinResults?.[msg.chatId];
-                    const pinFailed = item.pin && pinRes && !pinRes.success;
-                    
-                    return (
-                      <div key={idx} className="flex flex-col gap-1">
-                        <a 
-                          href={link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className={`flex items-center gap-1.5 px-2 py-1 bg-slate-800 hover:bg-slate-700 rounded text-[10px] transition-colors border ${pinFailed ? 'border-rose-500/50 text-rose-300' : 'border-slate-700 text-slate-400 hover:text-white'}`}
-                        >
-                          <ExternalLink className="w-3 h-3" />
-                          {chat?.title || msg.chatId}
-                          {item.pin && pinRes?.success && <Pin className="w-2.5 h-2.5 text-blue-400" />}
-                          {pinFailed && <AlertTriangle className="w-2.5 h-2.5 text-rose-500" />}
-                        </a>
-                        {pinFailed && (
-                          <span className="text-[8px] text-rose-500/80 px-1 max-w-[120px] truncate" title={pinRes.error}>
-                            Pin: {pinRes.error?.includes('not enough rights') ? 'Нет прав на закреп' : pinRes.error}
+                {(() => {
+                  const uniqueLinks = getUniqueLinks(item);
+                  return (
+                    <div className="space-y-2">
+                      {uniqueLinks.length > 0 && (
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800">
+                          <span className="text-xs font-medium text-slate-400">
+                            Размещено в {uniqueLinks.length} {uniqueLinks.length === 1 ? 'чате' : 'чатах'}:
                           </span>
-                        )}
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleCopyLinks(item)}
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg border border-slate-700 text-xs font-medium transition-colors cursor-pointer"
+                              title="Скопировать все ссылки в буфер обмена"
+                            >
+                              {copiedId === item.id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-blue-400" />}
+                              <span>{copiedId === item.id ? 'Скопировано!' : 'Скопировать ссылки'}</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDownloadLinks(item)}
+                              className="flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg border border-slate-700 text-xs font-medium transition-colors cursor-pointer"
+                              title="Скачать файл со ссылками (TXT)"
+                            >
+                              <Download className="w-3.5 h-3.5 text-purple-400" />
+                              <span>Выгрузить TXT</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {uniqueLinks.map((msg, idx) => {
+                          const pinRes = item.pinResults?.[msg.chatId];
+                          const pinFailed = item.pin && pinRes && !pinRes.success;
+
+                          return (
+                            <div key={idx} className="flex flex-col gap-1">
+                              <a 
+                                href={msg.link}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={`flex items-center gap-1.5 px-2.5 py-1 bg-slate-800 hover:bg-slate-700 rounded-lg text-xs transition-colors border ${pinFailed ? 'border-rose-500/50 text-rose-300' : 'border-slate-700 text-slate-300 hover:text-white'}`}
+                              >
+                                <ExternalLink className="w-3 h-3 text-slate-400" />
+                                <span>{msg.title}</span>
+                                {item.pin && pinRes?.success && <Pin className="w-3 h-3 text-blue-400" />}
+                                {pinFailed && <AlertTriangle className="w-3 h-3 text-rose-500" />}
+                              </a>
+                              {pinFailed && (
+                                <span className="text-[9px] text-rose-400/90 px-1 max-w-[140px] truncate" title={pinRes.error}>
+                                  Pin: {pinRes.error?.includes('not enough rights') ? 'Нет прав на закреп' : pinRes.error}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
-                    );
-                  })}
-                </div>
+                    </div>
+                  );
+                })()}
               </div>
             ))}
           </div>

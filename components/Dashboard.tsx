@@ -14,6 +14,7 @@ interface DashboardProps {
   onToggleChatFilter: (id: string) => void;
   dateRange: { start: string; end: string };
   onDateRangeChange: (range: { start: string; end: string }) => void;
+  onUpdateChat?: (chat: Chat) => void;
 }
 
 const StatCard = ({ title, value, sub, icon: Icon, color }: any) => (
@@ -37,7 +38,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   selectedChatIds, 
   onToggleChatFilter,
   dateRange,
-  onDateRangeChange
+  onDateRangeChange,
+  onUpdateChat
 }) => {
   if (!stats) {
     return (
@@ -50,6 +52,63 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
+      {chats.length > 0 && chats.filter(c => c && c.active).length === 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-6 flex flex-col gap-6 text-amber-200">
+          <div className="flex flex-col md:flex-row items-center gap-4">
+            <div className="p-3 bg-amber-500/20 rounded-xl shrink-0">
+              <ShieldAlert className="w-6 h-6 text-amber-500 animate-pulse" />
+            </div>
+            <div className="flex-1 text-center md:text-left">
+              <h4 className="font-bold text-white text-base">Все чаты деактивированы ({chats.length} найдено)</h4>
+              <p className="text-xs text-slate-400 mt-1">
+                Бот находится в ваших группах, но они сейчас <strong className="text-amber-400">деактивированы</strong> в системе. Вы можете <strong className="text-emerald-400">активировать нужные чаты ниже в один клик</strong>, чтобы бот начал модерировать чаты и собирать по ним статистику!
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 pt-4 border-t border-amber-500/20">
+            {chats.slice(0, 6).map((chat) => (
+              <div key={chat.id} className="bg-slate-950/40 border border-slate-800 rounded-xl p-3 flex items-center justify-between gap-3 hover:border-amber-500/30 transition-all">
+                <div className="flex items-center gap-2.5 overflow-hidden">
+                  <img src={chat.avatarUrl} alt={chat.title} className="w-8 h-8 rounded-full border border-slate-800 shrink-0" />
+                  <div className="overflow-hidden">
+                    <p className="text-xs font-bold text-white truncate">{chat.title}</p>
+                    <p className="text-[9px] text-slate-500 font-mono">ID: {chat.id}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => onUpdateChat && onUpdateChat({ ...chat, active: true })}
+                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold px-2.5 py-1.5 rounded-lg transition-all shrink-0 cursor-pointer shadow-sm active:scale-95"
+                >
+                  Активировать
+                </button>
+              </div>
+            ))}
+            {chats.length > 6 && (
+              <div className="col-span-1 sm:col-span-2 lg:col-span-3 text-center pt-1">
+                <p className="text-[10px] text-slate-500">
+                  Показаны первые 6 чатов. Вы можете активировать остальные {chats.length - 6} во вкладке «Управляемые чаты».
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {chats.length === 0 && (
+        <div className="bg-blue-500/10 border border-blue-500/30 rounded-2xl p-6 flex flex-col md:flex-row items-center gap-4 text-blue-200">
+          <div className="p-3 bg-blue-500/20 rounded-xl">
+            <Users className="w-6 h-6 text-blue-500" />
+          </div>
+          <div className="flex-1 text-center md:text-left">
+            <h4 className="font-bold text-white text-base">Бот еще не добавлен ни в один чат</h4>
+            <p className="text-xs text-slate-400 mt-1">
+              Добавьте вашего бота <strong className="text-blue-400">@MotoInformBot</strong> в ваш Telegram-чат в качестве администратора, выдайте права на удаление сообщений, и отправьте любое сообщение в группу. Чат автоматически зарегистрируется в этой панели!
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Filters Section */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
