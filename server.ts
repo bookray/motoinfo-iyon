@@ -121,11 +121,12 @@ app.get('/api/health', async (req, res) => {
   if (proxyUrl) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2500);
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
       const cleanUrl = proxyUrl.replace(/\/$/, '');
-      const proxyRes = await fetch(cleanUrl, { method: 'GET', signal: controller.signal });
+      const testToken = settings?.botToken || process.env.TELEGRAM_BOT_TOKEN || '123456:dummy';
+      const proxyRes = await fetch(`${cleanUrl}/bot${testToken}/getMe`, { method: 'GET', signal: controller.signal });
       clearTimeout(timeoutId);
-      if (proxyRes.status < 502) {
+      if (proxyRes.status === 200 || proxyRes.status === 401 || proxyRes.status === 400 || proxyRes.status === 404) {
         proxyStatus = 'online';
       } else {
         proxyStatus = 'offline';
@@ -161,14 +162,19 @@ app.post('/api/test-proxy', authenticateToken, async (req, res) => {
     let httpPingTime = 0;
     let httpError = '';
 
-    // 1. HTTP ping
+    // 1. HTTP ping via Telegram proxy
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const pingRes = await fetch(cleanProxyUrl, { signal: controller.signal });
+      const pingTestToken = token || '123456:dummy';
+      const pingRes = await fetch(`${cleanProxyUrl}/bot${pingTestToken}/getMe`, { signal: controller.signal });
       clearTimeout(timeoutId);
-      httpPingOk = pingRes.status < 502;
       httpPingTime = Date.now() - startTime;
+      if (pingRes.status === 200 || pingRes.status === 401 || pingRes.status === 400 || pingRes.status === 404) {
+        httpPingOk = true;
+      } else {
+        httpError = `HTTP статус ${pingRes.status}`;
+      }
     } catch (err: any) {
       httpError = err.message || 'Таймаут или ошибка сети';
     }
@@ -1891,8 +1897,9 @@ async function initBot(token: string) {
       try {
         await bot.stop();
       } catch (err) {
-        console.warn('Existing bot instance stop command failed (expected if it is not currently running):', err);
+        // Ignored if bot was not running
       }
+      await new Promise(r => setTimeout(r, 1000));
     }
 
     const cfWorkerUrl = settings.disableCloudflare ? null : (settings.cfWorkerUrl || process.env.CF_WORKER_URL);
@@ -3185,7 +3192,11 @@ async function initBot(token: string) {
         }).then(() => {
           console.log('Telegram bot launched successfully using polling');
         }).catch(err => {
-          console.error('Failed to launch bot via polling:', err);
+          if (err && (err.code === 409 || err.response?.error_code === 409 || String(err).includes('409') || String(err).includes('Conflict'))) {
+            console.warn('⚠️ Конфликт 409: Другой экземпляр бота с таким же токеном опрашивает Telegram API (например, на старом сервере или в окне предпросмотра). Для непрерывной работы опустите второй экземпляр.');
+          } else {
+            console.error('Failed to launch bot via polling:', err);
+          }
         });
       } catch (err: any) {
         if (err.response && err.response.error_code === 409) {
