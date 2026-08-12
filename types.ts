@@ -156,6 +156,7 @@ export interface BotSettings {
   cfWorkerUrl?: string;
   disableCloudflare?: boolean;
   adminTelegramUsername?: string;
+  telegramApiRoot?: string;
 }
 
 export interface ChatBan {

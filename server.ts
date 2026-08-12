@@ -116,12 +116,146 @@ app.get('/api/health', async (req, res) => {
     cfStatus = 'disabled';
   }
 
+  let proxyStatus = 'disabled';
+  const proxyUrl = settings?.telegramApiRoot || process.env.TELEGRAM_API_ROOT;
+  if (proxyUrl) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 2500);
+      const cleanUrl = proxyUrl.replace(/\/$/, '');
+      const proxyRes = await fetch(cleanUrl, { method: 'GET', signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (proxyRes.status < 502) {
+        proxyStatus = 'online';
+      } else {
+        proxyStatus = 'offline';
+      }
+    } catch (err) {
+      proxyStatus = 'offline';
+    }
+  }
+
   res.json({ 
     status: 'ok', 
     botActive: !!bot,
     dbType: process.env.DB_TYPE || 'FIREBASE',
-    cfStatus
+    cfStatus,
+    proxyStatus
   });
+});
+
+app.post('/api/test-proxy', authenticateToken, async (req, res) => {
+  try {
+    const { proxyUrl: customProxyUrl, token: customToken } = req.body;
+    const proxyUrl = customProxyUrl || settings.telegramApiRoot || process.env.TELEGRAM_API_ROOT;
+    const token = customToken || settings.botToken || process.env.TELEGRAM_BOT_TOKEN;
+
+    if (!proxyUrl) {
+      return res.status(400).json({ success: false, error: 'URL прокси не указан' });
+    }
+
+    const cleanProxyUrl = proxyUrl.replace(/\/$/, '');
+    const startTime = Date.now();
+    
+    let httpPingOk = false;
+    let httpPingTime = 0;
+    let httpError = '';
+
+    // 1. HTTP ping
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
+      const pingRes = await fetch(cleanProxyUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      httpPingOk = pingRes.status < 502;
+      httpPingTime = Date.now() - startTime;
+    } catch (err: any) {
+      httpError = err.message || 'Таймаут или ошибка сети';
+    }
+
+    // 2. Telegram API getMe check via proxy
+    let apiOk = false;
+    let botUsername = '';
+    let apiError = '';
+    let apiTime = 0;
+
+    if (token) {
+      const apiStartTime = Date.now();
+      try {
+        const getMeUrl = `${cleanProxyUrl}/bot${token}/getMe`;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        const apiRes = await fetch(getMeUrl, { signal: controller.signal });
+        clearTimeout(timeoutId);
+        apiTime = Date.now() - apiStartTime;
+
+        if (apiRes.ok) {
+          const data = await apiRes.json();
+          if (data.ok && data.result) {
+            apiOk = true;
+            botUsername = data.result.username;
+          } else {
+            apiError = data.description || 'Ошибка API Telegram';
+          }
+        } else {
+          const errText = await apiRes.text().catch(() => '');
+          apiError = `HTTP ${apiRes.status}: ${errText.slice(0, 100)}`;
+        }
+      } catch (err: any) {
+        apiError = err.message || 'Ошибка подключения к API Telegram через прокси';
+      }
+    } else {
+      apiError = 'Токен бота не задан';
+    }
+
+    // 3. Optional message delivery test if infoChatId is set
+    let deliveryOk = false;
+    let deliveryMessage = '';
+
+    if (apiOk && token) {
+      const targetChat = settings.infoChatId;
+      if (targetChat) {
+        try {
+          const sendUrl = `${cleanProxyUrl}/bot${token}/sendMessage`;
+          const testMsgRes = await fetch(sendUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chat_id: targetChat,
+              text: `🧪 *Тест Telegram API Proxy*\n\nЗапрос успешно прошёл через Nginx Reverse Proxy!\n⏱️ Задержка: ${apiTime} мс\n📅 Время: ${new Date().toLocaleString('ru-RU')}`,
+              parse_mode: 'Markdown'
+            })
+          });
+          const sendData = await testMsgRes.json();
+          if (sendData.ok) {
+            deliveryOk = true;
+            deliveryMessage = `Тестовое сообщение успешно отправлено в чат ${targetChat}`;
+          } else {
+            deliveryMessage = `Не удалось отправить тестовое сообщение в чат ${targetChat}: ${sendData.description}`;
+          }
+        } catch (err: any) {
+          deliveryMessage = `Ошибка отправки тестового сообщения: ${err.message}`;
+        }
+      } else {
+        deliveryMessage = 'Чат для уведомлений (Info Chat ID) не заполнен в настройках, доставка пропущена (getMe прошёл успешно)';
+      }
+    }
+
+    res.json({
+      success: apiOk,
+      httpPingOk,
+      httpPingTime,
+      httpError,
+      apiOk,
+      apiTime,
+      botUsername,
+      apiError,
+      deliveryOk,
+      deliveryMessage
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message || 'Внутренняя ошибка сервера при проверке прокси' });
+  }
 });
 
 app.post('/api/upload', authenticateToken, async (req: any, res: any) => {
@@ -890,13 +1024,14 @@ app.put('/api/settings', authenticateToken, async (req, res) => {
     if (user.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Access denied' });
     
     const oldToken = settings.botToken;
+    const oldApiRoot = settings.telegramApiRoot;
     const newSettings = req.body;
     console.log('Updating settings:', newSettings);
     await db.collection('config').doc('settings').set(cleanData(newSettings));
     settings = { ...settings, ...newSettings };
 
-    if (newSettings.botToken && newSettings.botToken !== oldToken) {
-      console.log('Bot token updated, auto-reinitializing bot instance...');
+    if (newSettings.botToken && (newSettings.botToken !== oldToken || newSettings.telegramApiRoot !== oldApiRoot)) {
+      console.log('Bot token or Telegram API Root updated, auto-reinitializing bot instance...');
       await initBot(newSettings.botToken);
     }
     
@@ -1352,7 +1487,8 @@ let settings = {
   infoChatId: '',
   cfWorkerUrl: process.env.CF_WORKER_URL || '',
   disableCloudflare: false,
-  adminTelegramUsername: 'bookray'
+  adminTelegramUsername: 'bookray',
+  telegramApiRoot: process.env.TELEGRAM_API_ROOT || ''
 };
 
 // Sync functions
@@ -1484,9 +1620,10 @@ async function syncData() {
         if (setDoc.exists) {
           const newSettings = setDoc.data() as any;
           const tokenChanged = newSettings.botToken !== settings.botToken;
+          const apiRootChanged = newSettings.telegramApiRoot !== settings.telegramApiRoot;
           settings = { ...settings, ...newSettings };
-          if (tokenChanged) {
-            console.log('Bot token updated from Firestore (via polling), restarting...');
+          if (tokenChanged || apiRootChanged) {
+            console.log('Bot token or Telegram API Root updated from Firestore (via polling), restarting...');
             initBot(settings.botToken);
           }
         }
@@ -1759,7 +1896,15 @@ async function initBot(token: string) {
     }
 
     const cfWorkerUrl = settings.disableCloudflare ? null : (settings.cfWorkerUrl || process.env.CF_WORKER_URL);
+    const apiRoot = settings.telegramApiRoot || process.env.TELEGRAM_API_ROOT;
     const telegrafOptions: any = {};
+    if (apiRoot) {
+      const cleanApiRoot = apiRoot.replace(/\/$/, '');
+      telegrafOptions.telegram = {
+        apiRoot: cleanApiRoot
+      };
+      console.log(`Using Telegram Reverse Proxy API Root: ${cleanApiRoot}`);
+    }
     
     bot = new Telegraf(token, telegrafOptions);
     

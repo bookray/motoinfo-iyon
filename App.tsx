@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, MessageSquareText, Shield, 
   Calendar, Radio, ScrollText, Menu, X, LogOut, Database, Settings as SettingsIcon,
-  Bot, UserPlus, Cloud
+  Bot, UserPlus, Cloud, Network
 } from 'lucide-react';
 
 import { Chat, ScheduledMessage, LogEntry, GlobalBan, FilterSettings, Tab, BotSettings, Stats, WhitelistEntry, MultiChatUser, LatestMember, ChatBan, User, UserRole, DatabaseType } from './types';
@@ -43,6 +43,7 @@ const App: React.FC = () => {
   const [dbStatus, setDbStatus] = useState<'online' | 'offline'>('offline');
   const [botStatus, setBotStatus] = useState<'online' | 'offline'>('offline');
   const [cfStatus, setCfStatus] = useState<'online' | 'offline' | 'disabled'>('disabled');
+  const [proxyStatus, setProxyStatus] = useState<'online' | 'offline' | 'disabled'>('disabled');
   
   const [chats, setChats] = useState<Chat[]>([]);
   const [tasks, setTasks] = useState<ScheduledMessage[]>([]);
@@ -102,6 +103,7 @@ const App: React.FC = () => {
           setDbStatus('online');
           setBotStatus(healthData.botActive ? 'online' : 'offline');
           setCfStatus(healthData.cfStatus || 'disabled');
+          setProxyStatus(healthData.proxyStatus || 'disabled');
           const [chatsRes, bansRes, filtersRes, logsRes, settingsRes, tasksRes, whitelistRes, multiChatRes, latestMembersRes] = await Promise.all([
             authenticatedFetch(`${API_BASE_URL}/chats`),
             authenticatedFetch(`${API_BASE_URL}/bans`),
@@ -146,6 +148,7 @@ const App: React.FC = () => {
           const healthData = await res.json();
           setBotStatus(healthData.botActive ? 'online' : 'offline');
           setCfStatus(healthData.cfStatus || 'disabled');
+          setProxyStatus(healthData.proxyStatus || 'disabled');
           setDbStatus('online');
           setPollingError(null);
         } else {
@@ -512,6 +515,26 @@ const App: React.FC = () => {
                       : cfStatus === 'offline' 
                         ? 'Воркер недоступен' 
                         : 'Воркер не настроен'
+                  }></div>
+                </div>
+
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 rounded-lg border border-slate-800">
+                  <Network className={`w-3.5 h-3.5 ${
+                    proxyStatus === 'online' ? 'text-purple-400' : proxyStatus === 'offline' ? 'text-rose-500' : 'text-slate-600'
+                  }`} />
+                  <span className="text-[10px] font-mono text-slate-400">TG Proxy</span>
+                  <div className={`h-1.5 w-1.5 rounded-full ${
+                    proxyStatus === 'online' 
+                      ? 'bg-purple-500 shadow-[0_0_6px_#a855f7]' 
+                      : proxyStatus === 'offline' 
+                        ? 'bg-rose-500 animate-pulse' 
+                        : 'bg-slate-700'
+                  }`} title={
+                    proxyStatus === 'online' 
+                      ? 'Telegram Proxy активен и доступен' 
+                      : proxyStatus === 'offline' 
+                        ? 'Telegram Proxy недоступен' 
+                        : 'Telegram Proxy не настроен'
                   }></div>
                 </div>
               </div>
