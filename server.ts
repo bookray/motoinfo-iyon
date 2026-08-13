@@ -1840,15 +1840,21 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
       // Check for multi-chat join notification
       const userMemberships = memberships.filter(m => m.userId === userId);
       if (filters.notifyMultiChat && userMemberships.length >= filters.multiChatThreshold) {
-        const bookrayChatId = process.env.BOOKRAY_CHAT_ID;
-        if (bookrayChatId && bot) {
+        const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
+        if (targetChatId && bot) {
           const chatTitles = userMemberships.map(m => {
             const c = chats.find(ch => ch.id === m.chatId);
             return c ? c.title : m.chatId;
           }).join(', ');
           
           const alertMsg = `⚠️ *Внимание!* Пользователь [${user.first_name || userId}](tg://user?id=${userId}) вступил в ${userMemberships.length} чатов.\n\n*Чаты:* ${chatTitles}`;
-          bot.telegram.sendMessage(bookrayChatId, alertMsg, { parse_mode: 'Markdown' }).catch(e => console.error('Failed to send multi-chat alert:', e));
+          const keyboard = {
+            inline_keyboard: [[
+              { text: '🚫 Блокировать', callback_data: `mc_ban_${userId}` },
+              { text: '✅ В белый список', callback_data: `mc_wl_${userId}` }
+            ]]
+          };
+          bot.telegram.sendMessage(targetChatId, alertMsg, { parse_mode: 'Markdown', reply_markup: keyboard }).catch(e => console.error('Failed to send multi-chat alert:', e));
         }
       }
     } else {
@@ -2838,6 +2844,163 @@ async function initBot(token: string) {
           await ctx.answerCbQuery('✅ Ваш голос учтен!');
         }
         return;
+      }
+
+      if (data.startsWith('mc_ban_')) {
+        const targetUserId = data.replace('mc_ban_', '');
+
+        // Add user to global ban list
+        const existingBanIndex = bans.findIndex(b => String(b.userId) === String(targetUserId));
+        if (existingBanIndex === -1) {
+          const newBan = {
+            id: targetUserId,
+            userId: targetUserId,
+            reason: 'Мультичат бан (через кнопку в Telegram)',
+            createdAt: new Date().toISOString()
+          };
+          bans.push(newBan);
+          queueWrite('bans', targetUserId, cleanData(newBan));
+        }
+
+        // Remove from whitelist if present
+        const existingWlIndex = whitelist.findIndex(w => String(w.userId) === String(targetUserId));
+        if (existingWlIndex !== -1) {
+          whitelist.splice(existingWlIndex, 1);
+          queueDelete('whitelist', targetUserId);
+        }
+
+        // Ban user in all active managed chats
+        let bannedInChatsCount = 0;
+        const userMembershipsList = memberships.filter(m => String(m.userId) === String(targetUserId));
+        for (const m of userMembershipsList) {
+          try {
+            await ctx.telegram.banChatMember(m.chatId, Number(targetUserId));
+            bannedInChatsCount++;
+          } catch (e) {
+            console.error(`Failed to ban user ${targetUserId} in chat ${m.chatId}:`, e);
+          }
+        }
+
+        for (const chat of chats.filter(c => c.active)) {
+          if (!userMembershipsList.some(m => m.chatId === chat.id)) {
+            try {
+              await ctx.telegram.banChatMember(chat.id, Number(targetUserId));
+              bannedInChatsCount++;
+            } catch (e) {}
+          }
+        }
+
+        await addLog({
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().toISOString(),
+          type: 'BAN',
+          user: `ID ${targetUserId}`,
+          chat: 'MultiChat',
+          details: `Пользователь заблокирован во всех чатах (${bannedInChatsCount}) и добавлен в глобальный бан-лист.`
+        });
+
+        await ctx.answerCbQuery('🚫 Пользователь заблокирован во всех чатах!');
+
+        const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
+        const adminTag = username ? `@${username}` : (ctx.from.first_name || 'Админ');
+        const updatedText = `${currentText}\n\n🛑 *СТАТУС:* Заблокирован в бан-листе (${adminTag}).`;
+
+        try {
+          await ctx.editMessageText(updatedText, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '⛔ Заблокирован (Глобальный бан)', callback_data: `mc_info_banned_${targetUserId}` },
+                { text: '✅ Перенести в белый список', callback_data: `mc_wl_${targetUserId}` }
+              ]]
+            }
+          });
+        } catch (e) {
+          try {
+            await ctx.editMessageReplyMarkup({
+              inline_keyboard: [[
+                { text: '⛔ Заблокирован (Глобальный бан)', callback_data: `mc_info_banned_${targetUserId}` },
+                { text: '✅ Перенести в белый список', callback_data: `mc_wl_${targetUserId}` }
+              ]]
+            });
+          } catch (err) {}
+        }
+        return;
+      }
+
+      if (data.startsWith('mc_wl_')) {
+        const targetUserId = data.replace('mc_wl_', '');
+
+        // Remove from global ban list if present
+        const banIndex = bans.findIndex(b => String(b.userId) === String(targetUserId));
+        if (banIndex !== -1) {
+          bans.splice(banIndex, 1);
+          queueDelete('bans', targetUserId);
+        }
+
+        // Add to Whitelist
+        const existingWlIndex = whitelist.findIndex(w => String(w.userId) === String(targetUserId));
+        if (existingWlIndex === -1) {
+          const userMem = memberships.find(m => String(m.userId) === String(targetUserId));
+          const newWl = {
+            id: targetUserId,
+            userId: targetUserId,
+            username: userMem?.username || null,
+            firstName: userMem?.firstName || `User ${targetUserId}`,
+            addedAt: new Date().toISOString()
+          };
+          whitelist.push(newWl);
+          queueWrite('whitelist', targetUserId, cleanData(newWl));
+        }
+
+        // Unban in chats if previously banned
+        const userMembershipsList = memberships.filter(m => String(m.userId) === String(targetUserId));
+        for (const m of userMembershipsList) {
+          try {
+            await ctx.telegram.unbanChatMember(m.chatId, Number(targetUserId), { only_if_banned: true });
+          } catch (e) {}
+        }
+
+        await addLog({
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().toISOString(),
+          type: 'WHITELIST',
+          user: `ID ${targetUserId}`,
+          chat: 'MultiChat',
+          details: 'Пользователь добавлен в белый список.'
+        });
+
+        await ctx.answerCbQuery('✅ Пользователь добавлен в белый список!');
+
+        const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
+        const adminTag = username ? `@${username}` : (ctx.from.first_name || 'Админ');
+        const updatedText = `${currentText}\n\n✅ *СТАТУС:* Добавлен в белый список (${adminTag}).`;
+
+        try {
+          await ctx.editMessageText(updatedText, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` },
+                { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` }
+              ]]
+            }
+          });
+        } catch (e) {
+          try {
+            await ctx.editMessageReplyMarkup({
+              inline_keyboard: [[
+                { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` },
+                { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` }
+              ]]
+            });
+          } catch (err) {}
+        }
+        return;
+      }
+
+      if (data.startsWith('mc_info_')) {
+        return ctx.answerCbQuery('Текущий статус пользователя уже применен.');
       }
 
       const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
