@@ -3,15 +3,18 @@ FROM node:22-alpine AS build
 
 WORKDIR /app
 
-# Install dependencies first for better caching
-COPY package*.json ./
-RUN npm ci
+# Install build tools for native packages like better-sqlite3
+RUN apk add --no-cache python3 make g++
 
-# Copy sources and build
+# Copy package files and install all dependencies
+COPY package*.json ./
+RUN npm install
+
+# Copy source code and build frontend + backend bundle
 COPY . .
 RUN npm run build
 
-# Final stage
+# Final runtime stage
 FROM node:22-alpine AS runtime
 
 WORKDIR /app
@@ -19,23 +22,26 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 
-# Install production dependencies only
-COPY package*.json ./
-RUN npm ci --omit=dev
+# Install runtime dependencies and tools (including curl for healthcheck)
+RUN apk add --no-cache python3 make g++ curl
 
-# Copy build artifacts
+# Install production dependencies
+COPY package*.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+
+# Copy compiled build output
 COPY --from=build /app/dist ./dist
 
-# Copy backend source files
-# Note: Node 22 native TS stripping requires the .ts files at runtime
-COPY --from=build /app/server.ts ./
+# Copy backend assets and configs
+COPY --from=build /app/sqlite-init.sql ./
+COPY --from=build /app/firebase-applet-config.json ./
 COPY --from=build /app/database.ts ./
 COPY --from=build /app/firebase-admin.ts ./
 COPY --from=build /app/types.ts ./
-COPY --from=build /app/sqlite-init.sql ./
-COPY --from=build /app/firebase-applet-config.json ./
+COPY --from=build /app/server.ts ./
 
 EXPOSE 3000
 
-# Start the application using tsx for robust TypeScript execution
-CMD ["npx", "tsx", "server.ts"]
+# Start production server
+CMD ["node", "dist/server.cjs"]
+

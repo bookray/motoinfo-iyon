@@ -16,6 +16,7 @@ services:
       - APP_URL=${APP_URL}
       - VITE_APP_URL=${VITE_APP_URL}
       - CF_WORKER_URL=${CF_WORKER_URL}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
       interval: 30s
