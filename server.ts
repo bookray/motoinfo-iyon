@@ -15,15 +15,201 @@ const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'teleguard-secret-key-2026';
 
 let geminiClient: GoogleGenAI | null = null;
+let lastGeminiKey: string | null = null;
+
 function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = settings?.geminiApiKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    throw new Error('GEMINI_API_KEY environment variable is missing. Получите бесплатный ключ на https://aistudio.google.com/');
+    throw new Error('Ключ GEMINI_API_KEY не настроен. Укажите ключ в панели управления (ИИ-Суммаризация -> Настройки ИИ).');
   }
-  if (!geminiClient) {
+  if (!geminiClient || lastGeminiKey !== apiKey) {
     geminiClient = new GoogleGenAI({ apiKey });
+    lastGeminiKey = apiKey;
   }
   return geminiClient;
+}
+
+function getGeminiEffectiveBaseUrl(options?: { customBaseUrl?: string; proxySource?: string }): string | null {
+  if (options?.customBaseUrl !== undefined && options.customBaseUrl.trim() !== '') {
+    return options.customBaseUrl.trim();
+  }
+
+  const source = options?.proxySource || settings?.geminiProxySource || 'auto';
+  
+  if (source === 'direct') {
+    return null;
+  }
+
+  if (source === 'custom' && settings?.geminiBaseUrl) {
+    return settings.geminiBaseUrl;
+  }
+
+  if (source === 'tg_proxy' && settings?.telegramApiRoot) {
+    return settings.telegramApiRoot;
+  }
+
+  if (source === 'cf_worker' && settings?.cfWorkerUrl && !settings.disableCloudflare) {
+    return settings.cfWorkerUrl;
+  }
+
+  // 'auto' mode or default:
+  if (settings?.geminiBaseUrl) {
+    return settings.geminiBaseUrl;
+  }
+
+  if (settings?.geminiUseProxy === false) {
+    return null;
+  }
+
+  // Priority: Telegram Reverse Proxy, then Cloudflare Worker
+  if (settings?.telegramApiRoot) {
+    return settings.telegramApiRoot;
+  }
+
+  if (settings?.cfWorkerUrl && !settings.disableCloudflare) {
+    return settings.cfWorkerUrl;
+  }
+
+  return null;
+}
+
+async function generateAIResponse(promptText: string, options?: { model?: string }): Promise<string> {
+  const provider = settings?.aiProvider || 'gemini';
+
+  if (provider === 'openrouter') {
+    const apiKey = settings?.openRouterApiKey;
+    if (!apiKey) {
+      throw new Error('API-ключ OpenRouter не указан. Введите ключ в настройках ИИ.');
+    }
+    const model = options?.model || settings?.openRouterModel || 'google/gemini-2.5-flash';
+    
+    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': detectedAppUrl || 'https://teleguard.local',
+        'X-Title': 'TeleGuard Bot Manager'
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: promptText }]
+      })
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new Error(`OpenRouter API error (HTTP ${response.status}): ${errBody}`);
+    }
+
+    const data: any = await response.json();
+    const text = data.choices?.[0]?.message?.content;
+    if (!text) throw new Error('Получен пустой ответ от OpenRouter.');
+    return text;
+  }
+
+  if (provider === 'custom') {
+    const endpoint = settings?.customAiEndpoint;
+    const apiKey = settings?.customAiApiKey;
+    const model = options?.model || settings?.customAiModel || 'gpt-4o-mini';
+    if (!endpoint) {
+      throw new Error('URL кастомного OpenAI-совместимого эндпоинта не указан.');
+    }
+
+    const cleanEndpoint = endpoint.replace(/\/$/, '');
+    const url = cleanEndpoint.endsWith('/chat/completions') ? cleanEndpoint : `${cleanEndpoint}/chat/completions`;
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: promptText }]
+      })
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text();
+      throw new Error(`Custom AI error (HTTP ${response.status}): ${errBody}`);
+    }
+
+    const data: any = await response.json();
+    const text = data.choices?.[0]?.message?.content;
+    if (!text) throw new Error('Получен пустой ответ от кастомного ИИ.');
+    return text;
+  }
+
+  // Default: Google Gemini API
+  const geminiKey = settings?.geminiApiKey || process.env.GEMINI_API_KEY;
+  if (!geminiKey) {
+    throw new Error('Ключ Google Gemini API не задан. Введите ключ в панели управления в разделе «ИИ-Суммаризация» или «Настройки».');
+  }
+
+  const model = options?.model || settings?.geminiModel || 'gemini-2.5-flash';
+  const effectiveBaseUrl = getGeminiEffectiveBaseUrl();
+
+  const executeGemini = async (baseUrl: string | null): Promise<string> => {
+    if (baseUrl) {
+      const cleanBase = baseUrl.replace(/\/$/, '');
+      const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: promptText }] }]
+        })
+      });
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Gemini Proxy (${cleanBase}) HTTP ${response.status}: ${errText}`);
+      }
+      const data: any = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!text) throw new Error('Gemini вернул пустой ответ через прокси');
+      return text;
+    } else {
+      const client = getGeminiClient();
+      const response = await client.models.generateContent({
+        model,
+        contents: [
+          {
+            role: 'user',
+            parts: [{ text: promptText }]
+          }
+        ]
+      });
+      const text = response.text;
+      if (!text) throw new Error('Gemini вернул пустой ответ');
+      return text;
+    }
+  };
+
+  try {
+    return await executeGemini(effectiveBaseUrl);
+  } catch (err: any) {
+    const msg = err?.message || String(err);
+    // If direct failed because of region restriction and a proxy is available, auto-retry via proxy!
+    if (!effectiveBaseUrl && (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION'))) {
+      const fallbackProxy = settings?.telegramApiRoot || (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null);
+      if (fallbackProxy) {
+        console.log(`[Gemini] Direct connection blocked by region. Auto-retrying through detected proxy: ${fallbackProxy}`);
+        try {
+          return await executeGemini(fallbackProxy);
+        } catch (proxyErr: any) {
+          console.error(`[Gemini] Fallback proxy attempt also failed:`, proxyErr);
+        }
+      }
+      throw new Error('❌ Ошибка Google Gemini: Геолокация сервера ограничена Google (User location is not supported).\n\n💡 Решение:\n1. Включите опцию «Маршрутизировать Gemini через Telegram Reverse Proxy / Cloudflare Worker» в Настройках ИИ.\n2. Либо переключитесь на OpenRouter (вкладка ИИ-Суммаризация -> Настройки ИИ) — работает без региональных ограничений по всему миру.\n3. Укажите свой Cloudflare Worker или Nginx Proxy в Настройках.');
+    }
+    throw err;
+  }
 }
 
 app.use(cors());
@@ -1487,13 +1673,305 @@ app.delete('/api/warnings/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// Gemini Status API
-app.get('/api/gemini/status', authenticateToken, (req, res) => {
-  const configured = !!process.env.GEMINI_API_KEY;
+// Gemini & AI Status API
+app.get(['/api/gemini/status', '/api/ai/status'], authenticateToken, (req, res) => {
+  const provider = settings?.aiProvider || 'gemini';
+  const hasGemini = !!(settings?.geminiApiKey || process.env.GEMINI_API_KEY);
+  const hasOpenRouter = !!settings?.openRouterApiKey;
+  const hasCustom = !!settings?.customAiEndpoint;
+
+  let configured = false;
+  let activeKeyMasked = '';
+
+  if (provider === 'openrouter') {
+    configured = hasOpenRouter;
+    if (settings?.openRouterApiKey) {
+      activeKeyMasked = settings.openRouterApiKey.slice(0, 8) + '...' + settings.openRouterApiKey.slice(-4);
+    }
+  } else if (provider === 'custom') {
+    configured = hasCustom;
+    activeKeyMasked = settings?.customAiEndpoint || '';
+  } else {
+    configured = hasGemini;
+    const key = settings?.geminiApiKey || process.env.GEMINI_API_KEY || '';
+    if (key) {
+      activeKeyMasked = key.slice(0, 6) + '...' + key.slice(-4);
+    }
+  }
+
+  const model = provider === 'openrouter'
+    ? (settings?.openRouterModel || 'google/gemini-2.5-flash')
+    : (provider === 'custom' ? (settings?.customAiModel || 'gpt-4o-mini') : (settings?.geminiModel || 'gemini-2.5-flash'));
+
+  const detectedTelegramProxy = settings?.telegramApiRoot || '';
+  const detectedCfWorker = (settings?.cfWorkerUrl && !settings.disableCloudflare) ? settings.cfWorkerUrl : '';
+  const effectiveGeminiProxy = getGeminiEffectiveBaseUrl();
+
   res.json({
     configured,
-    model: 'gemini-3.7-flash'
+    provider,
+    model,
+    activeKeyMasked,
+    hasGemini,
+    hasOpenRouter,
+    hasCustom,
+    baseUrl: settings?.geminiBaseUrl || '',
+    geminiUseProxy: settings?.geminiUseProxy !== false,
+    geminiProxySource: settings?.geminiProxySource || 'auto',
+    detectedTelegramProxy,
+    detectedCfWorker,
+    effectiveGeminiProxy,
+    settings: {
+      aiProvider: settings?.aiProvider || 'gemini',
+      geminiApiKey: settings?.geminiApiKey ? (settings.geminiApiKey.slice(0, 6) + '...' + settings.geminiApiKey.slice(-4)) : (process.env.GEMINI_API_KEY ? 'Настроен в .env' : ''),
+      geminiModel: settings?.geminiModel || 'gemini-2.5-flash',
+      geminiBaseUrl: settings?.geminiBaseUrl || '',
+      geminiUseProxy: settings?.geminiUseProxy !== false,
+      geminiProxySource: settings?.geminiProxySource || 'auto',
+      openRouterApiKey: settings?.openRouterApiKey ? (settings.openRouterApiKey.slice(0, 8) + '...' + settings.openRouterApiKey.slice(-4)) : '',
+      openRouterModel: settings?.openRouterModel || 'google/gemini-2.5-flash',
+      customAiEndpoint: settings?.customAiEndpoint || '',
+      customAiApiKey: settings?.customAiApiKey ? '••••••••' : '',
+      customAiModel: settings?.customAiModel || 'gpt-4o-mini'
+    }
   });
+});
+
+// Update AI Settings
+app.post('/api/ai/settings', authenticateToken, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    const {
+      aiProvider,
+      geminiApiKey,
+      geminiModel,
+      geminiBaseUrl,
+      geminiUseProxy,
+      geminiProxySource,
+      openRouterApiKey,
+      openRouterModel,
+      customAiEndpoint,
+      customAiApiKey,
+      customAiModel
+    } = req.body;
+
+    const updatedAiSettings: any = {};
+    if (aiProvider !== undefined) updatedAiSettings.aiProvider = aiProvider;
+    if (geminiApiKey !== undefined) {
+      if (geminiApiKey === '' || (!geminiApiKey.includes('...') && geminiApiKey !== 'Настроен в .env')) {
+        updatedAiSettings.geminiApiKey = geminiApiKey.trim();
+      }
+    }
+    if (geminiModel !== undefined) updatedAiSettings.geminiModel = geminiModel;
+    if (geminiBaseUrl !== undefined) updatedAiSettings.geminiBaseUrl = geminiBaseUrl.trim();
+    if (geminiUseProxy !== undefined) updatedAiSettings.geminiUseProxy = geminiUseProxy;
+    if (geminiProxySource !== undefined) updatedAiSettings.geminiProxySource = geminiProxySource;
+    if (openRouterApiKey !== undefined) {
+      if (openRouterApiKey === '' || !openRouterApiKey.includes('...')) {
+        updatedAiSettings.openRouterApiKey = openRouterApiKey.trim();
+      }
+    }
+    if (openRouterModel !== undefined) updatedAiSettings.openRouterModel = openRouterModel;
+    if (customAiEndpoint !== undefined) updatedAiSettings.customAiEndpoint = customAiEndpoint.trim();
+    if (customAiApiKey !== undefined && customAiApiKey !== '••••••••') {
+      updatedAiSettings.customAiApiKey = customAiApiKey.trim();
+    }
+    if (customAiModel !== undefined) updatedAiSettings.customAiModel = customAiModel;
+
+    settings = { ...settings, ...updatedAiSettings };
+    await db.collection('config').doc('settings').set(cleanData(settings));
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SETTINGS',
+      user: user.username || 'Admin',
+      chat: 'System',
+      details: `Обновлены настройки ИИ (Провайдер: ${settings.aiProvider}, Прокси для Gemini: ${settings.geminiUseProxy !== false ? 'Вкл' : 'Выкл'})`
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Настройки ИИ успешно сохранены',
+      aiProvider: settings.aiProvider,
+      configured: true,
+      effectiveGeminiProxy: getGeminiEffectiveBaseUrl()
+    });
+  } catch (err: any) {
+    console.error('Failed to update AI settings:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Test AI Connection Endpoint
+app.post('/api/ai/test', authenticateToken, async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { 
+      provider: testProvider, 
+      apiKey: testApiKey, 
+      model: testModel, 
+      baseUrl: testBaseUrl, 
+      endpoint: testEndpoint,
+      useProxy: testUseProxy,
+      proxySource: testProxySource
+    } = req.body || {};
+
+    const activeProvider = testProvider || settings?.aiProvider || 'gemini';
+    const testPrompt = 'Ответь на русском языке строго одним коротким предложением: «ИИ подключен и готов к работе!».';
+
+    let resultText = '';
+    let usedProxyUrl: string | null = null;
+
+    if (activeProvider === 'openrouter') {
+      const key = (testApiKey && !testApiKey.includes('...')) ? testApiKey : settings?.openRouterApiKey;
+      if (!key) throw new Error('API-ключ OpenRouter не указан. Введите ключ для проверки.');
+      const model = testModel || settings?.openRouterModel || 'google/gemini-2.5-flash';
+      const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': detectedAppUrl || 'https://teleguard.local',
+          'X-Title': 'TeleGuard Bot Manager'
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: testPrompt }]
+        })
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(`OpenRouter HTTP ${r.status}: ${t}`);
+      }
+      const data: any = await r.json();
+      resultText = data.choices?.[0]?.message?.content || '';
+    } else if (activeProvider === 'custom') {
+      const ep = testEndpoint || settings?.customAiEndpoint;
+      if (!ep) throw new Error('Кастомный URL эндпоинта не указан.');
+      const key = testApiKey && testApiKey !== '••••••••' ? testApiKey : settings?.customAiApiKey;
+      const model = testModel || settings?.customAiModel || 'gpt-4o-mini';
+      const cleanEp = ep.replace(/\/$/, '');
+      const url = cleanEp.endsWith('/chat/completions') ? cleanEp : `${cleanEp}/chat/completions`;
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(key ? { 'Authorization': `Bearer ${key}` } : {})
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: testPrompt }]
+        })
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(`Custom AI HTTP ${r.status}: ${t}`);
+      }
+      const data: any = await r.json();
+      resultText = data.choices?.[0]?.message?.content || '';
+    } else {
+      // Google Gemini
+      const key = (testApiKey && !testApiKey.includes('...') && testApiKey !== 'Настроен в .env') 
+        ? testApiKey 
+        : (settings?.geminiApiKey || process.env.GEMINI_API_KEY);
+
+      if (!key) throw new Error('API-ключ Google Gemini не указан.');
+      const model = testModel || settings?.geminiModel || 'gemini-2.5-flash';
+      
+      let effectiveBase = getGeminiEffectiveBaseUrl({
+        customBaseUrl: testBaseUrl,
+        proxySource: testProxySource
+      });
+      if (testUseProxy === false) {
+        effectiveBase = null;
+      }
+
+      if (effectiveBase) {
+        usedProxyUrl = effectiveBase;
+        const cleanBase = effectiveBase.replace(/\/$/, '');
+        const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${key}`;
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contents: [{ parts: [{ text: testPrompt }] }] })
+        });
+        if (!r.ok) {
+          const t = await r.text();
+          throw new Error(`Proxy (${cleanBase}) HTTP ${r.status}: ${t}`);
+        }
+        const data: any = await r.json();
+        resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      } else {
+        try {
+          const client = new GoogleGenAI({ apiKey: key });
+          const resp = await client.models.generateContent({
+            model,
+            contents: [{ role: 'user', parts: [{ text: testPrompt }] }]
+          });
+          resultText = resp.text || '';
+        } catch (directErr: any) {
+          const msg = directErr?.message || String(directErr);
+          if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
+            const fallbackProxy = settings?.telegramApiRoot || (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null);
+            if (fallbackProxy) {
+              console.log(`[Gemini Test] Direct failed by region. Testing detected proxy fallback: ${fallbackProxy}`);
+              const cleanBase = fallbackProxy.replace(/\/$/, '');
+              const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${key}`;
+              const r = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: [{ parts: [{ text: testPrompt }] }] })
+              });
+              if (r.ok) {
+                const data: any = await r.json();
+                resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                usedProxyUrl = fallbackProxy;
+              } else {
+                throw directErr;
+              }
+            } else {
+              throw directErr;
+            }
+          } else {
+            throw directErr;
+          }
+        }
+      }
+    }
+
+    const duration = Date.now() - startTime;
+    const proxyNotice = usedProxyUrl ? ` (через Proxy: ${usedProxyUrl})` : '';
+
+    res.json({
+      success: true,
+      message: `Подключение успешно! Ответ получен за ${duration} мс${proxyNotice}.`,
+      sample: resultText.trim(),
+      provider: activeProvider,
+      usedProxy: !!usedProxyUrl,
+      proxyUrl: usedProxyUrl
+    });
+  } catch (err: any) {
+    const duration = Date.now() - startTime;
+    const msg = err?.message || String(err);
+    let hint = '';
+    if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
+      hint = 'Геолокация сервера ограничена Google. Решение: включите маршрутизацию через Telegram API Proxy (Reverse Proxy) / Cloudflare Worker в настройках или переключитесь на OpenRouter.';
+    } else if (msg.includes('API_KEY_INVALID') || msg.includes('invalid api key') || msg.includes('401') || msg.includes('403')) {
+      hint = 'Неверный API-ключ. Проверьте правильность скопированного ключа.';
+    }
+
+    res.status(400).json({
+      success: false,
+      error: msg,
+      hint,
+      duration
+    });
+  }
 });
 
 // Digest Configurations API
@@ -1826,7 +2304,6 @@ async function generateChatSummary(
     formattedChatLog = '(За последние 24 часа активных текстовых сообщений от участников не зафиксировано или бот был недавно подключен)';
   }
 
-  const ai = getGeminiClient();
   const dateRangeStr = `${new Date(Date.now() - hoursBack * 3600 * 1000).toLocaleDateString('ru-RU')} - ${new Date().toLocaleDateString('ru-RU')}`;
 
   const promptText = `Ты — умный и доброжелательный ИИ-ассистент модератора Telegram-сообщества.
@@ -1869,17 +2346,13 @@ ${formattedChatLog.slice(0, 30000)}
 - Пиши живо, емко, без канцелярита.
 - Используй четкий Markdown.`;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.7-flash',
-    contents: [
-      {
-        role: 'user',
-        parts: [{ text: promptText }]
-      }
-    ]
-  });
-
-  const summaryText = response.text || 'Не удалось сгенерировать текст дайджеста.';
+  let summaryText = '';
+  try {
+    summaryText = await generateAIResponse(promptText);
+  } catch (aiErr: any) {
+    console.error('Failed to generate AI response:', aiErr);
+    throw aiErr;
+  }
 
   const digestEntry = {
     id: Math.random().toString(36).substr(2, 9),
@@ -1963,7 +2436,18 @@ let settings = {
   cfWorkerUrl: process.env.CF_WORKER_URL || '',
   disableCloudflare: false,
   adminTelegramUsername: 'bookray',
-  telegramApiRoot: process.env.TELEGRAM_API_ROOT || ''
+  telegramApiRoot: process.env.TELEGRAM_API_ROOT || '',
+  aiProvider: 'gemini' as 'gemini' | 'openrouter' | 'custom',
+  geminiApiKey: process.env.GEMINI_API_KEY || '',
+  geminiModel: 'gemini-2.5-flash',
+  geminiBaseUrl: '',
+  geminiUseProxy: true,
+  geminiProxySource: 'auto' as 'auto' | 'tg_proxy' | 'cf_worker' | 'custom' | 'direct',
+  openRouterApiKey: '',
+  openRouterModel: 'google/gemini-2.5-flash',
+  customAiEndpoint: '',
+  customAiApiKey: '',
+  customAiModel: 'gpt-4o-mini'
 };
 
 // Sync functions

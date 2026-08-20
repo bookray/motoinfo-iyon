@@ -3,7 +3,6 @@ import {
   Sparkles, 
   Clock, 
   Send, 
-  Settings2, 
   History, 
   CheckCircle2, 
   AlertCircle, 
@@ -16,11 +15,14 @@ import {
   ChevronDown,
   ChevronUp,
   KeyRound,
-  ShieldCheck,
   Calendar,
-  Layers,
-  HelpCircle,
-  Play
+  Play,
+  Zap,
+  Globe,
+  Sliders,
+  Cpu,
+  X,
+  Check
 } from 'lucide-react';
 import { Chat, ChatDigestConfig, ChatDigestEntry } from '../types';
 
@@ -31,7 +33,7 @@ interface SummarizationProps {
 export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   const [configs, setConfigs] = useState<ChatDigestConfig[]>([]);
   const [history, setHistory] = useState<ChatDigestEntry[]>([]);
-  const [geminiStatus, setGeminiStatus] = useState<{ configured: boolean; model: string } | null>(null);
+  const [geminiStatus, setGeminiStatus] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isGenerating, setIsGenerating] = useState(false);
   const [generatingChatId, setGeneratingChatId] = useState<string | null>(null);
@@ -42,9 +44,28 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   const [currentDigest, setCurrentDigest] = useState<ChatDigestEntry | null>(null);
   const [showKeyGuide, setShowKeyGuide] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string; hint?: string } | null>(null);
   const [expandedDigestId, setExpandedDigestId] = useState<string | null>(null);
   const [activeSubTab, setActiveSubTab] = useState<'schedule' | 'generator' | 'history'>('schedule');
+
+  // In-Admin AI Settings Modal State
+  const [showAiModal, setShowAiModal] = useState<boolean>(false);
+  const [aiForm, setAiForm] = useState({
+    aiProvider: 'gemini' as 'gemini' | 'openrouter' | 'custom',
+    geminiApiKey: '',
+    geminiModel: 'gemini-2.5-flash',
+    geminiBaseUrl: '',
+    geminiUseProxy: true,
+    geminiProxySource: 'auto' as 'auto' | 'tg_proxy' | 'cf_worker' | 'custom' | 'direct',
+    openRouterApiKey: '',
+    openRouterModel: 'google/gemini-2.5-flash',
+    customAiEndpoint: '',
+    customAiApiKey: '',
+    customAiModel: 'gpt-4o-mini'
+  });
+  const [isTestingAi, setIsTestingAi] = useState<boolean>(false);
+  const [testResult, setTestResult] = useState<any>(null);
+  const [isSavingAi, setIsSavingAi] = useState<boolean>(false);
 
   const token = localStorage.getItem('token');
 
@@ -59,16 +80,18 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
     });
   };
 
-  const showNotification = (text: string, type: 'success' | 'error' = 'success') => {
-    setStatusMessage({ type, text });
-    setTimeout(() => setStatusMessage(null), 5000);
+  const showNotification = (text: string, type: 'success' | 'error' = 'success', hint?: string) => {
+    setStatusMessage({ type, text, hint });
+    if (type === 'success') {
+      setTimeout(() => setStatusMessage(null), 5000);
+    }
   };
 
   const loadData = async () => {
     setIsLoading(true);
     try {
       const [statusRes, configsRes, historyRes] = await Promise.all([
-        authFetch('/api/gemini/status'),
+        authFetch('/api/ai/status'),
         authFetch('/api/digests/configs'),
         authFetch('/api/digests/history')
       ]);
@@ -76,6 +99,22 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
       if (statusRes.ok) {
         const data = await statusRes.json();
         setGeminiStatus(data);
+        if (data.settings) {
+          setAiForm(prev => ({
+            ...prev,
+            aiProvider: data.settings.aiProvider || 'gemini',
+            geminiApiKey: data.settings.geminiApiKey || '',
+            geminiModel: data.settings.geminiModel || 'gemini-2.5-flash',
+            geminiBaseUrl: data.settings.geminiBaseUrl || '',
+            geminiUseProxy: data.settings.geminiUseProxy !== false,
+            geminiProxySource: data.settings.geminiProxySource || 'auto',
+            openRouterApiKey: data.settings.openRouterApiKey || '',
+            openRouterModel: data.settings.openRouterModel || 'google/gemini-2.5-flash',
+            customAiEndpoint: data.settings.customAiEndpoint || '',
+            customAiApiKey: data.settings.customAiApiKey || '',
+            customAiModel: data.settings.customAiModel || 'gpt-4o-mini'
+          }));
+        }
       }
 
       if (configsRes.ok) {
@@ -107,6 +146,57 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
       setSelectedChatId(chats[0].id);
     }
   }, [chats]);
+
+  const handleSaveAiSettings = async () => {
+    setIsSavingAi(true);
+    try {
+      const res = await authFetch('/api/ai/settings', {
+        method: 'POST',
+        body: JSON.stringify(aiForm)
+      });
+      if (res.ok) {
+        showNotification('Настройки ИИ и API-ключ успешно сохранены в базе!');
+        setShowAiModal(false);
+        setTestResult(null);
+        await loadData();
+      } else {
+        const err = await res.json();
+        showNotification(err.error || 'Ошибка сохранения настроек ИИ', 'error');
+      }
+    } catch (e: any) {
+      showNotification(e.message || 'Ошибка сети', 'error');
+    } finally {
+      setIsSavingAi(false);
+    }
+  };
+
+  const handleTestAiConnection = async () => {
+    setIsTestingAi(true);
+    setTestResult(null);
+    try {
+      const res = await authFetch('/api/ai/test', {
+        method: 'POST',
+        body: JSON.stringify({
+          provider: aiForm.aiProvider,
+          apiKey: aiForm.aiProvider === 'openrouter' ? aiForm.openRouterApiKey : (aiForm.aiProvider === 'custom' ? aiForm.customAiApiKey : aiForm.geminiApiKey),
+          model: aiForm.aiProvider === 'openrouter' ? aiForm.openRouterModel : (aiForm.aiProvider === 'custom' ? aiForm.customAiModel : aiForm.geminiModel),
+          baseUrl: aiForm.geminiBaseUrl,
+          endpoint: aiForm.customAiEndpoint,
+          useProxy: aiForm.geminiUseProxy !== false,
+          proxySource: aiForm.geminiProxySource || 'auto'
+        })
+      });
+      const data = await res.json();
+      setTestResult(data);
+    } catch (e: any) {
+      setTestResult({
+        success: false,
+        error: e.message || 'Не удалось выполнить проверку'
+      });
+    } finally {
+      setIsTestingAi(false);
+    }
+  };
 
   const handleUpdateConfig = async (chatId: string, updates: Partial<ChatDigestConfig>) => {
     try {
@@ -158,6 +248,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
 
     setIsGenerating(true);
     setGeneratingChatId(chatIdToUse);
+    setStatusMessage(null);
 
     try {
       const res = await authFetch('/api/digests/generate', {
@@ -175,14 +266,19 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
         setCurrentDigest(newDigest);
         setHistory(prev => [newDigest, ...prev]);
         setExpandedDigestId(newDigest.id);
-        showNotification(send ? 'Дайджест сгенерирован и отправлен в Telegram!' : 'Дайджест успешно сгенерирован с помощью Gemini!');
+        showNotification(send ? 'Дайджест сгенерирован и отправлен в Telegram!' : 'Дайджест успешно сгенерирован ИИ!');
         
         // Refresh history
         const histRes = await authFetch('/api/digests/history');
         if (histRes.ok) setHistory(await histRes.json());
       } else {
         const err = await res.json();
-        showNotification(err.error || 'Ошибка при генерации дайджеста', 'error');
+        const errMsg = err.error || 'Ошибка при генерации дайджеста';
+        let hint = '';
+        if (errMsg.includes('User location is not supported') || errMsg.includes('FAILED_PRECONDITION')) {
+          hint = 'Google блокирует запросы из региона сервера. Нажмите «Настройки ИИ» и выберите OpenRouter — это снимет ограничение!';
+        }
+        showNotification(errMsg, 'error', hint);
       }
     } catch (e: any) {
       showNotification(e.message || 'Ошибка генерации', 'error');
@@ -242,23 +338,53 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
 
   const activeChats = chats.filter(c => c.active);
 
+  const getProviderName = (provider?: string) => {
+    if (provider === 'openrouter') return 'OpenRouter';
+    if (provider === 'custom') return 'Custom AI / Proxy';
+    return 'Google Gemini';
+  };
+
   return (
     <div className="space-y-6">
-      {/* Toast Notification */}
+      {/* Toast / Error Notification */}
       {statusMessage && (
         <div 
-          className={`p-4 rounded-xl flex items-center gap-3 border transition-all ${
+          className={`p-4 rounded-xl flex items-start justify-between gap-3 border transition-all ${
             statusMessage.type === 'success' 
               ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
               : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
           }`}
         >
-          {statusMessage.type === 'success' ? (
-            <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-400" />
-          ) : (
-            <AlertCircle className="w-5 h-5 flex-shrink-0 text-rose-400" />
-          )}
-          <span className="text-sm font-medium">{statusMessage.text}</span>
+          <div className="flex items-start gap-3">
+            {statusMessage.type === 'success' ? (
+              <CheckCircle2 className="w-5 h-5 flex-shrink-0 text-emerald-400 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-5 h-5 flex-shrink-0 text-rose-400 mt-0.5" />
+            )}
+            <div className="space-y-1 text-sm font-medium">
+              <p className="whitespace-pre-wrap">{statusMessage.text}</p>
+              {statusMessage.hint && (
+                <div className="mt-2 p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-200 text-xs flex items-center justify-between gap-3">
+                  <span>💡 {statusMessage.hint}</span>
+                  <button
+                    onClick={() => {
+                      setAiForm(f => ({ ...f, aiProvider: 'openrouter' }));
+                      setShowAiModal(true);
+                    }}
+                    className="px-2.5 py-1 bg-amber-500 text-black font-bold rounded-lg text-xs hover:bg-amber-400 shrink-0"
+                  >
+                    Переключить на OpenRouter
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+          <button 
+            onClick={() => setStatusMessage(null)}
+            className="text-slate-400 hover:text-white p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
@@ -276,12 +402,19 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                 <h2 className="text-xl font-bold text-white tracking-tight">ИИ-Суммаризация и Дайджесты</h2>
                 <div className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-slate-800 border border-slate-700 text-xs font-medium">
                   <Bot className="w-3.5 h-3.5 text-blue-400" />
-                  <span className="text-slate-300 font-mono">Gemini 3.7 Flash</span>
+                  <span className="text-slate-300 font-mono">
+                    {getProviderName(geminiStatus?.provider)} ({geminiStatus?.model || 'gemini-2.5-flash'})
+                  </span>
+                  {geminiStatus?.effectiveGeminiProxy && (
+                    <span className="px-1.5 py-0.5 rounded bg-blue-500/20 text-blue-300 text-[10px] font-bold border border-blue-500/30">
+                      Reverse Proxy
+                    </span>
+                  )}
                 </div>
                 {geminiStatus?.configured ? (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    API Ключ активен
+                    Ключ активен {geminiStatus.activeKeyMasked ? `(${geminiStatus.activeKeyMasked})` : ''}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
@@ -296,13 +429,21 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
             </div>
           </div>
 
-          <div className="flex items-center gap-3 self-start md:self-center">
+          <div className="flex items-center gap-2.5 self-start md:self-center flex-wrap">
+            <button
+              onClick={() => setShowAiModal(true)}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-lg shadow-blue-900/30"
+            >
+              <Sliders className="w-4 h-4" />
+              <span>Настройки ИИ и Ключ</span>
+            </button>
+
             <button
               onClick={() => setShowKeyGuide(!showKeyGuide)}
-              className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-sm font-medium transition-all flex items-center gap-2"
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-xl text-sm font-medium transition-all flex items-center gap-1.5"
             >
               <KeyRound className="w-4 h-4 text-amber-400" />
-              <span>Где взять GEMINI_API_KEY?</span>
+              <span>Где взять ключ?</span>
               {showKeyGuide ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
             </button>
 
@@ -320,38 +461,31 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
         {/* Gemini API Key Guide Dropdown */}
         {showKeyGuide && (
           <div className="mt-6 pt-6 border-t border-slate-800/80 bg-slate-950/60 -mx-6 -mb-6 p-6 rounded-b-2xl">
-            <div className="flex items-start gap-4">
-              <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg border border-amber-500/20">
-                <HelpCircle className="w-5 h-5" />
-              </div>
-              <div className="space-y-3 flex-1 text-sm text-slate-300">
-                <h4 className="font-semibold text-white text-base">Инструкция: как получить бесплатный GEMINI_API_KEY</h4>
-                <ol className="list-decimal list-inside space-y-2 text-slate-300 leading-relaxed">
-                  <li>
-                    Перейдите на официальный портал Google: {' '}
-                    <a 
-                      href="https://aistudio.google.com/app/apikey" 
-                      target="_blank" 
-                      rel="noreferrer"
-                      className="text-blue-400 hover:underline inline-flex items-center gap-1 font-medium"
-                    >
-                      Google AI Studio <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
-                  </li>
-                  <li>Войдите под вашим Google-аккаунтом.</li>
-                  <li>Нажмите кнопку <strong>«Create API key»</strong> (Создать ключ API).</li>
-                  <li>Скопируйте полученную строку ключа (начинается с <code className="bg-slate-800 px-1.5 py-0.5 rounded text-amber-300 font-mono text-xs">AIzaSy...</code>).</li>
-                  <li>
-                    В AI Studio / файле <code className="bg-slate-800 px-1.5 py-0.5 rounded text-blue-300 font-mono text-xs">.env</code> укажите переменную:
-                    <div className="mt-2 bg-slate-900 p-3 rounded-lg border border-slate-800 font-mono text-xs text-emerald-300 select-all">
-                      GEMINI_API_KEY=ваш_полученный_ключ_здесь
-                    </div>
-                  </li>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
+                <div className="flex items-center gap-2 text-blue-400 font-bold">
+                  <Bot className="w-4 h-4" />
+                  <span>Вариант 1: Google Gemini API (Бесплатно)</span>
+                </div>
+                <ol className="list-decimal list-inside space-y-1.5 text-xs text-slate-300 leading-relaxed">
+                  <li>Откройте <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">Google AI Studio</a>.</li>
+                  <li>Войдите в Google аккаунт и нажмите <strong>«Create API key»</strong>.</li>
+                  <li>Скопируйте ключ (<code className="text-amber-300">AIzaSy...</code>) и вставьте в окно «Настройки ИИ» в этой панели.</li>
+                  <li><em>Примечание: если сервер расположен в регионе с блокировкой Google, используйте вариант 2.</em></li>
                 </ol>
-                <p className="text-xs text-slate-400 flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                  Модель <strong>Gemini 3.7 Flash</strong> полностью бесплатна в рамках стандартных лимитов Google AI Studio и идеально подходит для регулярной суммаризации сообщений.
-                </p>
+              </div>
+
+              <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl space-y-3">
+                <div className="flex items-center gap-2 text-indigo-400 font-bold">
+                  <Zap className="w-4 h-4 text-amber-400" />
+                  <span>Вариант 2: OpenRouter (Без ограничений стран)</span>
+                </div>
+                <ol className="list-decimal list-inside space-y-1.5 text-xs text-slate-300 leading-relaxed">
+                  <li>Зарегистрируйтесь на <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-indigo-400 hover:underline">OpenRouter.ai</a>.</li>
+                  <li>Создайте ключ (<code className="text-amber-300">sk-or-v1-...</code>).</li>
+                  <li>В «Настройках ИИ» выберите провайдер <strong>OpenRouter</strong> и вставьте ключ.</li>
+                  <li>Доступны модели: Gemini 2.5 Flash, DeepSeek V3, Llama 3.3 без геоблокировок!</li>
+                </ol>
               </div>
             </div>
           </div>
@@ -450,301 +584,232 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                         : 'border-slate-800 hover:border-slate-700'
                     }`}
                   >
-                    {/* Header */}
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex items-center gap-3">
-                        <img 
-                          src={chat.avatarUrl || `https://picsum.photos/seed/${chat.id}/200`} 
-                          alt={chat.title} 
-                          className="w-11 h-11 rounded-xl object-cover border border-slate-700" 
-                        />
-                        <div>
-                          <h4 className="font-semibold text-white leading-tight">{chat.title}</h4>
-                          <span className="text-xs text-slate-400 font-mono">ID: {chat.id} • {chat.members || 0} уч.</span>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className={`p-2.5 rounded-xl ${config.enabled ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                          <MessageSquare className="w-5 h-5" />
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="font-bold text-white text-base truncate">{chat.title}</h4>
+                          <span className="text-xs text-slate-400 font-mono">ID: {chat.id}</span>
                         </div>
                       </div>
 
-                      {/* Enable/Disable Toggle */}
                       <label className="relative inline-flex items-center cursor-pointer">
                         <input 
                           type="checkbox" 
                           checked={config.enabled} 
                           onChange={(e) => handleUpdateConfig(chat.id, { enabled: e.target.checked })}
-                          className="sr-only peer" 
+                          className="sr-only peer"
                         />
                         <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
                       </label>
                     </div>
 
-                    {/* Schedule Settings Form */}
-                    <div className="space-y-3 pt-2 border-t border-slate-800/80">
-                      <div className="grid grid-cols-2 gap-3">
-                        {/* Time Picker */}
-                        <div>
-                          <label className="text-xs font-medium text-slate-400 mb-1 flex items-center gap-1.5">
-                            <Clock className="w-3.5 h-3.5 text-blue-400" />
-                            Время отправки
-                          </label>
-                          <input 
-                            type="time" 
+                    <div className="grid grid-cols-2 gap-3 pt-2">
+                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                        <label className="text-[11px] font-bold text-slate-500 uppercase block mb-1">
+                          Время отправки
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <Clock className="w-4 h-4 text-blue-400" />
+                          <input
+                            type="time"
                             value={config.scheduleTime || '21:00'}
+                            disabled={!config.enabled}
                             onChange={(e) => handleUpdateConfig(chat.id, { scheduleTime: e.target.value })}
-                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200 font-mono focus:outline-none focus:border-blue-500"
+                            className="bg-transparent text-white font-mono text-sm focus:outline-none disabled:opacity-40"
                           />
                         </div>
-
-                        {/* Period / Hours Back */}
-                        <div>
-                          <label className="text-xs font-medium text-slate-400 mb-1 flex items-center gap-1.5">
-                            <Layers className="w-3.5 h-3.5 text-purple-400" />
-                            Глубина охвата
-                          </label>
-                          <select
-                            value={config.hoursBack || 24}
-                            onChange={(e) => handleUpdateConfig(chat.id, { hoursBack: Number(e.target.value) })}
-                            className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
-                          >
-                            <option value={12}>За 12 часов</option>
-                            <option value={24}>За 24 часа (сутки)</option>
-                            <option value={48}>За 48 часов (2 дня)</option>
-                          </select>
-                        </div>
                       </div>
 
-                      {/* Target Chat */}
-                      <div>
-                        <label className="text-xs font-medium text-slate-400 mb-1 flex items-center gap-1.5">
-                          <Send className="w-3.5 h-3.5 text-emerald-400" />
-                          Куда отправлять дайджест
+                      <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
+                        <label className="text-[11px] font-bold text-slate-500 uppercase block mb-1">
+                          Период анализа
                         </label>
                         <select
-                          value={config.targetChatId || chat.id}
-                          onChange={(e) => handleUpdateConfig(chat.id, { targetChatId: e.target.value })}
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+                          value={config.hoursBack || 24}
+                          disabled={!config.enabled}
+                          onChange={(e) => handleUpdateConfig(chat.id, { hoursBack: Number(e.target.value) })}
+                          className="bg-transparent text-white text-xs focus:outline-none w-full disabled:opacity-40"
                         >
-                          <option value={chat.id}>В этот же чат ({chat.title})</option>
-                          {chats.filter(c => c.id !== chat.id).map(c => (
-                            <option key={c.id} value={c.id}>В чат: {c.title}</option>
-                          ))}
+                          <option value={12}>12 часов</option>
+                          <option value={24}>24 часа (сутки)</option>
+                          <option value={48}>48 часов (2 дня)</option>
                         </select>
-                      </div>
-
-                      {/* Custom Prompt / Special Focus */}
-                      <div>
-                        <label className="text-xs font-medium text-slate-400 mb-1 flex items-center gap-1.5">
-                          <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                          Фокус / Тематический акцент (опционально)
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="Например: обращать особое внимание на вопросы по ремонту и покатушкам"
-                          value={config.customPrompt || ''}
-                          onChange={(e) => handleUpdateConfig(chat.id, { customPrompt: e.target.value })}
-                          className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500"
-                        />
                       </div>
                     </div>
 
-                    {/* Footer Info & Actions */}
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-800/80 text-xs">
-                      <div className="text-slate-500">
-                        {config.lastSentAt ? (
-                          <span>Посл. отправка: {new Date(config.lastSentAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })} ({new Date(config.lastSentAt).toLocaleDateString('ru-RU')})</span>
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-xs">
+                      <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={config.autoSendTelegram}
+                          onChange={(e) => handleUpdateConfig(chat.id, { autoSendTelegram: e.target.checked })}
+                          className="rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-0"
+                        />
+                        <span>Авто-отправка в группу</span>
+                      </label>
+
+                      <button
+                        onClick={() => handleGenerateNow(chat.id, config.hoursBack, undefined, true)}
+                        disabled={isGenerating}
+                        className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 rounded-lg font-medium flex items-center gap-1.5 transition-all disabled:opacity-50"
+                      >
+                        {isGeneratingThis ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
                         ) : (
-                          <span>Еще не отправлялся</span>
+                          <Play className="w-3.5 h-3.5" />
                         )}
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleGenerateNow(chat.id, config.hoursBack || 24, config.customPrompt, false)}
-                          disabled={isGeneratingThis}
-                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg font-medium transition-all flex items-center gap-1.5"
-                          title="Сгенерировать и просмотреть без отправки"
-                        >
-                          <Sparkles className={`w-3.5 h-3.5 text-blue-400 ${isGeneratingThis ? 'animate-spin' : ''}`} />
-                          <span>{isGeneratingThis ? 'Создание...' : 'Тест ИИ'}</span>
-                        </button>
-
-                        <button
-                          onClick={() => handleGenerateNow(chat.id, config.hoursBack || 24, config.customPrompt, true)}
-                          disabled={isGeneratingThis}
-                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium transition-all flex items-center gap-1.5 shadow-sm shadow-blue-900/40"
-                          title="Сгенерировать и сразу отправить в Telegram"
-                        >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>Отправить сейчас</span>
-                        </button>
-                      </div>
+                        <span>Сгенерировать сейчас</span>
+                      </button>
                     </div>
                   </div>
                 );
               })}
             </div>
           )}
-
-          {/* Telegram Command Banner */}
-          <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-5 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-blue-600/10 text-blue-400 rounded-xl border border-blue-500/20">
-                <Bot className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-sm font-semibold text-white">Команда бота в Telegram</h4>
-                <p className="text-xs text-slate-400">Администраторы чата могут запросить свежую сводку прямо в группе с помощью команд <code className="bg-slate-800 px-1.5 py-0.5 rounded text-blue-300 font-mono">/summary</code> или <code className="bg-slate-800 px-1.5 py-0.5 rounded text-blue-300 font-mono">/дайджест</code>.</p>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
       {/* TAB 2: FAST GENERATOR */}
       {activeSubTab === 'generator' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Controls Column */}
-          <div className="lg:col-span-1 space-y-5">
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4">
-              <h3 className="font-bold text-white text-base flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-blue-400" />
-                Параметры генерации
-              </h3>
-
-              {/* Chat Selector */}
-              <div>
-                <label className="text-xs font-medium text-slate-400 mb-1.5 block">Выберите чат</label>
-                <select
-                  value={selectedChatId}
-                  onChange={(e) => setSelectedChatId(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
-                >
-                  {chats.map(c => (
-                    <option key={c.id} value={c.id}>
-                      {c.title} ({c.active ? 'Активен' : 'Откл'})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* Timeframe */}
-              <div>
-                <label className="text-xs font-medium text-slate-400 mb-1.5 block">Период охвата</label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[12, 24, 48].map(h => (
-                    <button
-                      key={h}
-                      type="button"
-                      onClick={() => setHoursBack(h)}
-                      className={`py-2 text-xs font-medium rounded-xl border transition-all ${
-                        hoursBack === h
-                          ? 'bg-blue-600/10 border-blue-500 text-blue-400 font-semibold'
-                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      {h} часов
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Custom Prompt */}
-              <div>
-                <label className="text-xs font-medium text-slate-400 mb-1.5 block">
-                  Индивидуальные инструкции для Gemini
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="Например: Выдели только технические вопросы по мотоциклам и анонсы мероприятий..."
-                  value={customPrompt}
-                  onChange={(e) => setCustomPrompt(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              {/* Auto send toggle */}
-              <div className="flex items-center justify-between pt-2">
-                <span className="text-xs text-slate-300">Сразу отправить в Telegram</span>
-                <input 
-                  type="checkbox" 
-                  checked={autoSendTelegram} 
-                  onChange={(e) => setAutoSendTelegram(e.target.checked)}
-                  className="rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-0 w-4 h-4 cursor-pointer"
-                />
-              </div>
-
-              {/* Action button */}
-              <button
-                onClick={() => handleGenerateNow()}
-                disabled={isGenerating || !selectedChatId}
-                className="w-full py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-semibold rounded-xl transition-all shadow-lg shadow-blue-900/30 flex items-center justify-center gap-2"
-              >
-                {isGenerating ? (
-                  <>
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Анализирую сообщения с Gemini...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-4 h-4" />
-                    <span>Сгенерировать обзор</span>
-                  </>
-                )}
-              </button>
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-5 h-fit">
+            <div>
+              <h3 className="text-base font-bold text-white">Параметры генерации</h3>
+              <p className="text-xs text-slate-400 mt-0.5">Создайте и просмотрите дайджест в реальном времени</p>
             </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                Выберите чат
+              </label>
+              <select
+                value={selectedChatId}
+                onChange={(e) => setSelectedChatId(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+              >
+                {activeChats.map(c => (
+                  <option key={c.id} value={c.id}>{c.title}</option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                Период (часы)
+              </label>
+              <div className="grid grid-cols-3 gap-2">
+                {[12, 24, 48].map(h => (
+                  <button
+                    key={h}
+                    type="button"
+                    onClick={() => setHoursBack(h)}
+                    className={`py-2 rounded-xl text-xs font-bold transition-all border ${
+                      hoursBack === h 
+                        ? 'bg-blue-600 text-white border-blue-500' 
+                        : 'bg-slate-950 text-slate-400 border-slate-800 hover:bg-slate-800'
+                    }`}
+                  >
+                    {h} ч
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                Особые пожелания к ИИ (Промпт)
+              </label>
+              <textarea
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                placeholder="Например: выдели главные новости о разработке или сделай акцент на отзывах участников..."
+                rows={3}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/50 resize-none"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <input
+                type="checkbox"
+                id="autoSend"
+                checked={autoSendTelegram}
+                onChange={(e) => setAutoSendTelegram(e.target.checked)}
+                className="rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-0"
+              />
+              <label htmlFor="autoSend" className="text-xs text-slate-300 cursor-pointer">
+                Сразу отправить в Telegram после генерации
+              </label>
+            </div>
+
+            <button
+              onClick={() => handleGenerateNow()}
+              disabled={isGenerating || !selectedChatId}
+              className="w-full py-3.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-bold rounded-xl text-sm transition-all shadow-lg shadow-blue-950/40 flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              {isGenerating ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>ИИ анализирует сообщения...</span>
+                </>
+              ) : (
+                <>
+                  <Sparkles className="w-4 h-4" />
+                  <span>Сгенерировать дайджест</span>
+                </>
+              )}
+            </button>
           </div>
 
-          {/* Result Column */}
-          <div className="lg:col-span-2 space-y-4">
+          <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div>
+                <h3 className="text-base font-bold text-white">Результат генерации</h3>
+                <p className="text-xs text-slate-400">Предпросмотр готового дайджеста</p>
+              </div>
+
+              {currentDigest && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleCopy(currentDigest.summary, currentDigest.id)}
+                    className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
+                    title="Скопировать"
+                  >
+                    {copiedId === currentDigest.id ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>Скопировать</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSendToTelegram(currentDigest.id)}
+                    className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-md"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>Отправить в Telegram</span>
+                  </button>
+                </div>
+              )}
+            </div>
+
             {currentDigest ? (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
-                {/* Result Header */}
-                <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-bold text-white text-base">Дайджест: {currentDigest.chatTitle}</h4>
-                      <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-xs rounded-full font-medium">
-                        Готово
-                      </span>
-                    </div>
-                    <p className="text-xs text-slate-400 mt-1">
-                      Создан {new Date(currentDigest.createdAt).toLocaleString('ru-RU')} • Обработано: {currentDigest.messageCount} сообщ. ({currentDigest.userCount} уч.)
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => handleCopy(currentDigest.summary, currentDigest.id)}
-                      className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 transition-all"
-                      title="Скопировать текст"
-                    >
-                      {copiedId === currentDigest.id ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                      ) : (
-                        <Copy className="w-4 h-4" />
-                      )}
-                    </button>
-
-                    <button
-                      onClick={() => handleSendToTelegram(currentDigest.id)}
-                      className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Отправить в Telegram</span>
-                    </button>
-                  </div>
+              <div className="space-y-3">
+                <div className="flex items-center gap-3 text-xs text-slate-400 font-mono bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                  <span>Чат: <strong className="text-white">{currentDigest.chatTitle}</strong></span>
+                  <span>•</span>
+                  <span>Сообщений: <strong className="text-blue-400">{currentDigest.messageCount}</strong></span>
+                  <span>•</span>
+                  <span>Участников: <strong className="text-emerald-400">{currentDigest.userCount}</strong></span>
                 </div>
 
-                {/* Markdown / Text Content */}
-                <div className="bg-slate-950/80 border border-slate-800/80 rounded-xl p-5 text-sm text-slate-200 leading-relaxed font-sans whitespace-pre-wrap selection:bg-blue-600 selection:text-white">
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 text-sm text-slate-200 whitespace-pre-wrap font-sans leading-relaxed">
                   {currentDigest.summary}
                 </div>
               </div>
             ) : (
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center text-slate-400 space-y-4">
-                <Sparkles className="w-12 h-12 mx-auto text-slate-600 animate-pulse" />
-                <h4 className="font-semibold text-slate-200 text-base">Дайджест еще не сгенерирован</h4>
-                <p className="text-sm text-slate-500 max-w-md mx-auto">
-                  Выберите чат слева и нажмите «Сгенерировать обзор». Модель Gemini 3.7 Flash проанализирует сообщения и составит структурированную сводку.
-                </p>
+              <div className="py-20 text-center text-slate-500 space-y-3">
+                <Sparkles className="w-12 h-12 mx-auto text-slate-700" />
+                <p className="text-sm">Здесь отобразится текст дайджеста после запуска генерации</p>
               </div>
             )}
           </div>
@@ -755,44 +820,32 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
       {activeSubTab === 'history' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-lg font-bold text-white">Архив созданных дайджестов</h3>
-              <p className="text-sm text-slate-400">Все ранее сформированные обзоры чатов и статус их отправки</p>
-            </div>
-            <span className="text-xs text-slate-400 font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg">
-              Всего записей: {history.length}
-            </span>
+            <h3 className="text-base font-bold text-white">История сформированных дайджестов</h3>
+            <span className="text-xs text-slate-400 font-mono">Всего: {history.length}</span>
           </div>
 
           {history.length === 0 ? (
-            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center text-slate-400 space-y-3">
-              <History className="w-10 h-10 mx-auto text-slate-600" />
-              <p className="text-base font-medium text-slate-300">История пуста</p>
-              <p className="text-sm text-slate-500 max-w-md mx-auto">
-                Здесь будут сохраняться все сгенерированные дайджесты — как по расписанию, так и созданные вручную.
-              </p>
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center text-slate-500 space-y-3">
+              <History className="w-10 h-10 mx-auto text-slate-700" />
+              <p className="text-sm">История дайджестов пуста</p>
             </div>
           ) : (
             <div className="space-y-3">
-              {history.map((item) => {
+              {history.map(item => {
                 const isExpanded = expandedDigestId === item.id;
-
                 return (
-                  <div 
-                    key={item.id}
-                    className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden transition-all"
-                  >
+                  <div key={item.id} className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden transition-all">
                     <div 
                       onClick={() => setExpandedDigestId(isExpanded ? null : item.id)}
-                      className="p-4 flex items-center justify-between gap-4 cursor-pointer hover:bg-slate-800/40 transition-colors"
+                      className="p-4 flex items-center justify-between cursor-pointer hover:bg-slate-800/40 select-none"
                     >
                       <div className="flex items-center gap-3">
-                        <div className="p-2 bg-blue-600/10 text-blue-400 rounded-lg border border-blue-500/20">
+                        <div className="p-2 bg-blue-600/10 text-blue-400 rounded-lg">
                           <MessageSquare className="w-4 h-4" />
                         </div>
                         <div>
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <h4 className="font-semibold text-white text-sm">{item.chatTitle}</h4>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-white text-sm">{item.chatTitle}</span>
                             {item.sentToTelegram ? (
                               <span className="px-2 py-0.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] rounded-full font-medium">
                                 Отправлен в Telegram
@@ -809,7 +862,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center gap-2">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -818,7 +871,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                           className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-all"
                           title="Скопировать"
                         >
-                          {copiedId === item.id ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                          {copiedId === item.id ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
                         </button>
 
                         <button
@@ -843,7 +896,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                           <Trash2 className="w-4 h-4" />
                         </button>
 
-                        <div className="text-slate-500">
+                        <div className="text-slate-500 ml-2">
                           {isExpanded ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                         </div>
                       </div>
@@ -861,6 +914,343 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* AI SETTINGS MODAL */}
+      {showAiModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl space-y-5 p-6 relative">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 bg-blue-600/20 text-blue-400 rounded-xl border border-blue-500/30">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Настройка ИИ и Ключей (Админка)</h3>
+                  <p className="text-xs text-slate-400">Сохранение в базу данных без редактирования .env</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowAiModal(false)}
+                className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Provider Tabs */}
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                Провайдер ИИ
+              </label>
+              <div className="grid grid-cols-3 gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setAiForm({ ...aiForm, aiProvider: 'gemini' })}
+                  className={`py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    aiForm.aiProvider === 'gemini' 
+                      ? 'bg-blue-600 text-white shadow' 
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Bot className="w-3.5 h-3.5" />
+                  <span>Google Gemini</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAiForm({ ...aiForm, aiProvider: 'openrouter' })}
+                  className={`py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    aiForm.aiProvider === 'openrouter' 
+                      ? 'bg-indigo-600 text-white shadow' 
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5 text-amber-300" />
+                  <span>OpenRouter</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setAiForm({ ...aiForm, aiProvider: 'custom' })}
+                  className={`py-2.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 ${
+                    aiForm.aiProvider === 'custom' 
+                      ? 'bg-purple-600 text-white shadow' 
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  <Globe className="w-3.5 h-3.5" />
+                  <span>Custom Proxy</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Fields based on provider */}
+            {aiForm.aiProvider === 'gemini' && (
+              <div className="space-y-4">
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold text-slate-300 uppercase">
+                      Google Gemini API Key
+                    </label>
+                    <a 
+                      href="https://aistudio.google.com/app/apikey" 
+                      target="_blank" 
+                      rel="noreferrer"
+                      className="text-xs text-blue-400 hover:underline flex items-center gap-1 font-medium"
+                    >
+                      Создать ключ бесплатно <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <input
+                    type="password"
+                    value={aiForm.geminiApiKey}
+                    onChange={(e) => setAiForm({ ...aiForm, geminiApiKey: e.target.value })}
+                    placeholder="AIzaSy..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Ключ сохраняется в защищенной базе Firestore и используется всеми фоновыми задачами.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
+                      Модель
+                    </label>
+                    <select
+                      value={aiForm.geminiModel}
+                      onChange={(e) => setAiForm({ ...aiForm, geminiModel: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    >
+                      <option value="gemini-2.5-flash">gemini-2.5-flash (Рекомендуется)</option>
+                      <option value="gemini-3.7-flash">gemini-3.7-flash (Новейшая)</option>
+                      <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                      <option value="gemini-1.5-flash">gemini-1.5-flash</option>
+                      <option value="gemini-1.5-pro">gemini-1.5-pro</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
+                      Маршрутизация Gemini
+                    </label>
+                    <select
+                      value={aiForm.geminiProxySource}
+                      onChange={(e) => setAiForm({ ...aiForm, geminiProxySource: e.target.value as any })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    >
+                      <option value="auto">⚡ Авто (Telegram Proxy или CF Worker)</option>
+                      <option value="tg_proxy">📡 Telegram API Proxy {geminiStatus?.detectedTelegramProxy ? `(${geminiStatus.detectedTelegramProxy})` : ''}</option>
+                      <option value="cf_worker">☁️ Cloudflare Worker {geminiStatus?.detectedCfWorker ? `(${geminiStatus.detectedCfWorker})` : ''}</option>
+                      <option value="custom">✏️ Кастомный Base URL (ввести вручную)</option>
+                      <option value="direct">⛔ Прямое подключение (без прокси)</option>
+                    </select>
+                  </div>
+                </div>
+
+                {aiForm.geminiProxySource === 'custom' && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
+                      Кастомный Base URL / Прокси
+                    </label>
+                    <input
+                      type="text"
+                      value={aiForm.geminiBaseUrl}
+                      onChange={(e) => setAiForm({ ...aiForm, geminiBaseUrl: e.target.value })}
+                      placeholder="https://your-worker.workers.dev"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                    />
+                  </div>
+                )}
+
+                <div className="p-3 bg-blue-950/40 border border-blue-800/40 rounded-xl text-xs text-blue-300 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Globe className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                    <span>Активный маршрут:</span>
+                  </span>
+                  <span className="font-mono text-[11px] text-emerald-300 truncate max-w-[240px]">
+                    {aiForm.geminiProxySource === 'direct' 
+                      ? 'Прямое подключение к Google' 
+                      : (aiForm.geminiBaseUrl || geminiStatus?.detectedTelegramProxy || geminiStatus?.detectedCfWorker || 'Telegram Proxy / CF Worker')}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {aiForm.aiProvider === 'openrouter' && (
+              <div className="space-y-4">
+                <div className="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-xs text-indigo-200 flex items-start gap-2">
+                  <Zap className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div>
+                    <strong>Решение ошибки «User location is not supported»:</strong> OpenRouter работает без региональных ограничений и дает доступ к Gemini 2.5 Flash, DeepSeek и Llama 3.3.
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="text-xs font-bold text-slate-300 uppercase">
+                      OpenRouter API Key
+                    </label>
+                    <a 
+                      href="https://openrouter.ai/keys" 
+                      target="_blank" 
+                      rel="noreferrer"
+                      className="text-xs text-indigo-400 hover:underline flex items-center gap-1 font-medium"
+                    >
+                      Получить ключ на openrouter.ai <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <input
+                    type="password"
+                    value={aiForm.openRouterApiKey}
+                    onChange={(e) => setAiForm({ ...aiForm, openRouterApiKey: e.target.value })}
+                    placeholder="sk-or-v1-..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
+                    Модель
+                  </label>
+                  <select
+                    value={aiForm.openRouterModel}
+                    onChange={(e) => setAiForm({ ...aiForm, openRouterModel: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
+                  >
+                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Gemini через OpenRouter)</option>
+                    <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (DeepSeek V3)</option>
+                    <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct</option>
+                    <option value="openai/gpt-4o-mini">openai/gpt-4o-mini</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {aiForm.aiProvider === 'custom' && (
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
+                    URL Эндпоинта (OpenAI Compatible)
+                  </label>
+                  <input
+                    type="text"
+                    value={aiForm.customAiEndpoint}
+                    onChange={(e) => setAiForm({ ...aiForm, customAiEndpoint: e.target.value })}
+                    placeholder="https://api.openai.com/v1"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
+                      API Key
+                    </label>
+                    <input
+                      type="password"
+                      value={aiForm.customAiApiKey}
+                      onChange={(e) => setAiForm({ ...aiForm, customAiApiKey: e.target.value })}
+                      placeholder="sk-..."
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase mb-1.5">
+                      Имя Модели
+                    </label>
+                    <input
+                      type="text"
+                      value={aiForm.customAiModel}
+                      onChange={(e) => setAiForm({ ...aiForm, customAiModel: e.target.value })}
+                      placeholder="gpt-4o-mini"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Test result feedback */}
+            {testResult && (
+              <div className={`p-3.5 rounded-xl text-xs border ${
+                testResult.success 
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+              }`}>
+                <div className="flex items-start gap-2.5">
+                  {testResult.success ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  )}
+                  <div className="space-y-1">
+                    <p className="font-bold">{testResult.message || 'Результат проверки'}</p>
+                    {testResult.error && (
+                      <p className="font-mono text-[11px] text-rose-200 bg-black/40 p-2 rounded">
+                        {testResult.error}
+                      </p>
+                    )}
+                    {testResult.sample && (
+                      <p className="text-slate-300 bg-black/30 p-2 rounded">
+                        Ответ: «{testResult.sample}»
+                      </p>
+                    )}
+                    {testResult.hint && (
+                      <p className="text-amber-300 font-medium pt-1">
+                        💡 {testResult.hint}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-between pt-4 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={handleTestAiConnection}
+                disabled={isTestingAi}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-blue-400 rounded-xl text-xs font-bold transition-all border border-slate-700 flex items-center gap-2 disabled:opacity-50"
+              >
+                {isTestingAi ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Cpu className="w-3.5 h-3.5" />
+                )}
+                <span>Проверить соединение</span>
+              </button>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowAiModal(false)}
+                  className="px-4 py-2.5 text-slate-400 hover:text-white text-xs font-medium"
+                >
+                  Отмена
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSaveAiSettings}
+                  disabled={isSavingAi}
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-blue-900/30 disabled:opacity-50"
+                >
+                  {isSavingAi ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Check className="w-3.5 h-3.5" />
+                  )}
+                  <span>Сохранить настройки</span>
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -212,6 +212,18 @@ export interface BotSettings {
   disableCloudflare?: boolean;
   adminTelegramUsername?: string;
   telegramApiRoot?: string;
+  // AI Provider & API Key Settings
+  aiProvider?: 'gemini' | 'openrouter' | 'custom';
+  geminiApiKey?: string;
+  geminiModel?: string;
+  geminiBaseUrl?: string;
+  geminiUseProxy?: boolean;
+  geminiProxySource?: 'auto' | 'tg_proxy' | 'cf_worker' | 'custom' | 'direct';
+  openRouterApiKey?: string;
+  openRouterModel?: string;
+  customAiEndpoint?: string;
+  customAiApiKey?: string;
+  customAiModel?: string;
 }
 
 export interface ChatBan {

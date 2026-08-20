@@ -1,6 +1,25 @@
 import React, { useState } from 'react';
 import { BotSettings, DatabaseType } from '../types';
-import { Save, Key, Bot, Database, ShieldCheck, AlertTriangle, Mail, RefreshCw, Network, Send, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
+import { 
+  Save, 
+  Key, 
+  Bot, 
+  Database, 
+  ShieldCheck, 
+  AlertTriangle, 
+  Mail, 
+  RefreshCw, 
+  Network, 
+  Send, 
+  CheckCircle2, 
+  XCircle, 
+  AlertCircle,
+  Sparkles,
+  Cpu,
+  Globe,
+  ExternalLink,
+  Zap
+} from 'lucide-react';
 
 interface SettingsProps {
   settings: BotSettings;
@@ -22,6 +41,46 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
   const [botInfo, setBotInfo] = useState<any>(null);
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [proxyTestResult, setProxyTestResult] = useState<any>(null);
+
+  const [isTestingAi, setIsTestingAi] = useState(false);
+  const [aiTestResult, setAiTestResult] = useState<any>(null);
+
+  const handleTestAi = async () => {
+    setIsTestingAi(true);
+    setAiTestResult(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/ai/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          provider: localSettings.aiProvider || 'gemini',
+          apiKey: (localSettings.aiProvider === 'openrouter') 
+            ? localSettings.openRouterApiKey 
+            : (localSettings.aiProvider === 'custom' ? localSettings.customAiApiKey : localSettings.geminiApiKey),
+          model: (localSettings.aiProvider === 'openrouter') 
+            ? localSettings.openRouterModel 
+            : (localSettings.aiProvider === 'custom' ? localSettings.customAiModel : localSettings.geminiModel),
+          baseUrl: localSettings.geminiBaseUrl,
+          endpoint: localSettings.customAiEndpoint,
+          useProxy: localSettings.geminiUseProxy !== false,
+          proxySource: localSettings.geminiProxySource || 'auto'
+        })
+      });
+      const data = await res.json();
+      setAiTestResult(data);
+    } catch (e: any) {
+      setAiTestResult({
+        success: false,
+        error: 'Ошибка при проверке соединения с ИИ: ' + (e.message || String(e))
+      });
+    } finally {
+      setIsTestingAi(false);
+    }
+  };
 
   const handleTestProxy = async () => {
     setIsTestingProxy(true);
@@ -211,8 +270,11 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono text-sm"
                 placeholder="https://tgproxy.yourdomain.com или http://123.45.67.89:8080"
               />
-              <p className="mt-1.5 text-[10px] text-slate-500 leading-relaxed leading-normal">
-                Укажите URL вашего Nginx Reverse Proxy сервера, если доступ к <code className="bg-slate-950 text-blue-400 px-1 py-0.5 rounded font-mono">api.telegram.org</code> заблокирован. Оставьте пустым для прямого подключения.
+              <p className="mt-1.5 text-[10px] text-slate-500 leading-relaxed">
+                Укажите URL вашего Reverse Proxy сервера (Nginx или Cloudflare Worker), если доступ к <code className="bg-slate-950 text-blue-400 px-1 py-0.5 rounded font-mono">api.telegram.org</code> заблокирован.
+              </p>
+              <p className="mt-1 text-[10px] text-emerald-400/90 leading-relaxed font-medium">
+                💡 Этот же Reverse Proxy используется для автоматической маршрутизации Google Gemini, чтобы обойти ошибку «User location is not supported».
               </p>
 
               <div className="mt-3">
@@ -416,6 +478,343 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
               >
                 <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${localSettings.maintenanceMode ? 'left-7' : 'left-1'}`} />
               </button>
+            </div>
+          </div>
+        </div>
+
+        {/* AI & Gemini Configuration Card */}
+        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-gradient-to-br from-indigo-500/20 to-blue-500/20 rounded-xl text-blue-400 border border-blue-500/30">
+                <Sparkles className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-bold text-white">ИИ-провайдер и ключи API (Суммаризация)</h3>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
+                    Управление из админки
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Настройте ключ Google Gemini или альтернативный провайдер (OpenRouter / OpenAI Proxy) для суточных дайджестов
+                </p>
+              </div>
+            </div>
+
+            {/* Provider Switcher */}
+            <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 self-start md:self-auto">
+              <button
+                type="button"
+                onClick={() => setLocalSettings({ ...localSettings, aiProvider: 'gemini' })}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  (localSettings.aiProvider || 'gemini') === 'gemini' 
+                    ? 'bg-blue-600 text-white shadow-md shadow-blue-900/40' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Bot className="w-3.5 h-3.5" />
+                Google Gemini
+              </button>
+              <button
+                type="button"
+                onClick={() => setLocalSettings({ ...localSettings, aiProvider: 'openrouter' })}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  localSettings.aiProvider === 'openrouter' 
+                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-900/40' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-300" />
+                OpenRouter (Без ограничений)
+              </button>
+              <button
+                type="button"
+                onClick={() => setLocalSettings({ ...localSettings, aiProvider: 'custom' })}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  localSettings.aiProvider === 'custom' 
+                    ? 'bg-purple-600 text-white shadow-md shadow-purple-900/40' 
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Network className="w-3.5 h-3.5" />
+                Custom / Proxy
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+            {/* Google Gemini Settings */}
+            {(localSettings.aiProvider || 'gemini') === 'gemini' && (
+              <>
+                <div className="space-y-4 md:col-span-2">
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5 ml-1">
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                        Google Gemini API Key (GEMINI_API_KEY)
+                      </label>
+                      <a 
+                        href="https://aistudio.google.com/app/apikey" 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="text-xs text-blue-400 hover:underline flex items-center gap-1 font-medium"
+                      >
+                        Получить ключ бесплатно <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                    <div className="relative">
+                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                      <input
+                        type="password"
+                        value={localSettings.geminiApiKey || ''}
+                        onChange={(e) => setLocalSettings({ ...localSettings, geminiApiKey: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono text-sm placeholder:text-slate-600"
+                        placeholder="AIzaSy..."
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed">
+                      Ключ сохраняется в защищенной базе данных Firestore и сразу готов к использованию без изменения <code className="text-blue-400 font-mono text-[10px]">.env</code> файлов.
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                    Модель Gemini
+                  </label>
+                  <select
+                    value={localSettings.geminiModel || 'gemini-2.5-flash'}
+                    onChange={(e) => setLocalSettings({ ...localSettings, geminiModel: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all text-sm font-medium"
+                  >
+                    <option value="gemini-2.5-flash">gemini-2.5-flash (Рекомендуется: быстрая и умная)</option>
+                    <option value="gemini-3.7-flash">gemini-3.7-flash (Новейшая флагманская)</option>
+                    <option value="gemini-2.0-flash">gemini-2.0-flash (Стабильная)</option>
+                    <option value="gemini-1.5-flash">gemini-1.5-flash (Базовая)</option>
+                    <option value="gemini-1.5-pro">gemini-1.5-pro (Глубокий анализ)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                    Маршрутизация прокси (Обход блокировок)
+                  </label>
+                  <select
+                    value={localSettings.geminiProxySource || 'auto'}
+                    onChange={(e) => setLocalSettings({ ...localSettings, geminiProxySource: e.target.value as any })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all text-sm font-medium"
+                  >
+                    <option value="auto">⚡ Авто (Telegram API Proxy или CF Worker)</option>
+                    <option value="tg_proxy">📡 Использовать Telegram API Proxy ({localSettings.telegramApiRoot || 'не задан'})</option>
+                    <option value="cf_worker">☁️ Использовать Cloudflare Worker ({localSettings.cfWorkerUrl || 'не задан'})</option>
+                    <option value="custom">✏️ Кастомный Base URL (ручной ввод)</option>
+                    <option value="direct">⛔ Прямое подключение (без прокси)</option>
+                  </select>
+                </div>
+
+                {localSettings.geminiProxySource === 'custom' && (
+                  <div className="md:col-span-2">
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                      Кастомный Base URL / Прокси
+                    </label>
+                    <div className="relative">
+                      <Globe className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                      <input
+                        type="text"
+                        value={localSettings.geminiBaseUrl || ''}
+                        onChange={(e) => setLocalSettings({ ...localSettings, geminiBaseUrl: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-mono text-sm placeholder:text-slate-600"
+                        placeholder="https://your-worker.workers.dev"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="md:col-span-2 p-3 bg-blue-950/30 border border-blue-800/40 rounded-xl text-xs text-blue-300 flex items-center justify-between">
+                  <span className="flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-blue-400 shrink-0" />
+                    <span>Активный маршрут для Gemini:</span>
+                  </span>
+                  <span className="font-mono text-emerald-300 font-bold truncate max-w-sm">
+                    {localSettings.geminiProxySource === 'direct' 
+                      ? 'Прямое подключение к Google API' 
+                      : (localSettings.geminiBaseUrl || localSettings.telegramApiRoot || localSettings.cfWorkerUrl || 'Прямое / Автоопределение')}
+                  </span>
+                </div>
+              </>
+            )}
+
+            {/* OpenRouter Settings */}
+            {localSettings.aiProvider === 'openrouter' && (
+              <>
+                <div className="space-y-4 md:col-span-2">
+                  <div className="p-3.5 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-xs text-indigo-300 flex items-start gap-2.5">
+                    <Zap className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <strong>OpenRouter решает проблему «User location is not supported»</strong>: работает в любой стране без блокировок регионов, дает доступ к Gemini 2.5 Flash, DeepSeek V3, Llama 3.3 и др.
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5 ml-1">
+                      <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">
+                        OpenRouter API Key
+                      </label>
+                      <a 
+                        href="https://openrouter.ai/keys" 
+                        target="_blank" 
+                        rel="noreferrer"
+                        className="text-xs text-indigo-400 hover:underline flex items-center gap-1 font-medium"
+                      >
+                        Получить ключ на OpenRouter <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                    <div className="relative">
+                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                      <input
+                        type="password"
+                        value={localSettings.openRouterApiKey || ''}
+                        onChange={(e) => setLocalSettings({ ...localSettings, openRouterApiKey: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-mono text-sm placeholder:text-slate-600"
+                        placeholder="sk-or-v1-..."
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                    Модель OpenRouter
+                  </label>
+                  <select
+                    value={localSettings.openRouterModel || 'google/gemini-2.5-flash'}
+                    onChange={(e) => setLocalSettings({ ...localSettings, openRouterModel: e.target.value })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all text-sm font-medium"
+                  >
+                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Google Gemini через OpenRouter)</option>
+                    <option value="google/gemini-2.5-pro">google/gemini-2.5-pro (Флагман Gemini)</option>
+                    <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (DeepSeek V3)</option>
+                    <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct (Meta Llama 3.3)</option>
+                    <option value="openai/gpt-4o-mini">openai/gpt-4o-mini (OpenAI GPT-4o mini)</option>
+                  </select>
+                </div>
+              </>
+            )}
+
+            {/* Custom AI / OpenAI-compatible endpoint */}
+            {localSettings.aiProvider === 'custom' && (
+              <>
+                <div className="space-y-4 md:col-span-2">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      URL эндпоинта (OpenAI Compatible API)
+                    </label>
+                    <div className="relative">
+                      <Globe className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                      <input
+                        type="text"
+                        value={localSettings.customAiEndpoint || ''}
+                        onChange={(e) => setLocalSettings({ ...localSettings, customAiEndpoint: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all font-mono text-sm placeholder:text-slate-600"
+                        placeholder="https://api.openai.com/v1"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                      API Key
+                    </label>
+                    <div className="relative">
+                      <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+                      <input
+                        type="password"
+                        value={localSettings.customAiApiKey || ''}
+                        onChange={(e) => setLocalSettings({ ...localSettings, customAiApiKey: e.target.value })}
+                        className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all font-mono text-sm placeholder:text-slate-600"
+                        placeholder="sk-..."
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                      Имя модели
+                    </label>
+                    <input
+                      type="text"
+                      value={localSettings.customAiModel || 'gpt-4o-mini'}
+                      onChange={(e) => setLocalSettings({ ...localSettings, customAiModel: e.target.value })}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all font-mono text-sm"
+                      placeholder="gpt-4o-mini"
+                    />
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* Test & Status Area */}
+            <div className="md:col-span-2 pt-2 border-t border-slate-800/80 flex flex-col gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleTestAi}
+                  disabled={isTestingAi}
+                  className="bg-slate-800 hover:bg-slate-700 text-blue-400 px-4 py-2.5 rounded-xl text-xs font-bold transition-all border border-slate-700 flex items-center gap-2 disabled:opacity-50"
+                >
+                  {isTestingAi ? (
+                    <div className="w-3.5 h-3.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+                  ) : (
+                    <Cpu className="w-4 h-4" />
+                  )}
+                  🧪 Проверить соединение с ИИ
+                </button>
+                <span className="text-xs text-slate-500">
+                  Тестовый запрос отправляется моментально для проверки валидности ключа и модели.
+                </span>
+              </div>
+
+              {aiTestResult && (
+                <div className={`p-4 rounded-xl text-xs border animate-in fade-in duration-200 ${
+                  aiTestResult.success 
+                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
+                    : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                }`}>
+                  <div className="flex items-start gap-3">
+                    {aiTestResult.success ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    )}
+                    <div className="space-y-1.5 flex-1">
+                      <div className="font-bold flex items-center justify-between">
+                        <span>{aiTestResult.message || (aiTestResult.success ? 'Успешно' : 'Ошибка')}</span>
+                        {aiTestResult.duration && (
+                          <span className="font-mono text-[10px] text-slate-400 font-normal">
+                            {aiTestResult.duration} мс
+                          </span>
+                        )}
+                      </div>
+                      {aiTestResult.error && (
+                        <p className="font-mono text-[11px] text-rose-200 bg-black/40 p-2 rounded border border-rose-500/20">
+                          {aiTestResult.error}
+                        </p>
+                      )}
+                      {aiTestResult.sample && (
+                        <div className="bg-black/30 p-2 rounded text-slate-300">
+                          <span className="text-[10px] text-slate-400 uppercase font-bold block mb-0.5">Ответ модели:</span>
+                          «{aiTestResult.sample}»
+                        </div>
+                      )}
+                      {aiTestResult.hint && (
+                        <div className="p-2 rounded bg-amber-500/10 border border-amber-500/20 text-amber-300 text-[11px] leading-relaxed">
+                          💡 <strong>Подсказка:</strong> {aiTestResult.hint}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
