@@ -3,15 +3,17 @@ import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, MessageSquareText, Shield, 
   Calendar, Radio, ScrollText, Menu, X, LogOut, Database, Settings as SettingsIcon,
-  Bot, UserPlus, Cloud, Network
+  Bot, UserPlus, Cloud, Network, Award, Sparkles
 } from 'lucide-react';
 
 import { Chat, ScheduledMessage, LogEntry, GlobalBan, FilterSettings, Tab, BotSettings, Stats, WhitelistEntry, MultiChatUser, LatestMember, ChatBan, User, UserRole, DatabaseType } from './types';
 import { Dashboard } from './components/Dashboard';
 import { ChatList } from './components/ChatList';
+import { Summarization } from './components/Summarization';
 import { Scheduler } from './components/Scheduler';
 import { Logs } from './components/Logs';
 import { Moderation } from './components/Moderation';
+import { Reputation } from './components/Reputation';
 import { AntiScam } from './components/AntiScam';
 import { Broadcast } from './components/Broadcast';
 import { Settings } from './components/Settings';
@@ -454,6 +456,8 @@ const App: React.FC = () => {
           {currentUser.role !== UserRole.ADVERTISER && (
             <>
               <NavItem tab={Tab.CHATS} icon={MessageSquareText} label="Управление чатами" />
+              <NavItem tab={Tab.AI_SUMMARY} icon={Sparkles} label="ИИ-Суммаризация" />
+              <NavItem tab={Tab.REPUTATION} icon={Award} label="Репутация" />
               <NavItem tab={Tab.MODERATION} icon={Shield} label="Глобальные правила" />
               <NavItem tab={Tab.ANTI_SCAM} icon={Shield} label="Анти мошенники" />
               <NavItem tab={Tab.SCHEDULER} icon={Calendar} label="Планировщик" />
@@ -591,6 +595,18 @@ const App: React.FC = () => {
                   onUpdateChat={handleUpdateChat}
                   onRemoveChat={handleRemoveChat}
                   onAddChat={handleAddChat}
+                />
+              )}
+              {activeTab === Tab.AI_SUMMARY && (
+                <Summarization 
+                  chats={filteredChats}
+                />
+              )}
+              {activeTab === Tab.REPUTATION && (
+                <Reputation 
+                  chats={filteredChats}
+                  filters={filters}
+                  onUpdateFilters={handleUpdateFilters}
                 />
               )}
               {activeTab === Tab.MODERATION && (

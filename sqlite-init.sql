@@ -150,6 +150,36 @@ CREATE TABLE IF NOT EXISTS config (
 CREATE INDEX IF NOT EXISTS idx_memberships_user ON memberships(userId);
 CREATE INDEX IF NOT EXISTS idx_memberships_chat ON memberships(chatId);
 
+CREATE TABLE IF NOT EXISTS chat_digests (
+    id TEXT PRIMARY KEY,
+    chatId TEXT NOT NULL,
+    chatTitle TEXT,
+    summary TEXT NOT NULL,
+    periodStart TEXT,
+    periodEnd TEXT,
+    messageCount INTEGER DEFAULT 0,
+    userCount INTEGER DEFAULT 0,
+    createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
+    sentToTelegram INTEGER DEFAULT 0,
+    sentAt TEXT,
+    sentError TEXT,
+    status TEXT DEFAULT 'generated'
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+    id TEXT PRIMARY KEY,
+    chatId TEXT NOT NULL,
+    userId TEXT NOT NULL,
+    username TEXT,
+    firstName TEXT,
+    lastName TEXT,
+    text TEXT NOT NULL,
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_digests_chat ON chat_digests(chatId);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_chat_time ON chat_messages(chatId, timestamp);
+
 -- Insert default super admin (password: admin123)
 -- Hash for 'admin123'
 INSERT OR IGNORE INTO users (id, username, email, password, role, createdAt) 

@@ -111,6 +111,61 @@ export interface FilterSettings {
   userVoteDuration: number;
   notifyMultiChat: boolean;
   multiChatThreshold: number;
+  warnLimit: number;
+  warnAction?: 'BAN' | 'MUTE';
+  reputationEnabled?: boolean;
+}
+
+export interface ReputationHistoryItem {
+  id: string;
+  fromUserId: string;
+  fromName: string;
+  chatId: string;
+  chatTitle: string;
+  delta: number;
+  reason: string;
+  timestamp: string;
+}
+
+export interface ReputationEntry {
+  id: string;
+  userId: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  score: number;
+  positiveCount: number;
+  negativeCount: number;
+  chatScores: { [chatId: string]: number };
+  history?: ReputationHistoryItem[];
+  updatedAt: string;
+}
+
+export interface WarningEntry {
+  id: string;
+  userId: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  chatId: string;
+  chatTitle: string;
+  reason: string;
+  adminId: string;
+  adminName: string;
+  createdAt: string;
+  active: boolean;
+}
+
+export interface UserWarnSummary {
+  userId: string;
+  username?: string;
+  firstName?: string;
+  activeWarns: number;
+  totalWarns: number;
+  chatWarns: { [chatId: string]: number };
+  lastWarnAt?: string;
+  lastWarnReason?: string;
+  warnings: WarningEntry[];
 }
 
 export const DatabaseType = {
@@ -228,10 +283,56 @@ export interface BroadcastHistory {
   source: 'ADMIN' | 'BOT';
 }
 
+export interface ChatDigestConfig {
+  chatId: string;
+  chatTitle?: string;
+  enabled: boolean;
+  scheduleTime: string; // "HH:mm" e.g. "21:00"
+  targetChatId?: string;
+  hoursBack?: number;
+  includeTopics?: boolean;
+  includeStats?: boolean;
+  customPrompt?: string;
+  autoSendTelegram?: boolean;
+  lastGeneratedAt?: string;
+  lastSentAt?: string;
+  status?: 'idle' | 'generating' | 'success' | 'error';
+  lastError?: string;
+}
+
+export interface ChatDigestEntry {
+  id: string;
+  chatId: string;
+  chatTitle: string;
+  summary: string;
+  periodStart: string;
+  periodEnd: string;
+  messageCount: number;
+  userCount: number;
+  createdAt: string;
+  sentToTelegram?: boolean;
+  sentAt?: string;
+  sentError?: string;
+  status?: 'generated' | 'sent' | 'failed';
+}
+
+export interface ChatMessageRecord {
+  id: string;
+  chatId: string;
+  userId: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  text: string;
+  timestamp: string;
+}
+
 export const Tab = {
   STATISTICS: 'STATISTICS',
   CHATS: 'CHATS',
+  AI_SUMMARY: 'AI_SUMMARY',
   MODERATION: 'MODERATION',
+  REPUTATION: 'REPUTATION',
   ANTI_SCAM: 'ANTI_SCAM',
   SCHEDULER: 'SCHEDULER',
   BROADCAST: 'BROADCAST',
@@ -239,4 +340,4 @@ export const Tab = {
   USERS: 'USERS',
   SETTINGS: 'SETTINGS',
 } as const;
-export type Tab = 'STATISTICS' | 'CHATS' | 'MODERATION' | 'ANTI_SCAM' | 'SCHEDULER' | 'BROADCAST' | 'LOGS' | 'USERS' | 'SETTINGS';
+export type Tab = 'STATISTICS' | 'CHATS' | 'AI_SUMMARY' | 'MODERATION' | 'REPUTATION' | 'ANTI_SCAM' | 'SCHEDULER' | 'BROADCAST' | 'LOGS' | 'USERS' | 'SETTINGS';

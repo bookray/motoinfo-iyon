@@ -115,6 +115,16 @@ service cloud.firestore {
       allow write: if true;
     }
 
+    match /reputations/{userId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /warnings/{warningId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
     match /{path=**} {
       allow read, write: if true;
     }

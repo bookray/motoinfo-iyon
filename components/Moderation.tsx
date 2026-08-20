@@ -269,6 +269,120 @@ export const Moderation: React.FC<ModerationProps> = ({ filters, onUpdateFilters
             )}
           </div>
 
+          <div className="mt-8 pt-8 border-t border-slate-800 space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-lg font-bold text-white">Система предупреждений (Варны)</span>
+                <span className="text-xs text-slate-500">Автоматическое наказание при накоплении нарушений</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-950 p-6 rounded-2xl border border-slate-800 shadow-inner">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">
+                  Количество варнов до бана (Warn Limit)
+                </label>
+                <input 
+                  type="number" 
+                  min="1"
+                  max="20"
+                  value={filters.warnLimit || 3}
+                  onChange={(e) => onUpdateFilters({...filters, warnLimit: parseInt(e.target.value) || 3})}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
+                />
+                <span className="text-[11px] text-slate-500 mt-1 block">
+                  При получении {filters.warnLimit || 3}-го варна бот автоматически блокирует пользователя в чате.
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">
+                  Действие при превышении лимита
+                </label>
+                <select
+                  value={filters.warnAction || 'BAN'}
+                  onChange={(e) => onUpdateFilters({...filters, warnAction: e.target.value as 'BAN' | 'MUTE'})}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all cursor-pointer"
+                >
+                  <option value="BAN">🚫 Блокировка (Ban) навсегда</option>
+                  <option value="MUTE">🔇 Обеззвучивание (Mute) на 24 часа</option>
+                </select>
+                <span className="text-[11px] text-slate-500 mt-1 block">
+                  Тип санкции, применяемый ботом после достижения лимита.
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
+              <div className="flex flex-col">
+                <span className="text-slate-200 font-medium">Система рейтинга и репутации</span>
+                <span className="text-xs text-slate-500">Начисление +1 за «Спасибо»/реакции 👍❤️ и -1 за 👎🤡</span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  className="sr-only peer" 
+                  checked={filters.reputationEnabled !== false} 
+                  onChange={() => onUpdateFilters({...filters, reputationEnabled: filters.reputationEnabled === false ? true : false})} 
+                />
+                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+          </div>
+
+          {/* Telegram Commands Cheat Sheet */}
+          <div className="mt-8 pt-8 border-t border-slate-800 space-y-4">
+            <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest">
+              📖 Справочник команд для администраторов в чатах Telegram
+            </h4>
+            <div className="bg-slate-950 p-6 rounded-2xl border border-slate-800 text-sm space-y-4">
+              <p className="text-xs text-slate-400">
+                Администраторы могут использовать команды прямо в чатах Telegram (с префиксом <code className="text-orange-400">/</code> или <code className="text-orange-400">!</code>, а также <code className="text-orange-400">un+</code> для отмены).
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs font-mono">
+                <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
+                  <span className="text-amber-400 font-bold block mb-1">🔇 Мут / Обеззвучивание</span>
+                  <div className="text-slate-300 space-y-1">
+                    <div><code>/mute 30m спам</code> (в ответ)</div>
+                    <div><code>/mute @user 2d флуд</code></div>
+                    <div><code>/unmute</code> (в ответ / @тег)</div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
+                  <span className="text-rose-400 font-bold block mb-1">🚫 Бан / Блокировка</span>
+                  <div className="text-slate-300 space-y-1">
+                    <div><code>/ban 7d реклама</code></div>
+                    <div><code>/ban @user навсегда</code></div>
+                    <div><code>/unban @user</code></div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
+                  <span className="text-yellow-400 font-bold block mb-1">⚠️ Варн / Предупреждение</span>
+                  <div className="text-slate-300 space-y-1">
+                    <div><code>/warn мат в чате</code></div>
+                    <div><code>/warn @user оффтоп</code></div>
+                    <div><code>/unwarn @user</code></div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-900 text-xs text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-2">
+                <span className="font-semibold text-slate-300">Форматы времени:</span>
+                <span><code className="text-orange-400">s</code> = секунды</span>
+                <span><code className="text-orange-400">m</code> = минуты</span>
+                <span><code className="text-orange-400">h</code> = часы</span>
+                <span><code className="text-orange-400">d</code> = дни</span>
+                <span><code className="text-orange-400">w</code> = недели</span>
+                <span><code className="text-orange-400">M</code> = месяцы</span>
+                <span><code className="text-orange-400">y</code> = годы</span>
+                <span className="text-slate-500">(Мин: 30s, Макс: 356d)</span>
+              </div>
+            </div>
+          </div>
+
           <div className="mt-8 pt-8 border-t border-slate-800">
             <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Запрещенные слова (Regex)</h4>
             <form onSubmit={handleAddWord} className="flex gap-3 mb-6">

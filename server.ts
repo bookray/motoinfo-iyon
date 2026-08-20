@@ -7,11 +7,24 @@ import { Telegraf } from 'telegraf';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'teleguard-secret-key-2026';
+
+let geminiClient: GoogleGenAI | null = null;
+function getGeminiClient(): GoogleGenAI {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY environment variable is missing. Получите бесплатный ключ на https://aistudio.google.com/');
+  }
+  if (!geminiClient) {
+    geminiClient = new GoogleGenAI({ apiKey });
+  }
+  return geminiClient;
+}
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
@@ -1330,6 +1343,280 @@ app.post('/api/chats/:id/settings', async (req, res) => {
   }
 });
 
+// Reputation API Endpoints
+app.get('/api/reputation', authenticateToken, async (req, res) => {
+  try {
+    const { chatId, sort, search } = req.query as { chatId?: string; sort?: string; search?: string };
+    let list = reputations.map(r => ({ ...r }));
+
+    // Filter by chat if specified
+    if (chatId && chatId !== 'all') {
+      list = list.filter(r => r.chatScores && r.chatScores[chatId] !== undefined);
+      list = list.map(r => ({
+        ...r,
+        score: r.chatScores[chatId] || 0
+      }));
+    }
+
+    // Filter by search query
+    if (search) {
+      const q = search.toLowerCase();
+      list = list.filter(r => 
+        (r.username && r.username.toLowerCase().includes(q)) ||
+        (r.firstName && r.firstName.toLowerCase().includes(q)) ||
+        (r.lastName && r.lastName.toLowerCase().includes(q)) ||
+        String(r.userId).includes(q)
+      );
+    }
+
+    if (sort === 'anti') {
+      list.sort((a, b) => (a.score || 0) - (b.score || 0));
+    } else {
+      // Default top
+      list.sort((a, b) => (b.score || 0) - (a.score || 0));
+    }
+
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/reputation/:userId/adjust', authenticateToken, async (req, res) => {
+  try {
+    const { delta, reason, chatId } = req.body;
+    const user = (req as any).user;
+    const targetUserId = req.params.userId;
+    
+    const rep = await adjustUserReputation(
+      targetUserId,
+      Number(delta) || 1,
+      reason || 'Корректировка администратором',
+      `admin_${user.id}`,
+      user.username || 'Admin',
+      chatId || 'global',
+      chatId ? (chats.find(c => c.id === chatId)?.title || 'Chat') : 'Глобально'
+    );
+
+    res.json(rep);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete('/api/reputation/:userId/reset', authenticateToken, async (req, res) => {
+  try {
+    const targetUserId = req.params.userId;
+    await db.collection('reputations').doc(targetUserId).delete();
+    reputations = reputations.filter(r => String(r.userId) !== String(targetUserId));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Warnings API Endpoints
+app.get('/api/warnings', authenticateToken, async (req, res) => {
+  try {
+    const { chatId, userId, activeOnly } = req.query as { chatId?: string; userId?: string; activeOnly?: string };
+    let list = [...warnings];
+
+    if (chatId && chatId !== 'all') {
+      list = list.filter(w => String(w.chatId) === String(chatId));
+    }
+    if (userId) {
+      list = list.filter(w => String(w.userId) === String(userId));
+    }
+    if (activeOnly === 'true') {
+      list = list.filter(w => w.active);
+    }
+
+    list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/warnings', authenticateToken, async (req, res) => {
+  try {
+    const { userId, chatId, reason } = req.body;
+    const adminUser = (req as any).user;
+    if (!userId || !chatId) {
+      return res.status(400).json({ error: 'userId and chatId are required' });
+    }
+
+    const chat = chats.find(c => c.id === chatId);
+    const chatTitle = chat ? chat.title : chatId;
+    
+    // Find user details from memberships
+    const member = memberships.find(m => String(m.userId) === String(userId) && String(m.chatId) === String(chatId));
+    const target = {
+      id: Number(userId),
+      username: member?.username ? member.username.replace('@', '') : undefined,
+      first_name: member?.firstName || `User ${userId}`,
+      last_name: member?.lastName
+    };
+
+    const newWarn = await applyWarning(
+      target,
+      adminUser.username || 'Admin',
+      String(adminUser.id),
+      chatId,
+      chatTitle,
+      reason || 'Предупреждение от администратора'
+    );
+
+    res.json(newWarn);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete('/api/warnings/:id', authenticateToken, async (req, res) => {
+  try {
+    const warningId = req.params.id;
+    const warn = warnings.find(w => w.id === warningId);
+    if (warn) {
+      warn.active = false;
+      await db.collection('warnings').doc(warningId).set(cleanData(warn));
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Gemini Status API
+app.get('/api/gemini/status', authenticateToken, (req, res) => {
+  const configured = !!process.env.GEMINI_API_KEY;
+  res.json({
+    configured,
+    model: 'gemini-3.7-flash'
+  });
+});
+
+// Digest Configurations API
+app.get('/api/digests/configs', authenticateToken, (req, res) => {
+  res.json(digestConfigs);
+});
+
+app.post('/api/digests/configs', authenticateToken, async (req, res) => {
+  try {
+    const configData = req.body;
+    if (!configData.chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    const chat = chats.find(c => String(c.id) === String(configData.chatId));
+    const configIndex = digestConfigs.findIndex(c => String(c.chatId) === String(configData.chatId));
+
+    const updatedConfig = {
+      chatId: String(configData.chatId),
+      chatTitle: chat?.title || configData.chatTitle || `Чат ${configData.chatId}`,
+      enabled: !!configData.enabled,
+      scheduleTime: configData.scheduleTime || '21:00',
+      hoursBack: Number(configData.hoursBack) || 24,
+      targetChatId: configData.targetChatId || configData.chatId,
+      customPrompt: configData.customPrompt || '',
+      autoSendTelegram: configData.autoSendTelegram !== undefined ? !!configData.autoSendTelegram : true,
+      lastGeneratedAt: configData.lastGeneratedAt,
+      lastSentAt: configData.lastSentAt
+    };
+
+    if (configIndex >= 0) {
+      digestConfigs[configIndex] = { ...digestConfigs[configIndex], ...updatedConfig };
+    } else {
+      digestConfigs.push(updatedConfig);
+    }
+
+    await db.collection('config').doc('digest_configs').set({ configs: digestConfigs });
+    res.json(updatedConfig);
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Digest History API
+app.get('/api/digests/history', authenticateToken, (req, res) => {
+  const { chatId } = req.query;
+  let list = [...chatDigests];
+  if (chatId) {
+    list = list.filter(d => String(d.chatId) === String(chatId));
+  }
+  list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  res.json(list);
+});
+
+app.post('/api/digests/generate', authenticateToken, async (req, res) => {
+  try {
+    const { chatId, hoursBack, customPrompt, sendImmediately, targetChatId } = req.body;
+    if (!chatId) {
+      return res.status(400).json({ error: 'chatId is required' });
+    }
+
+    const digest = await generateChatSummary(
+      chatId,
+      Number(hoursBack) || 24,
+      customPrompt,
+      !!sendImmediately,
+      targetChatId
+    );
+
+    res.json(digest);
+  } catch (err: any) {
+    console.error('API generate digest failed:', err);
+    res.status(500).json({ error: err.message || 'Ошибка генерации дайджеста' });
+  }
+});
+
+app.post('/api/digests/send', authenticateToken, async (req, res) => {
+  try {
+    const { digestId, targetChatId } = req.body;
+    if (!bot) {
+      return res.status(500).json({ error: 'Бот не инициализирован' });
+    }
+
+    const digest = chatDigests.find(d => d.id === digestId);
+    if (!digest) {
+      return res.status(404).json({ error: 'Дайджест не найден' });
+    }
+
+    const destChatId = targetChatId || digest.targetChatId || digest.chatId;
+    const parts = splitTelegramMessage(digest.summary, 4000);
+    for (const part of parts) {
+      await bot.telegram.sendMessage(destChatId, part, { parse_mode: 'Markdown' });
+    }
+
+    digest.sentToTelegram = true;
+    digest.sentAt = new Date().toISOString();
+    digest.targetChatId = destChatId;
+    queueWrite('chat_digests', digest.id, cleanData(digest));
+
+    res.json({ success: true, digest });
+  } catch (err: any) {
+    console.error('API send digest failed:', err);
+    res.status(500).json({ error: err.message || 'Ошибка отправки в Telegram' });
+  }
+});
+
+app.delete('/api/digests/history/:id', authenticateToken, async (req, res) => {
+  try {
+    const digestId = req.params.id;
+    chatDigests = chatDigests.filter(d => d.id !== digestId);
+    await db.collection('chat_digests').doc(digestId).delete();
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get('/api/digests/messages/:chatId', authenticateToken, (req, res) => {
+  const { chatId } = req.params;
+  const list = chatMessages.filter(m => String(m.chatId) === String(chatId));
+  res.json(list.slice(0, 100));
+});
+
 // Firestore Error Handler
 const OperationType = {
   CREATE: 'create',
@@ -1459,6 +1746,185 @@ let tasks: any[] = [];
 let memberships: any[] = [];
 let whitelist: any[] = [];
 let chatBans: any[] = [];
+let reputations: any[] = [];
+let warnings: any[] = [];
+let chatDigests: any[] = [];
+let digestConfigs: any[] = [];
+let chatMessages: any[] = [];
+const messageAuthorCache = new Map<string, { userId: string, username?: string, firstName?: string, lastName?: string }>();
+
+async function recordChatMessage(record: {
+  id: string;
+  chatId: string;
+  userId: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  text: string;
+  timestamp: string;
+}) {
+  if (!record.text || record.text.trim().length === 0) return;
+  chatMessages.unshift(record);
+  if (chatMessages.length > 3000) chatMessages.pop();
+  queueWrite('chat_messages', record.id, cleanData(record));
+}
+
+function splitTelegramMessage(text: string, limit = 4000): string[] {
+  if (text.length <= limit) return [text];
+  const parts: string[] = [];
+  let current = '';
+  const lines = text.split('\n');
+  for (const line of lines) {
+    if ((current + '\n' + line).length > limit) {
+      if (current) parts.push(current);
+      current = line;
+    } else {
+      current = current ? current + '\n' + line : line;
+    }
+  }
+  if (current) parts.push(current);
+  return parts;
+}
+
+async function generateChatSummary(
+  chatId: string,
+  hoursBack = 24,
+  customPrompt?: string,
+  sendImmediately = false,
+  targetChatId?: string
+) {
+  const chat = chats.find(c => String(c.id) === String(chatId));
+  const chatTitle = chat ? chat.title : `Чат ${chatId}`;
+  const cutoffTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
+
+  let msgs = chatMessages.filter(m => String(m.chatId) === String(chatId) && m.timestamp >= cutoffTime);
+
+  if (msgs.length === 0) {
+    try {
+      const snap = await db.collection('chat_messages').get();
+      const allDbMsgs = snap.docs.map(d => d.data());
+      msgs = allDbMsgs.filter(m => String(m.chatId) === String(chatId) && m.timestamp >= cutoffTime);
+    } catch (e) {
+      console.warn('Could not load chat messages from db:', e);
+    }
+  }
+
+  msgs = msgs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+  
+  const uniqueUsers = new Set(msgs.map(m => m.userId || m.username || m.firstName));
+  const userCount = uniqueUsers.size;
+  const messageCount = msgs.length;
+
+  let formattedChatLog = '';
+  if (msgs.length > 0) {
+    formattedChatLog = msgs.map(m => {
+      const timeStr = new Date(m.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+      const author = m.firstName ? `${m.firstName}${m.username ? ` (@${m.username})` : ''}` : (m.username ? `@${m.username}` : `User_${m.userId}`);
+      return `[${timeStr}] ${author}: ${m.text}`;
+    }).join('\n');
+  } else {
+    formattedChatLog = '(За последние 24 часа активных текстовых сообщений от участников не зафиксировано или бот был недавно подключен)';
+  }
+
+  const ai = getGeminiClient();
+  const dateRangeStr = `${new Date(Date.now() - hoursBack * 3600 * 1000).toLocaleDateString('ru-RU')} - ${new Date().toLocaleDateString('ru-RU')}`;
+
+  const promptText = `Ты — умный и доброжелательный ИИ-ассистент модератора Telegram-сообщества.
+Твоя цель: составить информативный, легкий для чтения и структурированный суточный дайджест (обзор) тем, обсуждавшихся в чате «${chatTitle}» за последние ${hoursBack} часов.
+
+${customPrompt ? `Специальные пожелания от администратора:\n«${customPrompt}»\n` : ''}
+
+Статистика сообщений:
+- Название чата: ${chatTitle}
+- Период: ${dateRangeStr} (последние ${hoursBack} ч)
+- Обработано сообщений: ${messageCount}
+- Активных участников: ${userCount}
+
+Сообщения из чата:
+---
+${formattedChatLog.slice(0, 30000)}
+---
+
+Сформируй суточный дайджест на русском языке со следующей визуальной структурой:
+
+📊 **Суточный дайджест: ${chatTitle}**
+📅 За последние ${hoursBack}ч (${new Date().toLocaleDateString('ru-RU')})
+💬 Сообщений: ${messageCount} | 👥 Участников: ${userCount}
+
+🔥 **Главные темы и обсуждения**
+• [Название темы 1]: Краткая суть обсуждения, выводы участников
+• [Название темы 2]: Краткая суть обсуждения...
+
+💡 **Полезные советы и рекомендации**
+• (Если обсуждались конкретные локации, решения технических проблем, советы, отзывы)
+
+📣 **Анонсы, встречи и события**
+• (Если участники договаривались о поездках, встречах или публиковали объявления)
+
+👥 **Атмосфера дня**
+• (Кратко в 1-2 предложениях об общем настроении и активности)
+
+Правила:
+- Если сообщений было мало, честно отметь это и пожелай участникам отличного дня.
+- Пиши живо, емко, без канцелярита.
+- Используй четкий Markdown.`;
+
+  const response = await ai.models.generateContent({
+    model: 'gemini-3.7-flash',
+    contents: [
+      {
+        role: 'user',
+        parts: [{ text: promptText }]
+      }
+    ]
+  });
+
+  const summaryText = response.text || 'Не удалось сгенерировать текст дайджеста.';
+
+  const digestEntry = {
+    id: Math.random().toString(36).substr(2, 9),
+    chatId: String(chatId),
+    chatTitle,
+    summary: summaryText,
+    messageCount,
+    userCount,
+    hoursBack,
+    createdAt: new Date().toISOString(),
+    sentToTelegram: false,
+    targetChatId: targetChatId || chatId
+  };
+
+  if (sendImmediately && bot) {
+    const destinationChatId = targetChatId || chatId;
+    try {
+      const parts = splitTelegramMessage(summaryText, 4000);
+      for (const part of parts) {
+        await bot.telegram.sendMessage(destinationChatId, part, { parse_mode: 'Markdown' });
+      }
+      digestEntry.sentToTelegram = true;
+      (digestEntry as any).sentAt = new Date().toISOString();
+      console.log(`Digest ${digestEntry.id} successfully sent to Telegram chat ${destinationChatId}`);
+    } catch (sendErr) {
+      console.error(`Failed to send digest to Telegram chat ${destinationChatId}:`, sendErr);
+    }
+  }
+
+  chatDigests.unshift(digestEntry);
+  if (chatDigests.length > 200) chatDigests.pop();
+  queueWrite('chat_digests', digestEntry.id, cleanData(digestEntry));
+
+  await addLog({
+    id: Math.random().toString(36).substr(2, 9),
+    timestamp: new Date().toISOString(),
+    type: 'SYSTEM',
+    user: 'Gemini AI',
+    chat: chatTitle,
+    details: `Сформирован суточный дайджест (${messageCount} сообщ.)${digestEntry.sentToTelegram ? ' и отправлен в чат' : ''}`
+  });
+
+  return digestEntry;
+}
+
 let filters = {
   blockLinks: true,
   blockTelegramLinks: false,
@@ -1480,7 +1946,10 @@ let filters = {
   userVoteMax: 50,
   userVoteDuration: 1440,
   notifyMultiChat: false,
-  multiChatThreshold: 5
+  multiChatThreshold: 5,
+  warnLimit: 3,
+  warnAction: 'BAN' as 'BAN' | 'MUTE',
+  reputationEnabled: true
 };
 let settings = {
   botToken: process.env.TELEGRAM_BOT_TOKEN || '',
@@ -1526,6 +1995,14 @@ async function syncData() {
     chatBans = chatBansSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
     console.log(`Loaded ${chatBans.length} chat-specific bans`);
 
+    const reputationsSnap = await db.collection('reputations').get();
+    reputations = reputationsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    console.log(`Loaded ${reputations.length} reputation entries`);
+
+    const warningsSnap = await db.collection('warnings').get();
+    warnings = warningsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    console.log(`Loaded ${warnings.length} warning entries`);
+
     const logsSnap = await db.collection('logs').orderBy('timestamp', 'desc').limit(100).get();
     logs = logsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
     console.log(`Loaded ${logs.length} logs`);
@@ -1559,6 +2036,20 @@ async function syncData() {
     if (deletionsDoc.exists) {
       scheduledDeletions = (deletionsDoc.data() as any).items || [];
     }
+
+    const digestsSnap = await db.collection('chat_digests').orderBy('createdAt', 'desc').limit(50).get();
+    chatDigests = digestsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    console.log(`Loaded ${chatDigests.length} chat digests`);
+
+    const digestConfigsDoc = await db.collection('config').doc('digest_configs').get();
+    if (digestConfigsDoc.exists) {
+      digestConfigs = (digestConfigsDoc.data() as any).configs || [];
+      console.log(`Loaded ${digestConfigs.length} digest configs`);
+    }
+
+    const messagesSnap = await db.collection('chat_messages').orderBy('timestamp', 'desc').limit(500).get();
+    chatMessages = messagesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    console.log(`Loaded ${chatMessages.length} cached chat messages for AI digests`);
 
     // Create default super admin if no users exist
     const usersSnap = await db.collection('users').get();
@@ -1646,6 +2137,221 @@ async function syncData() {
   } catch (err) {
     handleFirestoreError(err, OperationType.LIST, 'initial_sync');
   }
+}
+
+// Duration parser supporting s, m, h, d, w, M, y/у (seconds, minutes, hours, days, weeks, months, years)
+function parseDuration(input: string): { seconds: number; formatted: string } | null {
+  if (!input) return null;
+  const str = input.trim();
+  const regex = /(\d+)\s*([a-zA-Zа-яА-Я]+)?/g;
+  let totalSeconds = 0;
+  let matches = 0;
+  let match;
+
+  while ((match = regex.exec(str)) !== null) {
+    if (!match[1]) continue;
+    matches++;
+    const val = parseInt(match[1], 10);
+    const rawUnit = match[2] || '';
+    const unit = rawUnit.toLowerCase();
+
+    if (rawUnit === 'M' || unit === 'мес' || unit === 'month' || unit === 'mon') {
+      totalSeconds += val * 30 * 86400;
+    } else if (unit === 's' || unit === 'с' || unit === 'сек' || unit === 'sec') {
+      totalSeconds += val;
+    } else if (unit === 'm' || unit === 'м' || unit === 'мин' || unit === 'min') {
+      totalSeconds += val * 60;
+    } else if (unit === 'h' || unit === 'ч' || unit === 'час' || unit === 'hr') {
+      totalSeconds += val * 3600;
+    } else if (unit === 'd' || unit === 'д' || unit === 'дн' || unit === 'день' || unit === 'дней' || unit === 'day') {
+      totalSeconds += val * 86400;
+    } else if (unit === 'w' || unit === 'н' || unit === 'нед' || unit === 'week') {
+      totalSeconds += val * 7 * 86400;
+    } else if (unit === 'y' || unit === 'у' || unit === 'г' || unit === 'год' || unit === 'лет' || unit === 'year') {
+      totalSeconds += val * 365 * 86400;
+    } else {
+      totalSeconds += val * 60;
+    }
+  }
+
+  if (matches === 0 || totalSeconds <= 0) return null;
+
+  // Limits: Minimum 30 seconds, Maximum 356 days (or 365 days)
+  const minSeconds = 30;
+  const maxSeconds = 365 * 86400;
+  if (totalSeconds < minSeconds) totalSeconds = minSeconds;
+  if (totalSeconds > maxSeconds) totalSeconds = maxSeconds;
+
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const parts: string[] = [];
+  if (days > 0) {
+    if (days >= 365) {
+      const years = Math.floor(days / 365);
+      parts.push(`${years} г.`);
+    } else if (days >= 30 && days % 30 === 0) {
+      const months = Math.floor(days / 30);
+      parts.push(`${months} мес.`);
+    } else {
+      parts.push(`${days} д.`);
+    }
+  }
+  if (hours > 0) parts.push(`${hours} ч.`);
+  if (minutes > 0) parts.push(`${minutes} мин.`);
+  if (seconds > 0 && days === 0 && hours === 0) parts.push(`${seconds} сек.`);
+
+  return {
+    seconds: totalSeconds,
+    formatted: parts.join(' ') || `${totalSeconds} сек.`
+  };
+}
+
+async function isModeratorOrAdmin(ctx: any, chatId: string, userId: number): Promise<boolean> {
+  if (settings.adminTelegramUsername) {
+    const adminUser = settings.adminTelegramUsername.replace('@', '').toLowerCase();
+    if (ctx.from?.username && ctx.from.username.toLowerCase() === adminUser) return true;
+  }
+  try {
+    const member = await ctx.telegram.getChatMember(chatId, userId);
+    return ['creator', 'administrator'].includes(member.status);
+  } catch (e) {
+    return false;
+  }
+}
+
+async function adjustUserReputation(
+  targetUserId: string,
+  delta: number,
+  reason: string,
+  fromUserId: string,
+  fromName: string,
+  chatId: string,
+  chatTitle: string
+) {
+  let rep = reputations.find(r => String(r.userId) === String(targetUserId));
+  const member = memberships.find(m => String(m.userId) === String(targetUserId));
+  
+  if (!rep) {
+    rep = {
+      id: targetUserId,
+      userId: targetUserId,
+      username: member?.username ? member.username.replace('@', '') : undefined,
+      firstName: member?.firstName || `User ${targetUserId}`,
+      lastName: member?.lastName,
+      score: 0,
+      positiveCount: 0,
+      negativeCount: 0,
+      chatScores: {},
+      history: [],
+      updatedAt: new Date().toISOString()
+    };
+    reputations.push(rep);
+  }
+
+  rep.score = (rep.score || 0) + delta;
+  if (delta > 0) rep.positiveCount = (rep.positiveCount || 0) + delta;
+  else rep.negativeCount = (rep.negativeCount || 0) + Math.abs(delta);
+
+  if (!rep.chatScores) rep.chatScores = {};
+  rep.chatScores[chatId] = (rep.chatScores[chatId] || 0) + delta;
+
+  if (!rep.history) rep.history = [];
+  rep.history.unshift({
+    id: Math.random().toString(36).substr(2, 9),
+    fromUserId,
+    fromName,
+    chatId,
+    chatTitle,
+    delta,
+    reason,
+    timestamp: new Date().toISOString()
+  });
+  if (rep.history.length > 50) rep.history.pop();
+  rep.updatedAt = new Date().toISOString();
+
+  if (member) {
+    if (member.username) rep.username = member.username.replace('@', '');
+    if (member.firstName) rep.firstName = member.firstName;
+    if (member.lastName) rep.lastName = member.lastName;
+  }
+
+  queueWrite('reputations', targetUserId, cleanData(rep));
+  return rep;
+}
+
+async function applyWarning(
+  targetUser: { id: number; username?: string; first_name?: string; last_name?: string },
+  adminName: string,
+  adminId: string,
+  chatId: string,
+  chatTitle: string,
+  reason: string
+): Promise<{ warning: any; activeWarns: number; banned: boolean }> {
+  const warningId = Math.random().toString(36).substr(2, 9);
+  const targetUserId = String(targetUser.id);
+  const newWarn = {
+    id: warningId,
+    userId: targetUserId,
+    username: targetUser.username,
+    firstName: targetUser.first_name,
+    lastName: targetUser.last_name,
+    chatId,
+    chatTitle,
+    reason,
+    adminId,
+    adminName,
+    createdAt: new Date().toISOString(),
+    active: true
+  };
+
+  warnings.push(newWarn);
+  queueWrite('warnings', warningId, cleanData(newWarn));
+
+  // Count active warnings in this chat
+  const activeWarns = warnings.filter(w => String(w.userId) === targetUserId && String(w.chatId) === String(chatId) && w.active).length;
+  const warnLimit = filters.warnLimit || 3;
+  let banned = false;
+
+  if (activeWarns >= warnLimit) {
+    banned = true;
+    for (const w of warnings) {
+      if (String(w.userId) === targetUserId && String(w.chatId) === String(chatId) && w.active) {
+        w.active = false;
+        queueWrite('warnings', w.id, cleanData(w));
+      }
+    }
+
+    if (bot) {
+      try {
+        await bot.telegram.banChatMember(chatId, targetUser.id);
+      } catch (e) {
+        console.error(`Failed to ban user ${targetUserId} after reaching warn limit in ${chatId}:`, e);
+      }
+    }
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'BAN',
+      user: adminName,
+      chat: chatTitle,
+      details: `Пользователь ${targetUser.first_name || targetUserId} заблокирован по превышению лимита предупреждений (${activeWarns}/${warnLimit}).`
+    });
+  } else {
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'WARN',
+      user: adminName,
+      chat: chatTitle,
+      details: `Пользователю ${targetUser.first_name || targetUserId} выдано предупреждение (${activeWarns}/${warnLimit}): ${reason}`
+    });
+  }
+
+  return { warning: newWarn, activeWarns, banned };
 }
 
 // Helper to update Firestore and local state
@@ -2196,6 +2902,16 @@ async function initBot(token: string) {
           first_name: ctx.from.first_name,
           last_name: ctx.from.last_name
         }, true);
+
+        // Cache message author for reactions
+        if (ctx.message && ctx.message.message_id) {
+          messageAuthorCache.set(`${chatId}_${ctx.message.message_id}`, {
+            userId: String(userId),
+            username: ctx.from.username,
+            firstName: ctx.from.first_name,
+            lastName: ctx.from.last_name
+          });
+        }
         
         // Moderation Logic
         if (chat.active) {
@@ -2222,6 +2938,306 @@ async function initBot(token: string) {
               return;
             } catch (e) {
               console.error('Moderation failed (ban):', e);
+            }
+          }
+
+          // Reputation Trigger: Gratitude replies / quotes
+          if (filters.reputationEnabled !== false && ctx.message && 'text' in ctx.message) {
+            const replyTo = ctx.message.reply_to_message;
+            if (replyTo && replyTo.from && !replyTo.from.is_bot && replyTo.from.id !== ctx.from.id) {
+              const textLower = ctx.message.text.trim().toLowerCase();
+              const gratitudeRegex = /(^|\s)(спасибо|спс|благодарю|благодарствую|от души|сяп|спасибки|thx|thanks|thank you|\+1|\+)([\s!?.,]|$)/i;
+              
+              if (gratitudeRegex.test(textLower) || textLower === '+' || textLower === '+1' || textLower === '👍') {
+                const rep = await adjustUserReputation(
+                  String(replyTo.from.id),
+                  1,
+                  'Благодарность в сообщении',
+                  String(ctx.from.id),
+                  ctx.from.first_name || ctx.from.username || 'Пользователь',
+                  chatId,
+                  chat.title
+                );
+
+                const targetName = replyTo.from.first_name || (replyTo.from.username ? `@${replyTo.from.username}` : `User ${replyTo.from.id}`);
+                const scoreStr = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
+
+                try {
+                  await ctx.reply(
+                    `⭐️ *Репутация повышена!*\n` +
+                    `[${ctx.from.first_name}](tg://user?id=${ctx.from.id}) поблагодарил(а) [${targetName}](tg://user?id=${replyTo.from.id}) *(+1)*\n` +
+                    `📈 Текущая репутация: *${scoreStr}*`,
+                    { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
+                  );
+                } catch (e) {
+                  console.error('Failed to send reputation gratitude reply:', e);
+                }
+              }
+            }
+          }
+
+          // Moderation Commands: /mute, /unmute, /ban, /unban, /warn, /unwarn (also !, un+)
+          if (ctx.message && 'text' in ctx.message) {
+            const rawText = ctx.message.text.trim();
+            const cmdMatch = rawText.match(/^([\/!])(un\+?|)(mute|ban|warn)(?:@\w+)?(?:\s+(.*))?$/i);
+
+            if (cmdMatch) {
+              const isUn = Boolean(cmdMatch[2]);
+              const action = cmdMatch[3].toLowerCase(); // 'mute' | 'ban' | 'warn'
+              const argsStr = (cmdMatch[4] || '').trim();
+              const args = argsStr ? argsStr.split(/\s+/) : [];
+
+              const isAdmin = await isModeratorOrAdmin(ctx, chatId, ctx.from.id);
+              if (!isAdmin) {
+                console.log(`User ${userId} tried to use /${isUn ? 'un' : ''}${action} without admin privileges in ${chatId}`);
+              } else {
+                const adminName = ctx.from.first_name || ctx.from.username || 'Администратор';
+                const adminId = String(ctx.from.id);
+
+                let targetUser: { id: number; username?: string; first_name?: string; last_name?: string } | null = null;
+                let remainingArgs = [...args];
+
+                if (ctx.message.reply_to_message && ctx.message.reply_to_message.from) {
+                  targetUser = ctx.message.reply_to_message.from;
+                } else if (args.length > 0) {
+                  const first = args[0];
+                  if (first.startsWith('@')) {
+                    const cleanU = first.slice(1).toLowerCase();
+                    const found = memberships.find(m => m.username && m.username.replace('@', '').toLowerCase() === cleanU);
+                    if (found) {
+                      targetUser = {
+                        id: Number(found.userId),
+                        username: found.username.replace('@', ''),
+                        first_name: found.firstName || found.username,
+                        last_name: found.lastName
+                      };
+                      remainingArgs = args.slice(1);
+                    }
+                  } else if (/^\d{5,15}$/.test(first)) {
+                    const tid = Number(first);
+                    const found = memberships.find(m => String(m.userId) === String(tid));
+                    targetUser = {
+                      id: tid,
+                      username: found?.username ? found.username.replace('@', '') : undefined,
+                      first_name: found?.firstName || `User ${tid}`,
+                      last_name: found?.lastName
+                    };
+                    remainingArgs = args.slice(1);
+                  }
+                }
+
+                if (!targetUser) {
+                  await ctx.reply(
+                    `❌ Укажите пользователя: ответьте на его сообщение или укажите @username / ID.\n` +
+                    `Пример: /${isUn ? 'un' : ''}${action} @username 30m спам`
+                  );
+                  return;
+                }
+
+                if (targetUser.id === ctx.from.id) {
+                  await ctx.reply('🤔 Вы не можете применить эту команду к себе.');
+                  return;
+                }
+
+                const targetName = targetUser.first_name || (targetUser.username ? `@${targetUser.username}` : `User ${targetUser.id}`);
+                const targetMention = `[${targetName}](tg://user?id=${targetUser.id})`;
+
+                // 1. MUTE / UNMUTE
+                if (action === 'mute') {
+                  if (isUn) {
+                    try {
+                      await ctx.telegram.restrictChatMember(chatId, targetUser.id, {
+                        permissions: {
+                          can_send_messages: true,
+                          can_send_audios: true,
+                          can_send_documents: true,
+                          can_send_photos: true,
+                          can_send_videos: true,
+                          can_send_video_notes: true,
+                          can_send_voice_notes: true,
+                          can_send_polls: true,
+                          can_send_other_messages: true,
+                          can_add_web_page_previews: true
+                        }
+                      });
+                      await ctx.reply(
+                        `🔊 С пользователя ${targetMention} сняты ограничения.\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        { parse_mode: 'Markdown' }
+                      );
+                      await addLog({
+                        id: Math.random().toString(36).substr(2, 9),
+                        timestamp: new Date().toISOString(),
+                        type: 'UNMUTE',
+                        user: adminName,
+                        chat: chat.title,
+                        details: `Сняты ограничения с пользователя ${targetName}`
+                      });
+                    } catch (e) {
+                      console.error('Failed to unmute:', e);
+                      await ctx.reply(`❌ Не удалось снять ограничения: ${(e as Error).message}`);
+                    }
+                    return;
+                  } else {
+                    let durationInfo = remainingArgs.length > 0 ? parseDuration(remainingArgs[0]) : null;
+                    let reason = 'Нарушение правил';
+                    if (durationInfo) {
+                      reason = remainingArgs.slice(1).join(' ') || 'Нарушение правил';
+                    } else {
+                      durationInfo = parseDuration('1h') || { seconds: 3600, formatted: '1 ч.' };
+                      reason = remainingArgs.join(' ') || 'Нарушение правил';
+                    }
+
+                    try {
+                      const untilDate = Math.floor(Date.now() / 1000) + durationInfo.seconds;
+                      await ctx.telegram.restrictChatMember(chatId, targetUser.id, {
+                        permissions: {
+                          can_send_messages: false,
+                          can_send_audios: false,
+                          can_send_documents: false,
+                          can_send_photos: false,
+                          can_send_videos: false,
+                          can_send_video_notes: false,
+                          can_send_voice_notes: false,
+                          can_send_polls: false,
+                          can_send_other_messages: false,
+                          can_add_web_page_previews: false
+                        },
+                        until_date: untilDate
+                      });
+
+                      await ctx.reply(
+                        `🔇 Пользователь ${targetMention} обеззвучен на *${durationInfo.formatted}*.\n📝 Причина: _${reason}_\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        { parse_mode: 'Markdown' }
+                      );
+
+                      await addLog({
+                        id: Math.random().toString(36).substr(2, 9),
+                        timestamp: new Date().toISOString(),
+                        type: 'MUTE',
+                        user: adminName,
+                        chat: chat.title,
+                        details: `Пользователь ${targetName} обеззвучен на ${durationInfo.formatted}. Причина: ${reason}`
+                      });
+                    } catch (e) {
+                      console.error('Failed to mute:', e);
+                      await ctx.reply(`❌ Не удалось обеззвучить: ${(e as Error).message}`);
+                    }
+                    return;
+                  }
+                }
+
+                // 2. BAN / UNBAN
+                if (action === 'ban') {
+                  if (isUn) {
+                    try {
+                      await ctx.telegram.unbanChatMember(chatId, targetUser.id, { only_if_banned: true });
+                      await ctx.reply(
+                        `✅ Пользователь ${targetMention} разблокирован в чате.\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        { parse_mode: 'Markdown' }
+                      );
+                      await addLog({
+                        id: Math.random().toString(36).substr(2, 9),
+                        timestamp: new Date().toISOString(),
+                        type: 'UNBAN',
+                        user: adminName,
+                        chat: chat.title,
+                        details: `Пользователь ${targetName} разблокирован.`
+                      });
+                    } catch (e) {
+                      console.error('Failed to unban:', e);
+                      await ctx.reply(`❌ Не удалось разблокировать: ${(e as Error).message}`);
+                    }
+                    return;
+                  } else {
+                    let durationInfo = remainingArgs.length > 0 ? parseDuration(remainingArgs[0]) : null;
+                    let reason = 'Нарушение правил';
+                    if (durationInfo) {
+                      reason = remainingArgs.slice(1).join(' ') || 'Нарушение правил';
+                    } else {
+                      reason = remainingArgs.join(' ') || 'Нарушение правил';
+                    }
+
+                    try {
+                      const untilDate = durationInfo ? Math.floor(Date.now() / 1000) + durationInfo.seconds : undefined;
+                      await ctx.telegram.banChatMember(chatId, targetUser.id, untilDate);
+
+                      await ctx.reply(
+                        `🚫 Пользователь ${targetMention} заблокирован ${durationInfo ? 'на *' + durationInfo.formatted + '*' : '*навсегда*'}.\n📝 Причина: _${reason}_\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        { parse_mode: 'Markdown' }
+                      );
+
+                      await addLog({
+                        id: Math.random().toString(36).substr(2, 9),
+                        timestamp: new Date().toISOString(),
+                        type: 'BAN',
+                        user: adminName,
+                        chat: chat.title,
+                        details: `Пользователь ${targetName} заблокирован ${durationInfo ? 'на ' + durationInfo.formatted : 'навсегда'}. Причина: ${reason}`
+                      });
+                    } catch (e) {
+                      console.error('Failed to ban:', e);
+                      await ctx.reply(`❌ Не удалось заблокировать: ${(e as Error).message}`);
+                    }
+                    return;
+                  }
+                }
+
+                // 3. WARN / UNWARN
+                if (action === 'warn') {
+                  const warnLimit = filters.warnLimit || 3;
+                  if (isUn) {
+                    const userWarns = warnings.filter(w => String(w.userId) === String(targetUser!.id) && String(w.chatId) === String(chatId) && w.active);
+                    if (userWarns.length === 0) {
+                      await ctx.reply(`ℹ️ У пользователя ${targetMention} нет активных предупреждений.`, { parse_mode: 'Markdown' });
+                      return;
+                    }
+
+                    userWarns.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+                    const latestWarn = userWarns[0];
+                    latestWarn.active = false;
+                    queueWrite('warnings', latestWarn.id, cleanData(latestWarn));
+
+                    const remainingActive = userWarns.length - 1;
+                    await ctx.reply(
+                      `✅ С пользователя ${targetMention} снято предупреждение.\nТекущее количество: *${remainingActive}/${warnLimit}*\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                      { parse_mode: 'Markdown' }
+                    );
+
+                    await addLog({
+                      id: Math.random().toString(36).substr(2, 9),
+                      timestamp: new Date().toISOString(),
+                      type: 'UNWARN',
+                      user: adminName,
+                      chat: chat.title,
+                      details: `Снято предупреждение с ${targetName}. Осталось: ${remainingActive}/${warnLimit}`
+                    });
+                    return;
+                  } else {
+                    const reason = remainingArgs.join(' ') || 'Нарушение правил';
+                    const { activeWarns, banned } = await applyWarning(
+                      targetUser,
+                      adminName,
+                      adminId,
+                      chatId,
+                      chat.title,
+                      reason
+                    );
+
+                    if (banned) {
+                      await ctx.reply(
+                        `🚫 Пользователь ${targetMention} набрал(а) максимум предупреждений (*${activeWarns}/${warnLimit}*) и был(а) *заблокирован(а)*!\n📝 Причина последнего: _${reason}_\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        { parse_mode: 'Markdown' }
+                      );
+                    } else {
+                      await ctx.reply(
+                        `⚠️ Пользователю ${targetMention} выдано предупреждение (*${activeWarns}/${warnLimit}*).\n📝 Причина: _${reason}_\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        { parse_mode: 'Markdown' }
+                      );
+                    }
+                    return;
+                  }
+                }
+              }
             }
           }
 
@@ -2405,6 +3421,64 @@ async function initBot(token: string) {
               });
             } catch (e) {
               console.error('Moderation failed (delete):', e);
+            }
+          } else {
+            // No violation: record for AI summarization if text message and not command
+            if (ctx.message && 'text' in ctx.message) {
+              const textTrim = ctx.message.text.trim();
+              const textLower = textTrim.toLowerCase();
+
+              // Check for /summary, /дайджест, /digest command
+              if (textLower === '/summary' || textLower.startsWith('/summary ') || textLower === '/дайджест' || textLower.startsWith('/дайджест ') || textLower === '/digest' || textLower.startsWith('/digest ')) {
+                let isAdmin = false;
+                try {
+                  const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
+                  isAdmin = ['creator', 'administrator'].includes(member.status);
+                } catch (e) {
+                  isAdmin = true;
+                }
+
+                if (!isAdmin) {
+                  await ctx.reply('⚠️ Только администраторы чата могут запрашивать ИИ-дайджест.');
+                  return;
+                }
+
+                const waitMsg = await ctx.reply('🤖 Собираю сообщения за 24ч и формирую дайджест с помощью Gemini AI... Пожалуйста, подождите 5-10 секунд.');
+
+                try {
+                  const digest = await generateChatSummary(chatId, 24, undefined, false);
+                  const parts = splitTelegramMessage(digest.summary, 4000);
+                  try {
+                    await ctx.telegram.deleteMessage(chatId, waitMsg.message_id);
+                  } catch (e) {}
+
+                  for (const part of parts) {
+                    await ctx.reply(part, { parse_mode: 'Markdown' });
+                  }
+                  digest.sentToTelegram = true;
+                  (digest as any).sentAt = new Date().toISOString();
+                  queueWrite('chat_digests', digest.id, cleanData(digest));
+                } catch (err: any) {
+                  console.error('Failed to generate summary on command:', err);
+                  try {
+                    await ctx.telegram.editMessageText(chatId, waitMsg.message_id, undefined, `❌ Ошибка генерации: ${err.message || err}`);
+                  } catch (e) {}
+                }
+                return;
+              }
+
+              if (!textTrim.startsWith('/') && !textTrim.startsWith('!')) {
+                await recordChatMessage({
+                  id: `${chatId}_${ctx.message.message_id}`,
+                  chatId,
+                  userId: String(ctx.from.id),
+                  username: ctx.from.username,
+                  firstName: ctx.from.first_name,
+                  lastName: ctx.from.last_name,
+                  text: textTrim,
+                  timestamp: new Date().toISOString()
+                });
+              }
             }
           }
         }
@@ -3307,6 +4381,72 @@ async function initBot(token: string) {
       }
     });
 
+    // Handle Message Reactions (Reputation +/-)
+    bot.on('message_reaction', async (ctx) => {
+      try {
+        if (filters.reputationEnabled === false) return;
+        const mr = (ctx.update as any).message_reaction;
+        if (!mr) return;
+
+        const chatId = String(mr.chat?.id);
+        const msgId = mr.message_id;
+        const reactor = mr.user;
+        if (!reactor || reactor.is_bot) return;
+
+        const cachedAuthor = messageAuthorCache.get(`${chatId}_${msgId}`);
+        if (!cachedAuthor) return;
+        if (String(reactor.id) === String(cachedAuthor.userId)) return; // Cannot react to own message
+
+        const oldEmojis = (mr.old_reaction || []).map((r: any) => r.emoji || '');
+        const newEmojis = (mr.new_reaction || []).map((r: any) => r.emoji || '');
+
+        const chat = chats.find(c => c.id === chatId);
+        const chatTitle = chat ? chat.title : chatId;
+
+        const positiveSet = ['👍', '❤️', '🔥', '👏', '🎉', '🥰', '⚡️'];
+        const negativeSet = ['👎', '🤡', '💩', '🤮'];
+
+        const hasNewPositive = newEmojis.some((e: string) => positiveSet.includes(e));
+        const hadOldPositive = oldEmojis.some((e: string) => positiveSet.includes(e));
+        const hasNewNegative = newEmojis.some((e: string) => negativeSet.includes(e));
+        const hadOldNegative = oldEmojis.some((e: string) => negativeSet.includes(e));
+
+        let delta = 0;
+        let reason = '';
+
+        if (hasNewPositive && !hadOldPositive) {
+          delta += 1;
+          reason = 'Реакция 👍/❤️ на сообщение';
+        } else if (!hasNewPositive && hadOldPositive) {
+          delta -= 1;
+          reason = 'Снятие реакции 👍/❤️';
+        }
+
+        if (hasNewNegative && !hadOldNegative) {
+          delta -= 1;
+          reason = 'Реакция 👎/🤡 на сообщение';
+        } else if (!hasNewNegative && hadOldNegative) {
+          delta += 1;
+          reason = 'Снятие реакции 👎/🤡';
+        }
+
+        if (delta !== 0) {
+          await adjustUserReputation(
+            cachedAuthor.userId,
+            delta,
+            reason,
+            String(reactor.id),
+            reactor.first_name || reactor.username || 'Пользователь',
+            chatId,
+            chatTitle
+          );
+          console.log(`Reputation adjusted by ${delta} for user ${cachedAuthor.userId} via reaction (${reason})`);
+        }
+      } catch (err) {
+        console.error('Error in message_reaction handler:', err);
+      }
+    });
+
     const appUrl = process.env.APP_URL || process.env.VITE_APP_URL;
     const isDevelopmentPreview = process.env.NODE_ENV !== 'production' || !!process.env.APPLET_ID;
     const useWebhooks = !isDevelopmentPreview && (process.env.USE_WEBHOOKS === 'true' || !!cfWorkerUrl || (appUrl && appUrl.startsWith('https')));
@@ -3321,7 +4461,7 @@ async function initBot(token: string) {
         
         console.log(`Setting initial Telegram webhook via Cloudflare Worker target: ${targetWebhookUrl}`);
         await bot.telegram.setWebhook(targetWebhookUrl, {
-          allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
+          allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         });
         console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
       } catch (err) {
@@ -3332,7 +4472,7 @@ async function initBot(token: string) {
       const secretPath = `/telegraf-webhook/${token.split(':')[1]}`;
       try {
         await bot.telegram.setWebhook(`${appUrl}${secretPath}`, {
-          allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
+          allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         });
         console.log(`Telegram bot initialized with direct webhook at ${appUrl}${secretPath}`);
       } catch (err) {
@@ -3351,7 +4491,7 @@ async function initBot(token: string) {
         }
         
         bot.launch({
-          allowedUpdates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
+          allowedUpdates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         }).then(() => {
           console.log('Telegram bot launched successfully using polling');
         }).catch(err => {
@@ -3790,6 +4930,38 @@ async function startServer() {
     if (deletionsChanged) {
       scheduledDeletions = remainingDeletions;
       await db.collection('config').doc('deletions').set({ items: scheduledDeletions });
+    }
+
+    // Handle scheduled daily AI digests
+    const localHHmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const todayDateStr = now.toISOString().split('T')[0];
+
+    for (const config of digestConfigs) {
+      if (!config.enabled) continue;
+      if (config.scheduleTime === localHHmm || config.scheduleTime === currentHHmm) {
+        if (config.lastSentAt && config.lastSentAt.startsWith(todayDateStr)) {
+          continue;
+        }
+
+        console.log(`[AI Digest] Running scheduled daily summary for chat ${config.chatId} (${config.chatTitle})`);
+        try {
+          const hours = config.hoursBack || 24;
+          await generateChatSummary(
+            config.chatId,
+            hours,
+            config.customPrompt,
+            config.autoSendTelegram !== false,
+            config.targetChatId
+          );
+
+          config.lastGeneratedAt = new Date().toISOString();
+          config.lastSentAt = new Date().toISOString();
+          await db.collection('config').doc('digest_configs').set({ configs: digestConfigs });
+          console.log(`[AI Digest] Successfully completed scheduled digest for chat ${config.chatId}`);
+        } catch (digestErr) {
+          console.error(`[AI Digest] Failed scheduled digest for chat ${config.chatId}:`, digestErr);
+        }
+      }
     }
 
     for (const task of tasks) {

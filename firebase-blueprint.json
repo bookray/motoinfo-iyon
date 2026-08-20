@@ -118,6 +118,35 @@
         "expiresAt": { "type": "string", "format": "date-time", "description": "Optional expiration timestamp" }
       },
       "required": ["id", "username", "email", "password", "role", "createdAt"]
+    },
+    "Reputation": {
+      "title": "Reputation",
+      "description": "User community reputation and rating",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "User ID" },
+        "userId": { "type": "string", "description": "User ID" },
+        "score": { "type": "number", "description": "Overall reputation score" },
+        "positiveCount": { "type": "number", "description": "Count of positive reactions" },
+        "negativeCount": { "type": "number", "description": "Count of negative reactions" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["id", "userId", "score"]
+    },
+    "Warning": {
+      "title": "Warning",
+      "description": "A moderation warning issued to a user",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Warning ID" },
+        "userId": { "type": "string", "description": "User ID" },
+        "chatId": { "type": "string", "description": "Chat ID where warning was issued" },
+        "reason": { "type": "string", "description": "Reason for warning" },
+        "adminId": { "type": "string", "description": "Admin ID who issued the warning" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp when issued" },
+        "active": { "type": "boolean", "description": "Whether the warning is active" }
+      },
+      "required": ["id", "userId", "chatId", "reason", "active"]
     }
   },
   "firestore": {
@@ -128,6 +157,8 @@
     "/config/moderation": { "schema": "Settings", "description": "Moderation settings" },
     "/config/settings": { "schema": "BotConfig", "description": "Global bot and database configuration" },
     "/stats/{date}": { "schema": "StatsPoint", "description": "Historical stats" },
-    "/users/{userId}": { "schema": "User", "description": "Dashboard users" }
+    "/users/{userId}": { "schema": "User", "description": "Dashboard users" },
+    "/reputations/{userId}": { "schema": "Reputation", "description": "User reputation rankings" },
+    "/warnings/{warningId}": { "schema": "Warning", "description": "User warnings" }
   }
 }
