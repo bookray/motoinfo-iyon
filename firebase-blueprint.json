@@ -147,6 +147,29 @@
         "active": { "type": "boolean", "description": "Whether the warning is active" }
       },
       "required": ["id", "userId", "chatId", "reason", "active"]
+    },
+    "PinnedMessage": {
+      "title": "PinnedMessage",
+      "description": "A pinned message tracked across Telegram chats",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Composite record ID (e.g. chatId_messageId)" },
+        "messageId": { "type": "number", "description": "Telegram Message ID" },
+        "chatId": { "type": "string", "description": "Telegram Chat ID" },
+        "text": { "type": "string", "description": "Message text" },
+        "caption": { "type": "string", "description": "Message caption" },
+        "date": { "type": "number", "description": "Message date unix timestamp" },
+        "pinnedAt": { "type": "string", "format": "date-time", "description": "When pinned or recorded" },
+        "unpinned": { "type": "boolean", "description": "Whether the message has been unpinned" },
+        "unpinnedAt": { "type": "string", "format": "date-time", "description": "When unpinned" },
+        "from": { "type": "object", "description": "Author details" },
+        "senderChat": { "type": "object", "description": "Sender chat details" },
+        "hasMedia": { "type": "boolean", "description": "Has media attachments" },
+        "mediaType": { "type": "string", "description": "Type of media" },
+        "forwardFrom": { "type": "string", "description": "Forwarded source name" },
+        "link": { "type": "string", "description": "Link to Telegram message" }
+      },
+      "required": ["id", "messageId", "chatId", "date"]
     }
   },
   "firestore": {
@@ -159,6 +182,7 @@
     "/stats/{date}": { "schema": "StatsPoint", "description": "Historical stats" },
     "/users/{userId}": { "schema": "User", "description": "Dashboard users" },
     "/reputations/{userId}": { "schema": "Reputation", "description": "User reputation rankings" },
-    "/warnings/{warningId}": { "schema": "Warning", "description": "User warnings" }
+    "/warnings/{warningId}": { "schema": "Warning", "description": "User warnings" },
+    "/pinned_messages/{pinnedId}": { "schema": "PinnedMessage", "description": "Cumulative pinned messages history" }
   }
 }

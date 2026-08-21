@@ -1,10 +1,13 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line, AreaChart, Area, Cell, Legend 
 } from 'recharts';
-import { Users, MessageSquare, ShieldAlert, Activity, Filter, Check, Calendar } from 'lucide-react';
+import { 
+  Users, MessageSquare, ShieldAlert, Activity, Filter, Check, Calendar, 
+  Clock, Flame, Moon, Sun, TrendingUp, Sparkles, UserPlus, BarChart3 
+} from 'lucide-react';
 
-import { Stats, Chat } from '../types';
+import { Stats, Chat, HourlyActivityPoint } from '../types';
 import { formatDate } from '../src/utils/dateUtils';
 
 interface DashboardProps {
@@ -41,7 +44,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onDateRangeChange,
   onUpdateChat
 }) => {
-  const [showRetry, setShowRetry] = React.useState(false);
+  const [showRetry, setShowRetry] = useState(false);
+  const [hourlyMetric, setHourlyMetric] = useState<'msgs' | 'activeUsers' | 'joins' | 'all'>('msgs');
+  const [hourlyChartType, setHourlyChartType] = useState<'bar' | 'area'>('bar');
 
   React.useEffect(() => {
     if (!stats) {
@@ -51,6 +56,116 @@ export const Dashboard: React.FC<DashboardProps> = ({
       setShowRetry(false);
     }
   }, [stats]);
+
+  const hourlyData: HourlyActivityPoint[] = useMemo(() => {
+    if (stats?.hourlyActivity && stats.hourlyActivity.length === 24) {
+      return stats.hourlyActivity;
+    }
+    return Array.from({ length: 24 }, (_, i) => ({
+      hour: i,
+      time: `${i.toString().padStart(2, '0')}:00`,
+      msgs: 0,
+      activeUsers: 0,
+      joins: 0
+    }));
+  }, [stats?.hourlyActivity]);
+
+  const { totalHourlyMsgs, totalHourlyUsers, totalHourlyJoins, peakHour, quietHour, daytimePercent, nighttimePercent } = useMemo(() => {
+    let totalMsgs = 0;
+    let totalUsers = 0;
+    let totalJoins = 0;
+    let maxMsgs = -1;
+    let minMsgs = Infinity;
+    let peakH = hourlyData[0];
+    let quietH = hourlyData[0];
+    let dayMsgs = 0;
+
+    hourlyData.forEach(h => {
+      totalMsgs += h.msgs;
+      totalUsers += h.activeUsers;
+      totalJoins += h.joins;
+
+      if (h.msgs > maxMsgs) {
+        maxMsgs = h.msgs;
+        peakH = h;
+      }
+      if (h.msgs < minMsgs) {
+        minMsgs = h.msgs;
+        quietH = h;
+      }
+      if (h.hour >= 8 && h.hour < 20) {
+        dayMsgs += h.msgs;
+      }
+    });
+
+    const dayPct = totalMsgs > 0 ? Math.round((dayMsgs / totalMsgs) * 100) : 70;
+    const nightPct = 100 - dayPct;
+
+    return {
+      totalHourlyMsgs: totalMsgs,
+      totalHourlyUsers: totalUsers,
+      totalHourlyJoins: totalJoins,
+      peakHour: peakH,
+      quietHour: quietH,
+      daytimePercent: dayPct,
+      nighttimePercent: nightPct
+    };
+  }, [hourlyData]);
+
+  const CustomHourlyTooltip = ({ active, payload }: any) => {
+    if (active && payload && payload.length) {
+      const data = payload[0]?.payload as HourlyActivityPoint;
+      if (!data) return null;
+      const nextHour = (data.hour + 1) % 24;
+      const nextLabel = `${nextHour.toString().padStart(2, '0')}:00`;
+      const sharePercent = totalHourlyMsgs > 0 ? ((data.msgs / totalHourlyMsgs) * 100).toFixed(1) : '0';
+      const isPeak = peakHour && peakHour.hour === data.hour && peakHour.msgs > 0;
+
+      return (
+        <div className="bg-slate-950/95 border border-slate-700 rounded-xl p-3.5 shadow-2xl text-xs space-y-2 min-w-[210px] backdrop-blur-md">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-2 text-slate-200">
+            <div className="flex items-center gap-1.5 font-bold">
+              <Clock className="w-3.5 h-3.5 text-amber-400" />
+              <span>{data.time} — {nextLabel}</span>
+            </div>
+            {isPeak ? (
+              <span className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-500/20 px-1.5 py-0.5 rounded-full font-bold border border-amber-500/30">
+                <Flame className="w-2.5 h-2.5" /> ПИК
+              </span>
+            ) : (
+              <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">
+                {sharePercent}% суток
+              </span>
+            )}
+          </div>
+          <div className="space-y-1.5 pt-0.5">
+            <div className="flex items-center justify-between text-purple-300">
+              <span className="flex items-center gap-1.5 text-slate-400">
+                <MessageSquare className="w-3.5 h-3.5 text-purple-400" />
+                Сообщений:
+              </span>
+              <span className="font-bold text-white text-xs">{data.msgs.toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between text-blue-300">
+              <span className="flex items-center gap-1.5 text-slate-400">
+                <Users className="w-3.5 h-3.5 text-blue-400" />
+                Активных участников:
+              </span>
+              <span className="font-bold text-white text-xs">{data.activeUsers.toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between text-emerald-300">
+              <span className="flex items-center gap-1.5 text-slate-400">
+                <UserPlus className="w-3.5 h-3.5 text-emerald-400" />
+                Вступлений:
+              </span>
+              <span className="font-bold text-white text-xs">{data.joins.toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return null;
+  };
 
   if (!stats) {
     return (
@@ -248,6 +363,266 @@ export const Dashboard: React.FC<DashboardProps> = ({
           icon={Activity} 
           color="bg-emerald-500" 
         />
+      </div>
+
+      {/* Hourly User Activity Section */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+        {/* Header with Title and Mode Controls */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-amber-500/20 text-amber-400 rounded-xl border border-amber-500/30">
+              <Clock className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-bold text-white">Активность пользователей по часам</h3>
+                <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 text-[11px] font-semibold border border-amber-500/20">
+                  24 часа (00:00 — 23:00)
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Почасовое распределение сообщений, уникальных участников и вступлений в чат {dateRange.start && dateRange.end ? `(за период ${formatDate(dateRange.start)} - ${formatDate(dateRange.end)})` : (dateRange.start || dateRange.end ? '' : '(за последние 7 дней)')}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Metric Switcher */}
+            <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs">
+              <button
+                onClick={() => setHourlyMetric('msgs')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  hourlyMetric === 'msgs' ? 'bg-purple-600 text-white shadow-md shadow-purple-900/30' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <MessageSquare className="w-3.5 h-3.5" />
+                <span>Сообщения</span>
+              </button>
+              <button
+                onClick={() => setHourlyMetric('activeUsers')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  hourlyMetric === 'activeUsers' ? 'bg-blue-600 text-white shadow-md shadow-blue-900/30' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>Участники</span>
+              </button>
+              <button
+                onClick={() => setHourlyMetric('joins')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  hourlyMetric === 'joins' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-900/30' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <UserPlus className="w-3.5 h-3.5" />
+                <span>Вступления</span>
+              </button>
+              <button
+                onClick={() => setHourlyMetric('all')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  hourlyMetric === 'all' ? 'bg-amber-600 text-white shadow-md shadow-amber-900/30' : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <BarChart3 className="w-3.5 h-3.5" />
+                <span>Все</span>
+              </button>
+            </div>
+
+            {/* Chart Type Switcher */}
+            <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs">
+              <button
+                onClick={() => setHourlyChartType('bar')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  hourlyChartType === 'bar' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Столбчатая диаграмма"
+              >
+                Столбцы
+              </button>
+              <button
+                onClick={() => setHourlyChartType('area')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  hourlyChartType === 'area' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Плавная область"
+              >
+                Область
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 4 Insight Stat Pills */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex items-center gap-3">
+            <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg shrink-0">
+              <Flame className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">Пиковый час</p>
+              <p className="text-sm font-bold text-white truncate">
+                {peakHour ? `${peakHour.time} — ${((peakHour.hour + 1) % 24).toString().padStart(2, '0')}:00` : '—'}
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex items-center gap-3">
+            <div className="p-2 bg-purple-500/10 text-purple-400 rounded-lg shrink-0">
+              <MessageSquare className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">В пиковый час</p>
+              <p className="text-sm font-bold text-white truncate">
+                {peakHour ? `${peakHour.msgs.toLocaleString()} сообщ.` : '0'}
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex items-center gap-3">
+            <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg shrink-0">
+              <Sun className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">День (08:00–20:00)</p>
+              <p className="text-sm font-bold text-amber-300 truncate">
+                {daytimePercent}% активности
+              </p>
+            </div>
+          </div>
+
+          <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex items-center gap-3">
+            <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg shrink-0">
+              <Moon className="w-4 h-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">Ночь (20:00–08:00)</p>
+              <p className="text-sm font-bold text-indigo-300 truncate">
+                {nighttimePercent}% активности
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Chart Canvas */}
+        <div className="h-80 w-full pt-2">
+          <ResponsiveContainer width="100%" height="100%">
+            {hourlyChartType === 'bar' ? (
+              <BarChart data={hourlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="hourlyMsgsGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#a855f7" stopOpacity={0.9} />
+                    <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.5} />
+                  </linearGradient>
+                  <linearGradient id="hourlyUsersGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.9} />
+                    <stop offset="100%" stopColor="#0284c7" stopOpacity={0.5} />
+                  </linearGradient>
+                  <linearGradient id="hourlyJoinsGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#34d399" stopOpacity={0.9} />
+                    <stop offset="100%" stopColor="#059669" stopOpacity={0.5} />
+                  </linearGradient>
+                  <linearGradient id="peakHighlightGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#f59e0b" stopOpacity={1} />
+                    <stop offset="100%" stopColor="#d97706" stopOpacity={0.7} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <XAxis 
+                  dataKey="time" 
+                  stroke="#64748b" 
+                  fontSize={10} 
+                  tickLine={false} 
+                  axisLine={false} 
+                  interval={1}
+                />
+                <YAxis stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
+                <Tooltip content={<CustomHourlyTooltip />} />
+                {hourlyMetric === 'msgs' && (
+                  <Bar dataKey="msgs" radius={[4, 4, 0, 0]} name="Сообщения">
+                    {hourlyData.map((entry, index) => (
+                      <Cell 
+                        key={`cell-${index}`} 
+                        fill={peakHour && entry.hour === peakHour.hour && peakHour.msgs > 0 ? 'url(#peakHighlightGrad)' : 'url(#hourlyMsgsGrad)'} 
+                      />
+                    ))}
+                  </Bar>
+                )}
+                {hourlyMetric === 'activeUsers' && (
+                  <Bar dataKey="activeUsers" fill="url(#hourlyUsersGrad)" radius={[4, 4, 0, 0]} name="Активные участники" />
+                )}
+                {hourlyMetric === 'joins' && (
+                  <Bar dataKey="joins" fill="url(#hourlyJoinsGrad)" radius={[4, 4, 0, 0]} name="Вступления" />
+                )}
+                {hourlyMetric === 'all' && (
+                  <>
+                    <Bar dataKey="msgs" fill="url(#hourlyMsgsGrad)" radius={[3, 3, 0, 0]} name="Сообщения" />
+                    <Bar dataKey="activeUsers" fill="url(#hourlyUsersGrad)" radius={[3, 3, 0, 0]} name="Активные участники" />
+                    <Bar dataKey="joins" fill="url(#hourlyJoinsGrad)" radius={[3, 3, 0, 0]} name="Вступления" />
+                  </>
+                )}
+              </BarChart>
+            ) : (
+              <AreaChart data={hourlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="areaMsgsGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.5} />
+                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.0} />
+                  </linearGradient>
+                  <linearGradient id="areaUsersGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.5} />
+                    <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0.0} />
+                  </linearGradient>
+                  <linearGradient id="areaJoinsGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.5} />
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <XAxis 
+                  dataKey="time" 
+                  stroke="#64748b" 
+                  fontSize={10} 
+                  tickLine={false} 
+                  axisLine={false} 
+                  interval={1}
+                />
+                <YAxis stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
+                <Tooltip content={<CustomHourlyTooltip />} />
+                {hourlyMetric === 'msgs' && (
+                  <Area type="monotone" dataKey="msgs" stroke="#8b5cf6" strokeWidth={3} fillOpacity={1} fill="url(#areaMsgsGrad)" name="Сообщения" />
+                )}
+                {hourlyMetric === 'activeUsers' && (
+                  <Area type="monotone" dataKey="activeUsers" stroke="#0ea5e9" strokeWidth={3} fillOpacity={1} fill="url(#areaUsersGrad)" name="Активные участники" />
+                )}
+                {hourlyMetric === 'joins' && (
+                  <Area type="monotone" dataKey="joins" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#areaJoinsGrad)" name="Вступления" />
+                )}
+                {hourlyMetric === 'all' && (
+                  <>
+                    <Area type="monotone" dataKey="msgs" stroke="#8b5cf6" strokeWidth={2.5} fillOpacity={1} fill="url(#areaMsgsGrad)" name="Сообщения" />
+                    <Area type="monotone" dataKey="activeUsers" stroke="#0ea5e9" strokeWidth={2.5} fillOpacity={1} fill="url(#areaUsersGrad)" name="Активные участники" />
+                  </>
+                )}
+              </AreaChart>
+            )}
+          </ResponsiveContainer>
+        </div>
+
+        {/* Informational Footer Note */}
+        <div className="bg-slate-950/40 border border-slate-800/60 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-slate-400">
+          <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="leading-relaxed">
+            <span className="font-semibold text-slate-300">Совет по расписанию: </span>
+            {peakHour && peakHour.msgs > 0 ? (
+              <span>
+                Основной пик общения участников приходится на интервал <strong className="text-amber-300 font-medium">{peakHour.time} — {((peakHour.hour + 1) % 24).toString().padStart(2, '0')}:00</strong>. Это оптимальное время для запуска важных анонсов, рассылок и опросов с максимальным охватом.
+              </span>
+            ) : (
+              <span>
+                График автоматически агрегирует активность всех участников по часам суток на основе сообщений и системных событий из Telegram Bot API.
+              </span>
+            )}
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

@@ -1183,6 +1183,100 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
 
+  // Calculate 24-hour distribution of user activity (messages, active users, joins)
+  const hourlyUsersSets: Set<string>[] = Array.from({ length: 24 }, () => new Set<string>());
+  const hourlyMsgsCount: number[] = Array.from({ length: 24 }, () => 0);
+  const hourlyJoinsCount: number[] = Array.from({ length: 24 }, () => 0);
+
+  // 1. Extract from filteredStatsHistory (aggregated stats records)
+  filteredStatsHistory.forEach(point => {
+    if (point.hourly) {
+      for (let h = 0; h < 24; h++) {
+        const hData = point.hourly[h] || point.hourly[String(h)];
+        if (hData) {
+          hourlyMsgsCount[h] += (hData.msgs || 0);
+          hourlyJoinsCount[h] += (hData.joins || 0);
+          if (Array.isArray(hData.activeUsers)) {
+            hData.activeUsers.forEach((u: string) => hourlyUsersSets[h].add(u));
+          }
+        }
+      }
+    }
+    if (allowedChatIds && point.chatStats) {
+      allowedChatIds.forEach(chatId => {
+        const cStat = point.chatStats[chatId];
+        if (cStat && cStat.hourly) {
+          for (let h = 0; h < 24; h++) {
+            const hData = cStat.hourly[h] || cStat.hourly[String(h)];
+            if (hData) {
+              if (Array.isArray(hData.activeUsers)) {
+                hData.activeUsers.forEach((u: string) => hourlyUsersSets[h].add(u));
+              }
+            }
+          }
+        }
+      });
+    }
+  });
+
+  // 2. Extract from recorded chatMessages for precision
+  chatMessages.forEach(msg => {
+    if (allowedChatIds && !allowedChatIds.includes(String(msg.chatId))) return;
+    if (startDate && msg.timestamp.split('T')[0] < startDate) return;
+    if (endDate && msg.timestamp.split('T')[0] > endDate) return;
+    
+    if (!startDate && !endDate) {
+      const msgDate = msg.timestamp.split('T')[0];
+      const earliestAllowedDate = filteredStatsHistory[0]?.date;
+      if (earliestAllowedDate && msgDate < earliestAllowedDate) return;
+    }
+
+    try {
+      const msgHour = new Date(msg.timestamp).getHours();
+      if (msgHour >= 0 && msgHour < 24) {
+        // If stats point had 0 msgs recorded in that hour, ensure chatMessages are reflected
+        if (hourlyMsgsCount[msgHour] === 0) {
+          hourlyMsgsCount[msgHour]++;
+        }
+        if (msg.userId) {
+          hourlyUsersSets[msgHour].add(String(msg.userId));
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
+  });
+
+  // 3. Extract joins from logs
+  logs.forEach(l => {
+    if (l.type !== 'JOIN') return;
+    if (startDate && l.timestamp.split('T')[0] < startDate) return;
+    if (endDate && l.timestamp.split('T')[0] > endDate) return;
+    if (allowedChatIds) {
+      const chat = chats.find(c => c.title === l.chat);
+      if (!chat || !allowedChatIds.includes(String(chat.id))) return;
+    }
+    try {
+      const logHour = new Date(l.timestamp).getHours();
+      if (logHour >= 0 && logHour < 24) {
+        if (hourlyJoinsCount[logHour] === 0) {
+          hourlyJoinsCount[logHour]++;
+        }
+      }
+    } catch (e) {}
+  });
+
+  const hourlyActivity = Array.from({ length: 24 }, (_, hour) => {
+    const timeLabel = `${hour.toString().padStart(2, '0')}:00`;
+    return {
+      hour,
+      time: timeLabel,
+      msgs: hourlyMsgsCount[hour],
+      activeUsers: hourlyUsersSets[hour].size,
+      joins: hourlyJoinsCount[hour]
+    };
+  });
+
   res.json({
     totalMembers,
     totalMembersTrend,
@@ -1192,6 +1286,7 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     modActionsTrend,
     activeChats: activeChatsCount,
     chartData,
+    hourlyActivity,
     topActiveMembers,
     topActiveAdmins,
     topChatsByMembers,
@@ -1527,6 +1622,143 @@ app.post('/api/chats/:id/settings', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Pinned messages management per chat with cumulative history
+app.get('/api/chats/:id/pinned', authenticateToken, async (req, res) => {
+  const chatId = req.params.id;
+  if (!bot) return res.status(500).json({ error: 'Бот не инициализирован' });
+
+  try {
+    let currentPinned: any = null;
+    try {
+      const chat = await bot.telegram.getChat(chatId);
+      const pinned = (chat as any).pinned_message;
+      if (pinned) {
+        currentPinned = await recordPinnedMessage(chatId, pinned, false);
+      }
+    } catch (e: any) {
+      console.warn(`[GetPinned] Could not fetch real-time getChat for ${chatId}:`, e.message || e);
+    }
+
+    // Get all accumulated pinned messages for this chat from database history
+    const history = pinnedMessages
+      .filter(p => String(p.chatId) === String(chatId))
+      .sort((a, b) => (b.date || 0) - (a.date || 0));
+
+    res.json({
+      pinned: currentPinned || (history.length > 0 && !history[0].unpinned ? history[0] : null),
+      history,
+      totalCount: history.length
+    });
+  } catch (err: any) {
+    console.error(`Failed to get pinned messages for chat ${chatId}:`, err);
+    res.status(500).json({ error: err.message || 'Не удалось получить закрепленные сообщения' });
+  }
+});
+
+app.post('/api/chats/:id/unpin', authenticateToken, async (req, res) => {
+  const chatId = req.params.id;
+  const { messageId } = req.body;
+  const user = (req as any).user;
+
+  if (!bot) return res.status(500).json({ error: 'Бот не инициализирован' });
+
+  try {
+    if (messageId) {
+      await bot.telegram.unpinChatMessage(chatId, Number(messageId));
+      console.log(`[Unpin] Successfully unpinned message ${messageId} in chat ${chatId} by ${user?.username || 'admin'}`);
+      
+      const recordId = `${chatId}_${messageId}`;
+      const record = pinnedMessages.find(p => p.id === recordId);
+      if (record) {
+        record.unpinned = true;
+        record.unpinnedAt = new Date().toISOString();
+        queueWrite('pinned_messages', recordId, cleanData(record));
+      }
+    } else {
+      await bot.telegram.unpinChatMessage(chatId);
+      console.log(`[Unpin] Successfully unpinned latest pinned message in chat ${chatId} by ${user?.username || 'admin'}`);
+      
+      const latest = pinnedMessages.find(p => String(p.chatId) === String(chatId) && !p.unpinned);
+      if (latest) {
+        latest.unpinned = true;
+        latest.unpinnedAt = new Date().toISOString();
+        queueWrite('pinned_messages', latest.id, cleanData(latest));
+      }
+    }
+
+    const chat = chats.find(c => String(c.id) === String(chatId));
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'CHAT_UPDATE',
+      user: user?.username || 'admin',
+      chat: chat?.title || chatId,
+      details: messageId ? `Откреплено сообщение #${messageId} через панель управления.` : `Откреплено последнее закрепленное сообщение.`
+    });
+
+    const updatedHistory = pinnedMessages
+      .filter(p => String(p.chatId) === String(chatId))
+      .sort((a, b) => (b.date || 0) - (a.date || 0));
+
+    res.json({ success: true, message: 'Сообщение успешно откреплено', history: updatedHistory });
+  } catch (err: any) {
+    console.error(`Failed to unpin message in chat ${chatId}:`, err);
+    res.status(500).json({ error: err.message || 'Не удалось открепить сообщение. Убедитесь, что у бота есть права администратора на управление закрепами.' });
+  }
+});
+
+app.post('/api/chats/:id/unpin-all', authenticateToken, async (req, res) => {
+  const chatId = req.params.id;
+  const user = (req as any).user;
+
+  if (!bot) return res.status(500).json({ error: 'Бот не инициализирован' });
+
+  try {
+    await bot.telegram.unpinAllChatMessages(chatId);
+    console.log(`[UnpinAll] Successfully unpinned all messages in chat ${chatId} by ${user?.username || 'admin'}`);
+
+    const nowIso = new Date().toISOString();
+    pinnedMessages.forEach(p => {
+      if (String(p.chatId) === String(chatId)) {
+        p.unpinned = true;
+        p.unpinnedAt = nowIso;
+        queueWrite('pinned_messages', p.id, cleanData(p));
+      }
+    });
+
+    const chat = chats.find(c => String(c.id) === String(chatId));
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'CHAT_UPDATE',
+      user: user?.username || 'admin',
+      chat: chat?.title || chatId,
+      details: `Откреплены ВСЕ закрепленные сообщения в чате через панель управления.`
+    });
+
+    const updatedHistory = pinnedMessages
+      .filter(p => String(p.chatId) === String(chatId))
+      .sort((a, b) => (b.date || 0) - (a.date || 0));
+
+    res.json({ success: true, message: 'Все закрепленные сообщения в чате откреплены', history: updatedHistory });
+  } catch (err: any) {
+    console.error(`Failed to unpin all messages in chat ${chatId}:`, err);
+    res.status(500).json({ error: err.message || 'Не удалось открепить все сообщения. Убедитесь, что у бота есть права администратора на управление закрепами.' });
+  }
+});
+
+app.delete('/api/chats/:id/pinned/:messageId', authenticateToken, async (req, res) => {
+  const { id: chatId, messageId } = req.params;
+  try {
+    const recordId = `${chatId}_${messageId}`;
+    pinnedMessages = pinnedMessages.filter(p => p.id !== recordId);
+    queueDelete('pinned_messages', recordId);
+    res.json({ success: true, message: 'Запись удалена из истории закрепов' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Ошибка удаления из базы данных' });
   }
 });
 
@@ -2237,7 +2469,113 @@ let warnings: any[] = [];
 let chatDigests: any[] = [];
 let digestConfigs: any[] = [];
 let chatMessages: any[] = [];
+let pinnedMessages: any[] = [];
 const messageAuthorCache = new Map<string, { userId: string, username?: string, firstName?: string, lastName?: string }>();
+
+function parsePinnedMessageData(chatId: string, pinned: any, chatUsername?: string) {
+  let mediaType: 'photo' | 'video' | 'document' | 'audio' | 'voice' | 'poll' | 'other' | undefined;
+  let hasMedia = false;
+
+  if (pinned.photo && pinned.photo.length > 0) {
+    hasMedia = true;
+    mediaType = 'photo';
+  } else if (pinned.video) {
+    hasMedia = true;
+    mediaType = 'video';
+  } else if (pinned.document) {
+    hasMedia = true;
+    mediaType = 'document';
+  } else if (pinned.audio) {
+    hasMedia = true;
+    mediaType = 'audio';
+  } else if (pinned.voice) {
+    hasMedia = true;
+    mediaType = 'voice';
+  } else if (pinned.poll) {
+    hasMedia = true;
+    mediaType = 'poll';
+  } else if (pinned.sticker || pinned.animation) {
+    hasMedia = true;
+    mediaType = 'other';
+  }
+
+  let forwardFrom: string | undefined;
+  if (pinned.forward_from) {
+    forwardFrom = pinned.forward_from.first_name + (pinned.forward_from.last_name ? ` ${pinned.forward_from.last_name}` : '');
+    if (pinned.forward_from.username) forwardFrom += ` (@${pinned.forward_from.username})`;
+  } else if (pinned.forward_from_chat) {
+    forwardFrom = pinned.forward_from_chat.title || pinned.forward_from_chat.username;
+  } else if (pinned.forward_sender_name) {
+    forwardFrom = pinned.forward_sender_name;
+  } else if (pinned.forwardFrom) {
+    forwardFrom = pinned.forwardFrom;
+  }
+
+  const msgId = pinned.message_id || pinned.messageId;
+  let link: string | undefined = pinned.link;
+  if (!link && msgId) {
+    if (chatUsername) {
+      link = `https://t.me/${chatUsername}/${msgId}`;
+    } else {
+      const cleanChatId = chatId.toString().replace(/^-100/, '');
+      link = `https://t.me/c/${cleanChatId}/${msgId}`;
+    }
+  }
+
+  const recordId = `${chatId}_${msgId}`;
+  return {
+    id: recordId,
+    messageId: Number(msgId),
+    chatId: String(chatId),
+    text: pinned.text || (pinned.caption ? pinned.caption : undefined),
+    caption: pinned.caption,
+    date: pinned.date || Math.floor(Date.now() / 1000),
+    pinnedAt: pinned.pinnedAt || new Date().toISOString(),
+    unpinned: Boolean(pinned.unpinned),
+    unpinnedAt: pinned.unpinnedAt,
+    from: pinned.from ? {
+      id: pinned.from.id,
+      firstName: pinned.from.first_name || pinned.from.firstName,
+      lastName: pinned.from.last_name || pinned.from.lastName,
+      username: pinned.from.username,
+      isBot: pinned.from.is_bot !== undefined ? pinned.from.is_bot : pinned.from.isBot
+    } : undefined,
+    senderChat: (pinned.sender_chat || pinned.senderChat) ? {
+      id: (pinned.sender_chat || pinned.senderChat).id,
+      title: (pinned.sender_chat || pinned.senderChat).title,
+      username: (pinned.sender_chat || pinned.senderChat).username
+    } : undefined,
+    hasMedia,
+    mediaType,
+    forwardFrom,
+    link
+  };
+}
+
+async function recordPinnedMessage(chatId: string, pinned: any, unpinned = false) {
+  if (!pinned || !(pinned.message_id || pinned.messageId)) return null;
+  const msgId = pinned.message_id || pinned.messageId;
+  const recordId = `${chatId}_${msgId}`;
+
+  const chat = chats.find(c => String(c.id) === String(chatId));
+  const data = parsePinnedMessageData(chatId, pinned, chat?.username);
+  if (unpinned) {
+    data.unpinned = true;
+    (data as any).unpinnedAt = new Date().toISOString();
+  }
+
+  const existingIdx = pinnedMessages.findIndex(p => p.id === recordId);
+  if (existingIdx !== -1) {
+    pinnedMessages[existingIdx] = { ...pinnedMessages[existingIdx], ...data };
+  } else {
+    pinnedMessages.unshift(data);
+    if (pinnedMessages.length > 2000) pinnedMessages.pop();
+  }
+
+  queueWrite('pinned_messages', recordId, cleanData(data));
+  console.log(`[PinnedStorage] Saved pinned message #${msgId} for chat ${chatId} (unpinned: ${data.unpinned})`);
+  return data;
+}
 
 async function recordChatMessage(record: {
   id: string;
@@ -2542,6 +2880,10 @@ async function syncData() {
     const messagesSnap = await db.collection('chat_messages').orderBy('timestamp', 'desc').limit(500).get();
     chatMessages = messagesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
     console.log(`Loaded ${chatMessages.length} cached chat messages for AI digests`);
+
+    const pinnedSnap = await db.collection('pinned_messages').orderBy('date', 'desc').limit(500).get();
+    pinnedMessages = pinnedSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+    console.log(`Loaded ${pinnedMessages.length} pinned messages history`);
 
     // Create default super admin if no users exist
     const usersSnap = await db.collection('users').get();
@@ -2903,6 +3245,7 @@ async function updateStats(point: any) {
 
 async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'msgs', amount: number = 1, userId?: string) {
   const todayDate = new Date().toISOString().split('T')[0];
+  const currentHour = new Date().getHours();
   let today = statsHistory.find(s => s.date === todayDate);
   if (!today) {
     const [y, m, d] = todayDate.split('-');
@@ -2913,6 +3256,7 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
       leaves: 0, 
       msgs: 0, 
       chatStats: {},
+      hourly: {},
       activeUsers: [],
       onlineUsers: []
     };
@@ -2922,14 +3266,31 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
   if (type === 'leaves') today.leaves = (today.leaves || 0) + amount;
   if (type === 'msgs') today.msgs = (today.msgs || 0) + amount;
 
+  // Track hourly activity for today
+  if (!today.hourly) today.hourly = {};
+  if (!today.hourly[currentHour]) {
+    today.hourly[currentHour] = { msgs: 0, joins: 0, leaves: 0, activeUsers: [] };
+  }
+  if (type === 'msgs') today.hourly[currentHour].msgs = (today.hourly[currentHour].msgs || 0) + amount;
+  if (type === 'joins') today.hourly[currentHour].joins = (today.hourly[currentHour].joins || 0) + amount;
+  if (type === 'leaves') today.hourly[currentHour].leaves = (today.hourly[currentHour].leaves || 0) + amount;
+
   if (!today.chatStats) today.chatStats = {};
   if (!today.chatStats[chatId]) {
-    today.chatStats[chatId] = { joins: 0, leaves: 0, msgs: 0, activeUsers: [], onlineUsers: [] };
+    today.chatStats[chatId] = { joins: 0, leaves: 0, msgs: 0, activeUsers: [], onlineUsers: [], hourly: {} };
   }
   
   if (type === 'joins') today.chatStats[chatId].joins += amount;
   if (type === 'leaves') today.chatStats[chatId].leaves += amount;
   if (type === 'msgs') today.chatStats[chatId].msgs += amount;
+
+  if (!today.chatStats[chatId].hourly) today.chatStats[chatId].hourly = {};
+  if (!today.chatStats[chatId].hourly[currentHour]) {
+    today.chatStats[chatId].hourly[currentHour] = { msgs: 0, joins: 0, leaves: 0, activeUsers: [] };
+  }
+  if (type === 'msgs') today.chatStats[chatId].hourly[currentHour].msgs = (today.chatStats[chatId].hourly[currentHour].msgs || 0) + amount;
+  if (type === 'joins') today.chatStats[chatId].hourly[currentHour].joins = (today.chatStats[chatId].hourly[currentHour].joins || 0) + amount;
+  if (type === 'leaves') today.chatStats[chatId].hourly[currentHour].leaves = (today.chatStats[chatId].hourly[currentHour].leaves || 0) + amount;
 
   if (userId) {
     if (type === 'msgs' || type === 'joins') {
@@ -2938,6 +3299,12 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
       
       if (!today.chatStats[chatId].activeUsers) today.chatStats[chatId].activeUsers = [];
       if (!today.chatStats[chatId].activeUsers.includes(userId)) today.chatStats[chatId].activeUsers.push(userId);
+
+      if (!today.hourly[currentHour].activeUsers) today.hourly[currentHour].activeUsers = [];
+      if (!today.hourly[currentHour].activeUsers.includes(userId)) today.hourly[currentHour].activeUsers.push(userId);
+
+      if (!today.chatStats[chatId].hourly[currentHour].activeUsers) today.chatStats[chatId].hourly[currentHour].activeUsers = [];
+      if (!today.chatStats[chatId].hourly[currentHour].activeUsers.includes(userId)) today.chatStats[chatId].hourly[currentHour].activeUsers.push(userId);
     }
     
     if (!today.onlineUsers) today.onlineUsers = [];
@@ -3174,6 +3541,20 @@ async function initBot(token: string) {
     
     bot.help((ctx) => ctx.reply('Send me a message to see how I can help you manage your chats.'));
     
+    // Track pinned messages directly via pinned_message event
+    bot.on('pinned_message', async (ctx) => {
+      try {
+        const chatId = ctx.chat.id.toString();
+        const pinned = (ctx.message as any)?.pinned_message;
+        if (pinned) {
+          console.log(`[PinnedEvent] Detected pinned message #${pinned.message_id} in chat ${chatId}`);
+          await recordPinnedMessage(chatId, pinned, false);
+        }
+      } catch (err) {
+        console.error('Error handling pinned_message event:', err);
+      }
+    });
+
     bot.on('message', async (ctx) => {
       if (settings.maintenanceMode) return;
 
@@ -3181,6 +3562,17 @@ async function initBot(token: string) {
       const chatType = ctx.chat.type;
       const userId = ctx.from.id.toString();
       const username = ctx.from.username;
+
+      // Detect and record service pinned message in general message stream if present
+      if ((ctx.message as any)?.pinned_message) {
+        try {
+          const pinned = (ctx.message as any).pinned_message;
+          console.log(`[MessageHook] Detected pinned message #${pinned.message_id} in chat ${chatId}`);
+          await recordPinnedMessage(chatId, pinned, false);
+        } catch (e) {
+          console.error('Error recording pinned message from message update:', e);
+        }
+      }
 
       const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
       const isCurrentAdmin = username && username.toLowerCase() === adminUsername;
@@ -3450,7 +3842,7 @@ async function initBot(token: string) {
 
             // The replied message must contain actual user content (text, caption, media)
             const hasRepliedContent = replyTo && Boolean(
-              replyTo.text || (replyTo as any).caption || (replyTo as any).photo || 
+              (replyTo as any).text || (replyTo as any).caption || (replyTo as any).photo || 
               (replyTo as any).document || (replyTo as any).video || (replyTo as any).voice || 
               (replyTo as any).audio || (replyTo as any).sticker
             );
@@ -5171,6 +5563,7 @@ app.post('/api/broadcast', authenticateToken, async (req, res) => {
               await bot.telegram.pinChatMessage(chatId, sentMsg.message_id, { disable_notification: false });
               console.log(`[Pin] Successfully pinned message ${sentMsg.message_id} in chat ${chatId}`);
               pinResults[chatId] = { success: true };
+              await recordPinnedMessage(chatId, sentMsg, false);
               
               // Delayed unpin if pinTime > 0 (hours)
               if (pinTime > 0) {
@@ -5179,6 +5572,7 @@ app.post('/api/broadcast', authenticateToken, async (req, res) => {
                   try {
                     if (bot) await bot.telegram.unpinChatMessage(chatId, sentMsg.message_id);
                     console.log(`[Pin] Auto-unpinned message ${sentMsg.message_id} in ${chatId}`);
+                    await recordPinnedMessage(chatId, sentMsg, true);
                   } catch (e) {
                     console.error(`[Pin] Failed to auto-unpin message ${sentMsg.message_id} in ${chatId}:`, e);
                   }
@@ -5523,6 +5917,7 @@ async function startServer() {
               if (task.pin) {
                 try {
                   await bot.telegram.pinChatMessage(chatId, sentMsg.message_id);
+                  await recordPinnedMessage(chatId, sentMsg, false);
                 } catch (pinError) {
                   console.error(`Failed to pin scheduled message in ${chatId}:`, pinError);
                 }

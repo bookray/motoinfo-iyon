@@ -626,6 +626,7 @@ const App: React.FC = () => {
                   onUpdateChat={handleUpdateChat}
                   onRemoveChat={handleRemoveChat}
                   onAddChat={handleAddChat}
+                  authenticatedFetch={authenticatedFetch}
                 />
               )}
               {activeTab === Tab.AI_SUMMARY && (

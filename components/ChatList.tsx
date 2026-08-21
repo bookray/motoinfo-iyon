@@ -1,17 +1,26 @@
 import React, { useState } from 'react';
 import { Chat } from '../types';
-import { Settings, Trash2, Users, Clock, CheckCircle, Power, PowerOff, Shield, X, Plus } from 'lucide-react';
+import { Settings, Trash2, Users, Clock, CheckCircle, Power, PowerOff, Shield, X, Plus, Pin } from 'lucide-react';
+import { PinnedMessagesModal } from './PinnedMessagesModal';
 
 interface ChatListProps {
   chats: Chat[];
   onUpdateChat: (chat: Chat) => void;
   onRemoveChat: (id: string) => void;
   onAddChat: (id: string) => void;
+  authenticatedFetch?: (url: string, options?: RequestInit) => Promise<Response>;
 }
 
-export const ChatList: React.FC<ChatListProps> = ({ chats, onUpdateChat, onRemoveChat, onAddChat }) => {
+export const ChatList: React.FC<ChatListProps> = ({ 
+  chats, 
+  onUpdateChat, 
+  onRemoveChat, 
+  onAddChat,
+  authenticatedFetch = fetch
+}) => {
   const [newChatId, setNewChatId] = useState('');
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
+  const [pinnedModalChat, setPinnedModalChat] = useState<Chat | null>(null);
   const [newWord, setNewWord] = useState('');
 
   const handleToggleActive = (chat: Chat) => {
@@ -107,6 +116,15 @@ export const ChatList: React.FC<ChatListProps> = ({ chats, onUpdateChat, onRemov
             </div>
 
             <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setPinnedModalChat(chat)}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-sm font-medium text-slate-300 hover:text-white bg-slate-750 hover:bg-slate-700 border border-slate-700/60"
+                title="Просмотр и открепление сообщений"
+              >
+                <Pin className="w-4 h-4 text-blue-400" />
+                Закрепы
+              </button>
+
               <button 
                 onClick={() => setEditingChatId(editingChatId === chat.id ? null : chat.id)}
                 className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors text-sm font-medium ${
@@ -279,6 +297,15 @@ export const ChatList: React.FC<ChatListProps> = ({ chats, onUpdateChat, onRemov
           </React.Fragment>
         ))}
       </div>
+
+      {pinnedModalChat && (
+        <PinnedMessagesModal
+          chat={pinnedModalChat}
+          isOpen={Boolean(pinnedModalChat)}
+          onClose={() => setPinnedModalChat(null)}
+          authenticatedFetch={authenticatedFetch}
+        />
+      )}
     </div>
   );
 };

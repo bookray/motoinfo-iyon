@@ -242,6 +242,14 @@ export interface LatestMember extends Membership {
   chatTitle: string;
 }
 
+export interface HourlyActivityPoint {
+  hour: number;
+  time: string;
+  msgs: number;
+  activeUsers: number;
+  joins: number;
+}
+
 export interface Stats {
   totalMembers: number;
   totalMembersTrend: string;
@@ -259,6 +267,7 @@ export interface Stats {
     onlineMembers: number;
     totalMembers: number;
   }[];
+  hourlyActivity?: HourlyActivityPoint[];
   topActiveMembers: {
     userId: string;
     username?: string;
@@ -338,6 +347,34 @@ export interface ChatMessageRecord {
   lastName?: string;
   text: string;
   timestamp: string;
+}
+
+export interface PinnedMessage {
+  id?: string;
+  messageId: number;
+  chatId: string;
+  text?: string;
+  caption?: string;
+  date: number;
+  pinnedAt?: string;
+  unpinned?: boolean;
+  unpinnedAt?: string;
+  from?: {
+    id: number;
+    firstName?: string;
+    lastName?: string;
+    username?: string;
+    isBot?: boolean;
+  };
+  senderChat?: {
+    id: number;
+    title?: string;
+    username?: string;
+  };
+  hasMedia?: boolean;
+  mediaType?: 'photo' | 'video' | 'document' | 'audio' | 'voice' | 'poll' | 'other';
+  forwardFrom?: string;
+  link?: string;
 }
 
 export const Tab = {
