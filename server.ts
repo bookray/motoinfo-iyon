@@ -2263,7 +2263,11 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
     const msg = err?.message || String(err);
     let hint = '';
     if (msg.includes('Access denied by security policy')) {
-      hint = 'OpenRouter отклонил запрос политикой безопасности ключа. Решение: 1) В кабинете openrouter.ai/keys создайте ключ без ограничений (Default). 2) Если баланс $0, укажите бесплатную модель (например, google/gemini-2.0-flash-exp:free или meta-llama/llama-3.3-70b-instruct:free). 3) В настройках аккаунта openrouter.ai/settings/privacy проверьте правила доступа.';
+      hint = 'OpenRouter отклонил запрос политикой безопасности ключа. Решение: 1) В кабинете openrouter.ai/keys создайте ключ без ограничений (Default). 2) Если баланс $0, укажите бесплатную модель. 3) В настройках аккаунта openrouter.ai/settings/privacy проверьте правила доступа.';
+    } else if (msg.includes('is no longer available') || (msg.includes('404') && msg.includes('models/'))) {
+      hint = 'Выбранная модель устарела в Google API. В настройках ИИ выберите актуальную модель: gemini-3.6-flash или gemini-3.7-flash.';
+    } else if (msg.includes('524') || msg.includes('A timeout occurred') || msg.includes('timeout')) {
+      hint = 'Cloudflare Worker вернул ошибку 524 (Timeout). Решение: обновите код Worker в Cloudflare Dashboard, добавив заголовок Host: generativelanguage.googleapis.com, либо выберите модель gemini-3.6-flash.';
     } else if (msg.includes('404') && (msg.includes('Proxy') || msg.includes('description":"Not Found"'))) {
       hint = 'Указанный прокси вернул 404 Not Found. Обратите внимание: Telegram API Proxy (telegram-bot-api) предназначен исключительно для Telegram и не умеет обрабатывать запросы к Google Gemini. Для Gemini используйте Cloudflare Worker или переключитесь на OpenRouter.';
     } else if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
@@ -2854,7 +2858,7 @@ let settings = {
   telegramApiRoot: process.env.TELEGRAM_API_ROOT || '',
   aiProvider: 'gemini' as 'gemini' | 'openrouter' | 'custom',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
-  geminiModel: 'gemini-2.5-flash',
+  geminiModel: 'gemini-3.6-flash',
   geminiBaseUrl: '',
   geminiUseProxy: true,
   geminiProxySource: 'auto' as 'auto' | 'tg_proxy' | 'cf_worker' | 'custom' | 'direct',

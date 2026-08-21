@@ -587,8 +587,9 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
                     onChange={(e) => setLocalSettings({ ...localSettings, geminiModel: e.target.value })}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all text-sm font-medium"
                   >
-                    <option value="gemini-2.5-flash">gemini-2.5-flash (Рекомендуется: быстрая и умная)</option>
+                    <option value="gemini-3.6-flash">gemini-3.6-flash (Рекомендуется: современная и быстрая)</option>
                     <option value="gemini-3.7-flash">gemini-3.7-flash (Новейшая флагманская)</option>
+                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
                     <option value="gemini-2.0-flash">gemini-2.0-flash (Стабильная)</option>
                     <option value="gemini-1.5-flash">gemini-1.5-flash (Базовая)</option>
                     <option value="gemini-1.5-pro">gemini-1.5-pro (Глубокий анализ)</option>
