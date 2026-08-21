@@ -41,11 +41,30 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onDateRangeChange,
   onUpdateChat
 }) => {
+  const [showRetry, setShowRetry] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!stats) {
+      const timer = setTimeout(() => setShowRetry(true), 4000);
+      return () => clearTimeout(timer);
+    } else {
+      setShowRetry(false);
+    }
+  }, [stats]);
+
   if (!stats) {
     return (
       <div className="flex flex-col items-center justify-center h-64 space-y-4">
         <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
         <p className="text-slate-400">Загрузка статистики...</p>
+        {showRetry && (
+          <button
+            onClick={() => window.location.reload()}
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-lg shadow transition-all"
+          >
+            Обновить страницу
+          </button>
+        )}
       </div>
     );
   }

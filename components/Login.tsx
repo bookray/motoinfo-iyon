@@ -109,6 +109,12 @@ export const Login: React.FC<LoginProps> = ({ onLogin }) => {
                 'Войти в систему'
               )}
             </button>
+
+            <div className="text-center pt-2">
+              <span className="text-xs text-slate-500">
+                По умолчанию: <code className="text-blue-400 bg-slate-950 px-1.5 py-0.5 rounded">admin</code> / <code className="text-blue-400 bg-slate-950 px-1.5 py-0.5 rounded">admin123</code>
+              </span>
+            </div>
           </form>
         </div>
 

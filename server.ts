@@ -613,6 +613,10 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+app.get('/api/auth/me', authenticateToken, (req, res) => {
+  res.json({ user: (req as any).user });
+});
+
 app.get('/api/users', authenticateToken, async (req, res) => {
   try {
     const snapshot = await db.collection('users').get();

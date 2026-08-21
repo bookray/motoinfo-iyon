@@ -32,17 +32,27 @@ const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<Tab>(Tab.STATISTICS);
 
   const authenticatedFetch = async (url: string, options: RequestInit = {}) => {
-    return fetch(url, {
+    const activeToken = localStorage.getItem('token') || token;
+    const res = await fetch(url, {
       ...options,
       headers: {
         ...options.headers,
-        'Authorization': `Bearer ${token}`,
+        ...(activeToken ? { 'Authorization': `Bearer ${activeToken}` } : {}),
       },
     });
+
+    if (res.status === 401 || res.status === 403) {
+      console.warn(`[Auth] Request to ${url} rejected with HTTP ${res.status}. Resetting session.`);
+      localStorage.removeItem('token');
+      localStorage.removeItem('user');
+      setToken(null);
+      setCurrentUser(null);
+    }
+    return res;
   };
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [dbStatus, setDbStatus] = useState<'online' | 'offline'>('offline');
+  const [dbStatus, setDbStatus] = useState<'online' | 'offline'>('online');
   const [botStatus, setBotStatus] = useState<'online' | 'offline'>('offline');
   const [cfStatus, setCfStatus] = useState<'online' | 'offline' | 'disabled'>('disabled');
   const [proxyStatus, setProxyStatus] = useState<'online' | 'offline' | 'disabled'>('disabled');
@@ -95,18 +105,32 @@ const App: React.FC = () => {
   });
 
   useEffect(() => {
+    if (!token || !currentUser) {
+      setIsLoading(false);
+      return;
+    }
+
+    let isMounted = true;
     const initApp = async () => {
       try {
         setIsLoading(true);
-        const healthCheck = await authenticatedFetch(`${API_BASE_URL}/health`).catch(() => null);
+        const healthCheck = await fetch(`${API_BASE_URL}/health`).catch(() => null);
         
         if (healthCheck?.ok) {
           const healthData = await healthCheck.json();
+          if (!isMounted) return;
           setDbStatus('online');
           setBotStatus(healthData.botActive ? 'online' : 'offline');
           setCfStatus(healthData.cfStatus || 'disabled');
           setProxyStatus(healthData.proxyStatus || 'disabled');
-          const [chatsRes, bansRes, filtersRes, logsRes, settingsRes, tasksRes, whitelistRes, multiChatRes, latestMembersRes] = await Promise.all([
+
+          const statsQuery = new URLSearchParams({
+            ...(selectedChatIds.length > 0 ? { chatIds: selectedChatIds.join(',') } : {}),
+            ...(dateRange.start ? { startDate: dateRange.start } : {}),
+            ...(dateRange.end ? { endDate: dateRange.end } : {})
+          }).toString();
+
+          const [chatsRes, bansRes, filtersRes, logsRes, settingsRes, tasksRes, whitelistRes, multiChatRes, latestMembersRes, statsRes, chatBansRes] = await Promise.all([
             authenticatedFetch(`${API_BASE_URL}/chats`),
             authenticatedFetch(`${API_BASE_URL}/bans`),
             authenticatedFetch(`${API_BASE_URL}/filters`),
@@ -115,8 +139,12 @@ const App: React.FC = () => {
             authenticatedFetch(`${API_BASE_URL}/tasks`),
             authenticatedFetch(`${API_BASE_URL}/whitelist`),
             authenticatedFetch(`${API_BASE_URL}/memberships/multi-chat`),
-            authenticatedFetch(`${API_BASE_URL}/memberships/latest`)
+            authenticatedFetch(`${API_BASE_URL}/memberships/latest`),
+            authenticatedFetch(`${API_BASE_URL}/stats?${statsQuery}`),
+            authenticatedFetch(`${API_BASE_URL}/bans/chat`)
           ]);
+
+          if (!isMounted) return;
 
           if (chatsRes.ok) setChats(await chatsRes.json());
           if (bansRes.ok) setBans(await bansRes.json());
@@ -127,25 +155,31 @@ const App: React.FC = () => {
           if (whitelistRes.ok) setWhitelist(await whitelistRes.json());
           if (multiChatRes.ok) setMultiChatUsers(await multiChatRes.json());
           if (latestMembersRes.ok) setLatestMembers(await latestMembersRes.json());
+          if (statsRes.ok) setStats(await statsRes.json());
+          if (chatBansRes.ok) setChatBans(await chatBansRes.json());
         } else {
-          setDbStatus('offline');
+          if (isMounted) setDbStatus('offline');
         }
       } catch (error) {
         console.error("Backend unreachable:", error);
-        setDbStatus('offline');
+        if (isMounted) setDbStatus('offline');
       } finally {
-        setIsLoading(false);
+        if (isMounted) setIsLoading(false);
       }
     };
 
     initApp();
-  }, []);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [token, currentUser]);
 
   // Health check to recover from offline status
   useEffect(() => {
     const checkHealth = async () => {
       try {
-        const res = await authenticatedFetch(`${API_BASE_URL}/health`);
+        const res = await fetch(`${API_BASE_URL}/health`);
         if (res.ok) {
           const healthData = await res.json();
           setBotStatus(healthData.botActive ? 'online' : 'offline');
@@ -174,10 +208,8 @@ const App: React.FC = () => {
     let isMounted = true;
     let controller = new AbortController();
 
-    const pollData = async (isInitial = false) => {
+    const pollData = async () => {
       try {
-        if (dbStatus === 'offline' && !isInitial) return;
-        
         // Reset controller for new request
         controller.abort();
         controller = new AbortController();
@@ -226,7 +258,6 @@ const App: React.FC = () => {
       }
     };
 
-    pollData(true);
     const interval = setInterval(() => pollData(), 10000);
     
     return () => {
