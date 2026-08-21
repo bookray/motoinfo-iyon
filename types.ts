@@ -250,6 +250,18 @@ export interface HourlyActivityPoint {
   joins: number;
 }
 
+export interface HeatmapCell {
+  day: number; // 0 = Пн, 6 = Вс
+  dayName: string; // "Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"
+  dayFullName: string; // "Понедельник", ...
+  hour: number; // 0..23
+  time: string; // "00:00"
+  msgs: number;
+  activeUsers: number;
+  joins: number;
+  intensity?: number; // 0..100
+}
+
 export interface Stats {
   totalMembers: number;
   totalMembersTrend: string;
@@ -268,6 +280,7 @@ export interface Stats {
     totalMembers: number;
   }[];
   hourlyActivity?: HourlyActivityPoint[];
+  heatmapData?: HeatmapCell[];
   topActiveMembers: {
     userId: string;
     username?: string;

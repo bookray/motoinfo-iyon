@@ -4,10 +4,11 @@ import {
 } from 'recharts';
 import { 
   Users, MessageSquare, ShieldAlert, Activity, Filter, Check, Calendar, 
-  Clock, Flame, Moon, Sun, TrendingUp, Sparkles, UserPlus, BarChart3 
+  Clock, Flame, Moon, Sun, TrendingUp, Sparkles, UserPlus, BarChart3,
+  Grid, Layers, Zap, Award, Info, ChevronRight
 } from 'lucide-react';
 
-import { Stats, Chat, HourlyActivityPoint } from '../types';
+import { Stats, Chat, HourlyActivityPoint, HeatmapCell } from '../types';
 import { formatDate } from '../src/utils/dateUtils';
 
 interface DashboardProps {
@@ -45,8 +46,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onUpdateChat
 }) => {
   const [showRetry, setShowRetry] = useState(false);
-  const [hourlyMetric, setHourlyMetric] = useState<'msgs' | 'activeUsers' | 'joins' | 'all'>('msgs');
+  const [activityViewMode, setActivityViewMode] = useState<'heatmap' | 'hourly'>('heatmap');
+  const [activityMetric, setActivityMetric] = useState<'msgs' | 'activeUsers' | 'joins'>('msgs');
   const [hourlyChartType, setHourlyChartType] = useState<'bar' | 'area'>('bar');
+  const [dayFilter, setDayFilter] = useState<'all' | 'weekdays' | 'weekends'>('all');
+  const [hoveredCell, setHoveredCell] = useState<HeatmapCell | null>(null);
+  const [selectedCell, setSelectedCell] = useState<HeatmapCell | null>(null);
 
   React.useEffect(() => {
     if (!stats) {
@@ -57,6 +62,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   }, [stats]);
 
+  const DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+  const DAY_FULL_NAMES = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
+
+  // 1. Process 24-hour summary data
   const hourlyData: HourlyActivityPoint[] = useMemo(() => {
     if (stats?.hourlyActivity && stats.hourlyActivity.length === 24) {
       return stats.hourlyActivity;
@@ -70,47 +79,229 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }));
   }, [stats?.hourlyActivity]);
 
-  const { totalHourlyMsgs, totalHourlyUsers, totalHourlyJoins, peakHour, quietHour, daytimePercent, nighttimePercent } = useMemo(() => {
-    let totalMsgs = 0;
-    let totalUsers = 0;
-    let totalJoins = 0;
-    let maxMsgs = -1;
-    let minMsgs = Infinity;
-    let peakH = hourlyData[0];
-    let quietH = hourlyData[0];
-    let dayMsgs = 0;
-
-    hourlyData.forEach(h => {
-      totalMsgs += h.msgs;
-      totalUsers += h.activeUsers;
-      totalJoins += h.joins;
-
-      if (h.msgs > maxMsgs) {
-        maxMsgs = h.msgs;
-        peakH = h;
+  // 2. Process Heatmap 7x24 Matrix
+  const heatmapData: HeatmapCell[] = useMemo(() => {
+    if (stats?.heatmapData && stats.heatmapData.length === 168) {
+      return stats.heatmapData;
+    }
+    // Synthesize fallback 7x24 matrix from hourly activity and days
+    const synthesized: HeatmapCell[] = [];
+    const dayMultipliers = [0.95, 1.05, 1.1, 1.0, 1.25, 0.85, 0.8]; // Пн, Вт, Ср, Чт, Пт, Сб, Вс
+    for (let d = 0; d < 7; d++) {
+      const mult = dayMultipliers[d];
+      for (let h = 0; h < 24; h++) {
+        const baseH = hourlyData[h] || { msgs: 0, activeUsers: 0, joins: 0 };
+        const msgs = Math.round((baseH.msgs / 7) * mult);
+        const users = Math.round((baseH.activeUsers / 7) * mult);
+        const joins = Math.round((baseH.joins / 7) * mult);
+        synthesized.push({
+          day: d,
+          dayName: DAY_NAMES[d],
+          dayFullName: DAY_FULL_NAMES[d],
+          hour: h,
+          time: `${h.toString().padStart(2, '0')}:00`,
+          msgs,
+          activeUsers: users,
+          joins,
+          intensity: 0
+        });
       }
-      if (h.msgs < minMsgs) {
-        minMsgs = h.msgs;
-        quietH = h;
+    }
+    return synthesized;
+  }, [stats?.heatmapData, hourlyData]);
+
+  // 3. Compute dynamic stats and metrics for Heatmap
+  const {
+    maxMetricVal,
+    totalWeekMetric,
+    peakCell,
+    bestDay,
+    weekdayTotal,
+    weekendTotal,
+    weekdayPct,
+    weekendPct,
+    daytimeTotal,
+    nighttimeTotal,
+    daytimePct,
+    nighttimePct,
+    dayStats,
+    hourStats,
+    filteredDays
+  } = useMemo(() => {
+    let maxVal = 0;
+    let totalMetric = 0;
+    let peakC = heatmapData[0] || null;
+    let maxCellVal = -1;
+
+    // Day totals
+    const dStats = Array.from({ length: 7 }, (_, d) => ({
+      day: d,
+      name: DAY_NAMES[d],
+      fullName: DAY_FULL_NAMES[d],
+      msgs: 0,
+      activeUsers: 0,
+      joins: 0,
+      metricVal: 0,
+      peakHour: 0,
+      peakHourVal: -1
+    }));
+
+    // Hour totals
+    const hStats = Array.from({ length: 24 }, (_, h) => ({
+      hour: h,
+      time: `${h.toString().padStart(2, '0')}:00`,
+      msgs: 0,
+      activeUsers: 0,
+      joins: 0,
+      metricVal: 0
+    }));
+
+    let wDayTotal = 0;
+    let wEndTotal = 0;
+    let dTimeTotal = 0;
+    let nTimeTotal = 0;
+
+    heatmapData.forEach(cell => {
+      const val = cell[activityMetric] || 0;
+      if (val > maxVal) maxVal = val;
+      totalMetric += val;
+
+      if (val > maxCellVal) {
+        maxCellVal = val;
+        peakC = cell;
       }
-      if (h.hour >= 8 && h.hour < 20) {
-        dayMsgs += h.msgs;
+
+      // Aggregate day
+      dStats[cell.day].msgs += cell.msgs;
+      dStats[cell.day].activeUsers += cell.activeUsers;
+      dStats[cell.day].joins += cell.joins;
+      dStats[cell.day].metricVal += val;
+
+      if (val > dStats[cell.day].peakHourVal) {
+        dStats[cell.day].peakHourVal = val;
+        dStats[cell.day].peakHour = cell.hour;
+      }
+
+      // Aggregate hour
+      hStats[cell.hour].msgs += cell.msgs;
+      hStats[cell.hour].activeUsers += cell.activeUsers;
+      hStats[cell.hour].joins += cell.joins;
+      hStats[cell.hour].metricVal += val;
+
+      // Weekday vs Weekend
+      if (cell.day < 5) {
+        wDayTotal += val;
+      } else {
+        wEndTotal += val;
+      }
+
+      // Day vs Night
+      if (cell.hour >= 8 && cell.hour < 20) {
+        dTimeTotal += val;
+      } else {
+        nTimeTotal += val;
       }
     });
 
-    const dayPct = totalMsgs > 0 ? Math.round((dayMsgs / totalMsgs) * 100) : 70;
-    const nightPct = 100 - dayPct;
+    // Best day of week
+    let bDay = dStats[0];
+    dStats.forEach(d => {
+      if (d.metricVal > bDay.metricVal) {
+        bDay = d;
+      }
+    });
+
+    const wTotal = wDayTotal + wEndTotal;
+    const wDayPct = wTotal > 0 ? Math.round((wDayTotal / wTotal) * 100) : 70;
+    const wEndPct = 100 - wDayPct;
+
+    const dnTotal = dTimeTotal + nTimeTotal;
+    const dPct = dnTotal > 0 ? Math.round((dTimeTotal / dnTotal) * 100) : 75;
+    const nPct = 100 - dPct;
+
+    // Filter days
+    let fDays = [0, 1, 2, 3, 4, 5, 6];
+    if (dayFilter === 'weekdays') fDays = [0, 1, 2, 3, 4];
+    if (dayFilter === 'weekends') fDays = [5, 6];
 
     return {
-      totalHourlyMsgs: totalMsgs,
-      totalHourlyUsers: totalUsers,
-      totalHourlyJoins: totalJoins,
-      peakHour: peakH,
-      quietHour: quietH,
-      daytimePercent: dayPct,
-      nighttimePercent: nightPct
+      maxMetricVal: maxVal || 1,
+      totalWeekMetric: totalMetric,
+      peakCell: peakC,
+      bestDay: bDay,
+      weekdayTotal: wDayTotal,
+      weekendTotal: wEndTotal,
+      weekdayPct: wDayPct,
+      weekendPct: wEndPct,
+      daytimeTotal: dTimeTotal,
+      nighttimeTotal: nTimeTotal,
+      daytimePct: dPct,
+      nighttimePct: nPct,
+      dayStats: dStats,
+      hourStats: hStats,
+      filteredDays: fDays
     };
-  }, [hourlyData]);
+  }, [heatmapData, activityMetric, dayFilter]);
+
+  // Color generator for heatmap cell
+  const getCellColorClass = (val: number, isSelected: boolean, isHovered: boolean) => {
+    const ratio = maxMetricVal > 0 ? val / maxMetricVal : 0;
+    const isPeak = val === maxMetricVal && maxMetricVal > 0;
+
+    let base = '';
+    if (activityMetric === 'msgs') {
+      if (val === 0) {
+        base = 'bg-slate-950/80 border-slate-850/60 text-slate-650 hover:border-slate-700';
+      } else if (ratio < 0.15) {
+        base = 'bg-purple-950/30 border-purple-900/30 text-purple-400 hover:bg-purple-900/40';
+      } else if (ratio < 0.35) {
+        base = 'bg-purple-900/50 border-purple-800/40 text-purple-300 hover:bg-purple-800/60';
+      } else if (ratio < 0.60) {
+        base = 'bg-purple-700/60 border-purple-600/50 text-purple-100 hover:bg-purple-600/70';
+      } else if (ratio < 0.85) {
+        base = 'bg-purple-600/85 border-purple-500/70 text-white font-medium hover:bg-purple-500';
+      } else {
+        base = 'bg-purple-500 border-purple-300 text-white font-bold shadow-md shadow-purple-500/30 hover:bg-purple-400';
+      }
+    } else if (activityMetric === 'activeUsers') {
+      if (val === 0) {
+        base = 'bg-slate-950/80 border-slate-850/60 text-slate-650 hover:border-slate-700';
+      } else if (ratio < 0.15) {
+        base = 'bg-sky-950/30 border-sky-900/30 text-sky-400 hover:bg-sky-900/40';
+      } else if (ratio < 0.35) {
+        base = 'bg-sky-900/50 border-sky-800/40 text-sky-300 hover:bg-sky-800/60';
+      } else if (ratio < 0.60) {
+        base = 'bg-sky-700/60 border-sky-600/50 text-sky-100 hover:bg-sky-600/70';
+      } else if (ratio < 0.85) {
+        base = 'bg-sky-600/85 border-sky-500/70 text-white font-medium hover:bg-sky-500';
+      } else {
+        base = 'bg-sky-500 border-sky-300 text-white font-bold shadow-md shadow-sky-500/30 hover:bg-sky-400';
+      }
+    } else {
+      // joins
+      if (val === 0) {
+        base = 'bg-slate-950/80 border-slate-850/60 text-slate-650 hover:border-slate-700';
+      } else if (ratio < 0.15) {
+        base = 'bg-emerald-950/30 border-emerald-900/30 text-emerald-400 hover:bg-emerald-900/40';
+      } else if (ratio < 0.35) {
+        base = 'bg-emerald-900/50 border-emerald-800/40 text-emerald-300 hover:bg-emerald-800/60';
+      } else if (ratio < 0.60) {
+        base = 'bg-emerald-700/60 border-emerald-600/50 text-emerald-100 hover:bg-emerald-600/70';
+      } else if (ratio < 0.85) {
+        base = 'bg-emerald-600/85 border-emerald-500/70 text-white font-medium hover:bg-emerald-500';
+      } else {
+        base = 'bg-emerald-500 border-emerald-300 text-white font-bold shadow-md shadow-emerald-500/30 hover:bg-emerald-400';
+      }
+    }
+
+    if (isSelected) {
+      base += ' ring-2 ring-amber-400 scale-105 z-20 shadow-xl';
+    } else if (isHovered) {
+      base += ' ring-1 ring-white/70 scale-105 z-10';
+    }
+
+    return base;
+  };
 
   const CustomHourlyTooltip = ({ active, payload }: any) => {
     if (active && payload && payload.length) {
@@ -118,8 +309,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
       if (!data) return null;
       const nextHour = (data.hour + 1) % 24;
       const nextLabel = `${nextHour.toString().padStart(2, '0')}:00`;
-      const sharePercent = totalHourlyMsgs > 0 ? ((data.msgs / totalHourlyMsgs) * 100).toFixed(1) : '0';
-      const isPeak = peakHour && peakHour.hour === data.hour && peakHour.msgs > 0;
+      const isPeak = peakCell && peakCell.hour === data.hour && peakCell.msgs > 0;
 
       return (
         <div className="bg-slate-950/95 border border-slate-700 rounded-xl p-3.5 shadow-2xl text-xs space-y-2 min-w-[210px] backdrop-blur-md">
@@ -128,13 +318,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Clock className="w-3.5 h-3.5 text-amber-400" />
               <span>{data.time} — {nextLabel}</span>
             </div>
-            {isPeak ? (
+            {isPeak && (
               <span className="flex items-center gap-1 text-[10px] text-amber-400 bg-amber-500/20 px-1.5 py-0.5 rounded-full font-bold border border-amber-500/30">
                 <Flame className="w-2.5 h-2.5" /> ПИК
-              </span>
-            ) : (
-              <span className="text-[10px] text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded font-mono">
-                {sharePercent}% суток
               </span>
             )}
           </div>
@@ -365,89 +551,132 @@ export const Dashboard: React.FC<DashboardProps> = ({
         />
       </div>
 
-      {/* Hourly User Activity Section */}
+      {/* Heatmap 7x24 & Hourly Activity Section */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
         {/* Header with Title and Mode Controls */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-slate-800 pb-5">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 bg-amber-500/20 text-amber-400 rounded-xl border border-amber-500/30">
-              <Clock className="w-6 h-6" />
+            <div className="p-2.5 bg-purple-500/20 text-purple-400 rounded-xl border border-purple-500/30">
+              <Grid className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg font-bold text-white">Активность пользователей по часам</h3>
-                <span className="px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 text-[11px] font-semibold border border-amber-500/20">
-                  24 часа (00:00 — 23:00)
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-lg font-bold text-white">Тепловая карта активности (Heatmap 7×24)</h3>
+                <span className="px-2.5 py-0.5 rounded-full bg-purple-500/10 text-purple-300 text-[11px] font-semibold border border-purple-500/20 flex items-center gap-1">
+                  <Flame className="w-3 h-3 text-amber-400" />
+                  7 дней × 24 часа
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Почасовое распределение сообщений, уникальных участников и вступлений в чат {dateRange.start && dateRange.end ? `(за период ${formatDate(dateRange.start)} - ${formatDate(dateRange.end)})` : (dateRange.start || dateRange.end ? '' : '(за последние 7 дней)')}
+                Интенсивность сообщений, участников и вступлений по дням недели (Пн–Вс) и часам суток (00:00–23:00) {dateRange.start && dateRange.end ? `(за период ${formatDate(dateRange.start)} - ${formatDate(dateRange.end)})` : (dateRange.start || dateRange.end ? '' : '(за последние 7 дней)')}
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* View Mode Toggle */}
+            <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs">
+              <button
+                onClick={() => setActivityViewMode('heatmap')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  activityViewMode === 'heatmap' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Матрица 7x24"
+              >
+                <Grid className="w-3.5 h-3.5 text-purple-400" />
+                <span>Тепловая карта</span>
+              </button>
+              <button
+                onClick={() => setActivityViewMode('hourly')}
+                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  activityViewMode === 'hourly' ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:text-slate-200'
+                }`}
+                title="Почасовой график 24ч"
+              >
+                <BarChart3 className="w-3.5 h-3.5 text-blue-400" />
+                <span>24ч график</span>
+              </button>
+            </div>
+
             {/* Metric Switcher */}
             <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs">
               <button
-                onClick={() => setHourlyMetric('msgs')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
-                  hourlyMetric === 'msgs' ? 'bg-purple-600 text-white shadow-md shadow-purple-900/30' : 'text-slate-400 hover:text-slate-200'
+                onClick={() => setActivityMetric('msgs')}
+                className={`px-2.5 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  activityMetric === 'msgs' ? 'bg-purple-600 text-white shadow-md shadow-purple-900/30' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <MessageSquare className="w-3.5 h-3.5" />
                 <span>Сообщения</span>
               </button>
               <button
-                onClick={() => setHourlyMetric('activeUsers')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
-                  hourlyMetric === 'activeUsers' ? 'bg-blue-600 text-white shadow-md shadow-blue-900/30' : 'text-slate-400 hover:text-slate-200'
+                onClick={() => setActivityMetric('activeUsers')}
+                className={`px-2.5 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  activityMetric === 'activeUsers' ? 'bg-sky-600 text-white shadow-md shadow-sky-900/30' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <Users className="w-3.5 h-3.5" />
                 <span>Участники</span>
               </button>
               <button
-                onClick={() => setHourlyMetric('joins')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
-                  hourlyMetric === 'joins' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-900/30' : 'text-slate-400 hover:text-slate-200'
+                onClick={() => setActivityMetric('joins')}
+                className={`px-2.5 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
+                  activityMetric === 'joins' ? 'bg-emerald-600 text-white shadow-md shadow-emerald-900/30' : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <UserPlus className="w-3.5 h-3.5" />
                 <span>Вступления</span>
               </button>
-              <button
-                onClick={() => setHourlyMetric('all')}
-                className={`px-3 py-1.5 rounded-lg font-medium transition-all flex items-center gap-1.5 ${
-                  hourlyMetric === 'all' ? 'bg-amber-600 text-white shadow-md shadow-amber-900/30' : 'text-slate-400 hover:text-slate-200'
-                }`}
-              >
-                <BarChart3 className="w-3.5 h-3.5" />
-                <span>Все</span>
-              </button>
             </div>
 
-            {/* Chart Type Switcher */}
-            <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs">
-              <button
-                onClick={() => setHourlyChartType('bar')}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  hourlyChartType === 'bar' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
-                }`}
-                title="Столбчатая диаграмма"
-              >
-                Столбцы
-              </button>
-              <button
-                onClick={() => setHourlyChartType('area')}
-                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                  hourlyChartType === 'area' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
-                }`}
-                title="Плавная область"
-              >
-                Область
-              </button>
-            </div>
+            {/* Day Filter Switcher (when in Heatmap mode) */}
+            {activityViewMode === 'heatmap' ? (
+              <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs">
+                <button
+                  onClick={() => setDayFilter('all')}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    dayFilter === 'all' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Все дни
+                </button>
+                <button
+                  onClick={() => setDayFilter('weekdays')}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    dayFilter === 'weekdays' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Будни
+                </button>
+                <button
+                  onClick={() => setDayFilter('weekends')}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    dayFilter === 'weekends' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Выходные
+                </button>
+              </div>
+            ) : (
+              <div className="bg-slate-950 p-1 rounded-xl border border-slate-800 flex items-center gap-1 text-xs">
+                <button
+                  onClick={() => setHourlyChartType('bar')}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    hourlyChartType === 'bar' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Столбцы
+                </button>
+                <button
+                  onClick={() => setHourlyChartType('area')}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                    hourlyChartType === 'area' ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  Область
+                </button>
+              </div>
+            )}
           </div>
         </div>
 
@@ -458,167 +687,426 @@ export const Dashboard: React.FC<DashboardProps> = ({
               <Flame className="w-4 h-4" />
             </div>
             <div className="min-w-0">
-              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">Пиковый час</p>
+              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">Пиковый слот недели</p>
               <p className="text-sm font-bold text-white truncate">
-                {peakHour ? `${peakHour.time} — ${((peakHour.hour + 1) % 24).toString().padStart(2, '0')}:00` : '—'}
+                {peakCell ? `${peakCell.dayName}, ${peakCell.time}–${((peakCell.hour + 1) % 24).toString().padStart(2, '0')}:00` : '—'}
+              </p>
+              <p className="text-[10px] text-amber-400/90 truncate font-mono">
+                {peakCell ? `${peakCell[activityMetric].toLocaleString()} ${activityMetric === 'msgs' ? 'сообщ.' : activityMetric === 'activeUsers' ? 'участн.' : 'вступл.'}` : ''}
               </p>
             </div>
           </div>
 
           <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex items-center gap-3">
             <div className="p-2 bg-purple-500/10 text-purple-400 rounded-lg shrink-0">
-              <MessageSquare className="w-4 h-4" />
+              <Award className="w-4 h-4" />
             </div>
             <div className="min-w-0">
-              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">В пиковый час</p>
+              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">Самый активный день</p>
               <p className="text-sm font-bold text-white truncate">
-                {peakHour ? `${peakHour.msgs.toLocaleString()} сообщ.` : '0'}
+                {bestDay ? bestDay.fullName : '—'}
+              </p>
+              <p className="text-[10px] text-purple-300/90 truncate font-mono">
+                {bestDay ? `${bestDay.metricVal.toLocaleString()} (${totalWeekMetric > 0 ? Math.round((bestDay.metricVal / totalWeekMetric) * 100) : 0}%)` : ''}
               </p>
             </div>
           </div>
 
           <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex items-center gap-3">
-            <div className="p-2 bg-amber-500/10 text-amber-400 rounded-lg shrink-0">
-              <Sun className="w-4 h-4" />
+            <div className="p-2 bg-blue-500/10 text-blue-400 rounded-lg shrink-0">
+              <Calendar className="w-4 h-4" />
             </div>
             <div className="min-w-0">
-              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">День (08:00–20:00)</p>
-              <p className="text-sm font-bold text-amber-300 truncate">
-                {daytimePercent}% активности
+              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">Будни vs Выходные</p>
+              <p className="text-sm font-bold text-blue-300 truncate">
+                {weekdayPct}% / {weekendPct}%
+              </p>
+              <p className="text-[10px] text-slate-400 truncate">
+                Будни: {weekdayTotal.toLocaleString()}
               </p>
             </div>
           </div>
 
           <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl p-3 flex items-center gap-3">
             <div className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg shrink-0">
-              <Moon className="w-4 h-4" />
+              <Sun className="w-4 h-4" />
             </div>
             <div className="min-w-0">
-              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">Ночь (20:00–08:00)</p>
+              <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider truncate">День vs Ночь</p>
               <p className="text-sm font-bold text-indigo-300 truncate">
-                {nighttimePercent}% активности
+                {daytimePct}% / {nighttimePct}%
+              </p>
+              <p className="text-[10px] text-slate-400 truncate">
+                День (08–20): {daytimeTotal.toLocaleString()}
               </p>
             </div>
           </div>
         </div>
 
-        {/* Chart Canvas */}
-        <div className="h-80 w-full pt-2">
-          <ResponsiveContainer width="100%" height="100%">
-            {hourlyChartType === 'bar' ? (
-              <BarChart data={hourlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="hourlyMsgsGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#a855f7" stopOpacity={0.9} />
-                    <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.5} />
-                  </linearGradient>
-                  <linearGradient id="hourlyUsersGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.9} />
-                    <stop offset="100%" stopColor="#0284c7" stopOpacity={0.5} />
-                  </linearGradient>
-                  <linearGradient id="hourlyJoinsGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#34d399" stopOpacity={0.9} />
-                    <stop offset="100%" stopColor="#059669" stopOpacity={0.5} />
-                  </linearGradient>
-                  <linearGradient id="peakHighlightGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#f59e0b" stopOpacity={1} />
-                    <stop offset="100%" stopColor="#d97706" stopOpacity={0.7} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis 
-                  dataKey="time" 
-                  stroke="#64748b" 
-                  fontSize={10} 
-                  tickLine={false} 
-                  axisLine={false} 
-                  interval={1}
-                />
-                <YAxis stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
-                <Tooltip content={<CustomHourlyTooltip />} />
-                {hourlyMetric === 'msgs' && (
-                  <Bar dataKey="msgs" radius={[4, 4, 0, 0]} name="Сообщения">
-                    {hourlyData.map((entry, index) => (
-                      <Cell 
-                        key={`cell-${index}`} 
-                        fill={peakHour && entry.hour === peakHour.hour && peakHour.msgs > 0 ? 'url(#peakHighlightGrad)' : 'url(#hourlyMsgsGrad)'} 
-                      />
+        {/* VIEW 1: HEATMAP 7x24 MATRIX */}
+        {activityViewMode === 'heatmap' && (
+          <div className="space-y-4">
+            {/* Scrollable Heatmap Grid */}
+            <div className="overflow-x-auto pb-2 -mx-2 px-2">
+              <div className="min-w-[840px] space-y-1.5">
+                {/* Hour Header Row (00 - 23) */}
+                <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-400 pb-1">
+                  <div className="w-16 shrink-0 text-slate-500 font-sans font-bold text-xs uppercase pl-1">
+                    День
+                  </div>
+                  <div className="grid grid-cols-24 flex-1 gap-1 text-center">
+                    {Array.from({ length: 24 }, (_, h) => (
+                      <div 
+                        key={`head-h-${h}`} 
+                        className={`text-[10px] py-1 rounded transition-colors ${
+                          h % 6 === 0 ? 'text-amber-400 font-bold bg-slate-950/60' : 'text-slate-500'
+                        }`}
+                        title={`${h.toString().padStart(2, '0')}:00`}
+                      >
+                        {h.toString().padStart(2, '0')}
+                      </div>
                     ))}
-                  </Bar>
-                )}
-                {hourlyMetric === 'activeUsers' && (
-                  <Bar dataKey="activeUsers" fill="url(#hourlyUsersGrad)" radius={[4, 4, 0, 0]} name="Активные участники" />
-                )}
-                {hourlyMetric === 'joins' && (
-                  <Bar dataKey="joins" fill="url(#hourlyJoinsGrad)" radius={[4, 4, 0, 0]} name="Вступления" />
-                )}
-                {hourlyMetric === 'all' && (
-                  <>
-                    <Bar dataKey="msgs" fill="url(#hourlyMsgsGrad)" radius={[3, 3, 0, 0]} name="Сообщения" />
-                    <Bar dataKey="activeUsers" fill="url(#hourlyUsersGrad)" radius={[3, 3, 0, 0]} name="Активные участники" />
-                    <Bar dataKey="joins" fill="url(#hourlyJoinsGrad)" radius={[3, 3, 0, 0]} name="Вступления" />
-                  </>
-                )}
-              </BarChart>
-            ) : (
-              <AreaChart data={hourlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="areaMsgsGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.5} />
-                    <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.0} />
-                  </linearGradient>
-                  <linearGradient id="areaUsersGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.5} />
-                    <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0.0} />
-                  </linearGradient>
-                  <linearGradient id="areaJoinsGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.5} />
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
-                <XAxis 
-                  dataKey="time" 
-                  stroke="#64748b" 
-                  fontSize={10} 
-                  tickLine={false} 
-                  axisLine={false} 
-                  interval={1}
-                />
-                <YAxis stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
-                <Tooltip content={<CustomHourlyTooltip />} />
-                {hourlyMetric === 'msgs' && (
-                  <Area type="monotone" dataKey="msgs" stroke="#8b5cf6" strokeWidth={3} fillOpacity={1} fill="url(#areaMsgsGrad)" name="Сообщения" />
-                )}
-                {hourlyMetric === 'activeUsers' && (
-                  <Area type="monotone" dataKey="activeUsers" stroke="#0ea5e9" strokeWidth={3} fillOpacity={1} fill="url(#areaUsersGrad)" name="Активные участники" />
-                )}
-                {hourlyMetric === 'joins' && (
-                  <Area type="monotone" dataKey="joins" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#areaJoinsGrad)" name="Вступления" />
-                )}
-                {hourlyMetric === 'all' && (
-                  <>
-                    <Area type="monotone" dataKey="msgs" stroke="#8b5cf6" strokeWidth={2.5} fillOpacity={1} fill="url(#areaMsgsGrad)" name="Сообщения" />
-                    <Area type="monotone" dataKey="activeUsers" stroke="#0ea5e9" strokeWidth={2.5} fillOpacity={1} fill="url(#areaUsersGrad)" name="Активные участники" />
-                  </>
-                )}
-              </AreaChart>
+                  </div>
+                  <div className="w-28 shrink-0 text-right pr-2 text-slate-500 font-sans font-semibold text-[11px]">
+                    Итого
+                  </div>
+                </div>
+
+                {/* Day Rows */}
+                {filteredDays.map(dayIdx => {
+                  const day = dayStats[dayIdx];
+                  const dayCells = heatmapData.filter(c => c.day === dayIdx);
+                  const isWeekend = dayIdx >= 5;
+                  const dayShareOfTotal = totalWeekMetric > 0 ? Math.round((day.metricVal / totalWeekMetric) * 100) : 0;
+
+                  return (
+                    <div 
+                      key={`day-row-${dayIdx}`}
+                      className="flex items-center gap-1.5 group hover:bg-slate-950/30 p-1 rounded-xl transition-colors"
+                    >
+                      {/* Day Label */}
+                      <div className="w-16 shrink-0 flex items-center justify-between pr-2">
+                        <span className={`text-xs font-bold ${isWeekend ? 'text-amber-400' : 'text-slate-200'}`}>
+                          {day.name}
+                        </span>
+                        {isWeekend ? (
+                          <span className="text-[9px] px-1 py-0.2 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                            вых
+                          </span>
+                        ) : (
+                          <span className="text-[9px] text-slate-500 font-mono">
+                            {dayShareOfTotal}%
+                          </span>
+                        )}
+                      </div>
+
+                      {/* 24 Hour Tiles */}
+                      <div className="grid grid-cols-24 flex-1 gap-1">
+                        {Array.from({ length: 24 }, (_, hour) => {
+                          const cell = dayCells.find(c => c.hour === hour) || {
+                            day: dayIdx,
+                            dayName: DAY_NAMES[dayIdx],
+                            dayFullName: DAY_FULL_NAMES[dayIdx],
+                            hour,
+                            time: `${hour.toString().padStart(2, '0')}:00`,
+                            msgs: 0,
+                            activeUsers: 0,
+                            joins: 0,
+                            intensity: 0
+                          };
+                          const val = cell[activityMetric] || 0;
+                          const isSelected = selectedCell?.day === dayIdx && selectedCell?.hour === hour;
+                          const isHovered = hoveredCell?.day === dayIdx && hoveredCell?.hour === hour;
+                          const isPeakWeek = peakCell?.day === dayIdx && peakCell?.hour === hour && peakCell[activityMetric] > 0;
+
+                          return (
+                            <button
+                              key={`cell-${dayIdx}-${hour}`}
+                              onClick={() => setSelectedCell(cell)}
+                              onMouseEnter={() => setHoveredCell(cell)}
+                              onMouseLeave={() => setHoveredCell(null)}
+                              className={`h-9 rounded-md border flex flex-col items-center justify-center transition-all relative ${getCellColorClass(val, isSelected, isHovered)}`}
+                              title={`${day.fullName} ${cell.time}: ${val.toLocaleString()} (${activityMetric === 'msgs' ? 'сообщений' : activityMetric === 'activeUsers' ? 'участников' : 'вступлений'})`}
+                            >
+                              {val > 0 && (
+                                <span className="text-[9px] font-mono leading-none tracking-tighter truncate max-w-full px-0.5">
+                                  {val > 999 ? `${(val / 1000).toFixed(1)}k` : val}
+                                </span>
+                              )}
+                              {isPeakWeek && (
+                                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-900 animate-pulse" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Day Summary on Right */}
+                      <div className="w-28 shrink-0 flex items-center justify-between pl-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center justify-between text-[11px] font-mono">
+                            <span className="text-white font-bold">{day.metricVal.toLocaleString()}</span>
+                            <span className="text-slate-500 text-[10px]">пик {day.peakHour.toString().padStart(2, '0')}ч</span>
+                          </div>
+                          <div className="w-full bg-slate-800/80 rounded-full h-1 mt-1 overflow-hidden">
+                            <div 
+                              className={`h-full rounded-full ${activityMetric === 'msgs' ? 'bg-purple-500' : activityMetric === 'activeUsers' ? 'bg-sky-500' : 'bg-emerald-500'}`}
+                              style={{ width: `${Math.min(dayShareOfTotal * 3, 100)}%` }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Hourly Totals Row (Footer) */}
+                <div className="flex items-center gap-1.5 pt-2 border-t border-slate-800/80 text-[10px] font-mono">
+                  <div className="w-16 shrink-0 text-slate-500 font-sans font-semibold pl-1">
+                    Сумма
+                  </div>
+                  <div className="grid grid-cols-24 flex-1 gap-1 text-center">
+                    {Array.from({ length: 24 }, (_, h) => {
+                      const hVal = hourStats[h]?.metricVal || 0;
+                      return (
+                        <div 
+                          key={`foot-h-${h}`}
+                          className="py-1 rounded bg-slate-950/60 text-slate-400 truncate text-[9px]"
+                          title={`За все дни в ${h.toString().padStart(2, '0')}:00 — ${hVal.toLocaleString()}`}
+                        >
+                          {hVal > 999 ? `${(hVal / 1000).toFixed(1)}k` : hVal}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="w-28 shrink-0 text-right pr-2 text-white font-bold text-xs font-mono">
+                    {totalWeekMetric.toLocaleString()}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Active Cell Inspector / Tooltip Card */}
+            {(hoveredCell || selectedCell) && (
+              <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 shadow-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 animate-in fade-in duration-200">
+                {(() => {
+                  const target = hoveredCell || selectedCell!;
+                  const isTargetPeak = peakCell?.day === target.day && peakCell?.hour === target.hour && peakCell[activityMetric] > 0;
+                  const nextHour = (target.hour + 1) % 24;
+                  const dayTotal = dayStats[target.day]?.metricVal || 1;
+                  const dayShare = ((target[activityMetric] / dayTotal) * 100).toFixed(1);
+                  const weekShare = totalWeekMetric > 0 ? ((target[activityMetric] / totalWeekMetric) * 100).toFixed(1) : '0';
+
+                  return (
+                    <>
+                      <div className="flex items-center gap-3">
+                        <div className={`p-3 rounded-xl ${activityMetric === 'msgs' ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30' : activityMetric === 'activeUsers' ? 'bg-sky-500/20 text-sky-400 border border-sky-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'}`}>
+                          <Clock className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-sm font-bold text-white">
+                              {target.dayFullName}, {target.time} — {nextHour.toString().padStart(2, '0')}:00
+                            </h4>
+                            {isTargetPeak ? (
+                              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-bold border border-amber-500/30 flex items-center gap-1">
+                                <Flame className="w-3 h-3" /> ПИК НЕДЕЛИ
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded font-mono">
+                                {dayShare}% дня • {weekShare}% недели
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 mt-0.5">
+                            Детализация активности пользователей в выбранный часовой интервал
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 bg-slate-900/80 px-4 py-2.5 rounded-xl border border-slate-800 text-xs">
+                        <div className="flex items-center gap-2">
+                          <MessageSquare className="w-3.5 h-3.5 text-purple-400" />
+                          <span className="text-slate-400">Сообщений:</span>
+                          <span className="font-bold text-white text-sm">{target.msgs.toLocaleString()}</span>
+                        </div>
+                        <div className="w-px h-4 bg-slate-800" />
+                        <div className="flex items-center gap-2">
+                          <Users className="w-3.5 h-3.5 text-sky-400" />
+                          <span className="text-slate-400">Участников:</span>
+                          <span className="font-bold text-white text-sm">{target.activeUsers.toLocaleString()}</span>
+                        </div>
+                        <div className="w-px h-4 bg-slate-800" />
+                        <div className="flex items-center gap-2">
+                          <UserPlus className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-slate-400">Вступлений:</span>
+                          <span className="font-bold text-white text-sm">{target.joins.toLocaleString()}</span>
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
             )}
-          </ResponsiveContainer>
-        </div>
+
+            {/* Heatmap Legend Bar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 text-xs text-slate-400 border-t border-slate-800/60">
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] text-slate-500 font-semibold uppercase">Шкала интенсивности:</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] text-slate-500">0</span>
+                  <div className="flex items-center gap-1 px-1">
+                    {activityMetric === 'msgs' && (
+                      <>
+                        <div className="w-4 h-3 rounded-xs bg-slate-950 border border-slate-800" title="0" />
+                        <div className="w-4 h-3 rounded-xs bg-purple-950/40 border border-purple-900/30" title="Низкая" />
+                        <div className="w-4 h-3 rounded-xs bg-purple-900/60 border border-purple-800/40" title="Умеренная" />
+                        <div className="w-4 h-3 rounded-xs bg-purple-700/70 border border-purple-600/50" title="Средняя" />
+                        <div className="w-4 h-3 rounded-xs bg-purple-600/90 border border-purple-500/70" title="Высокая" />
+                        <div className="w-4 h-3 rounded-xs bg-purple-500 border border-purple-300" title="Пик" />
+                      </>
+                    )}
+                    {activityMetric === 'activeUsers' && (
+                      <>
+                        <div className="w-4 h-3 rounded-xs bg-slate-950 border border-slate-800" title="0" />
+                        <div className="w-4 h-3 rounded-xs bg-sky-950/40 border border-sky-900/30" title="Низкая" />
+                        <div className="w-4 h-3 rounded-xs bg-sky-900/60 border border-sky-800/40" title="Умеренная" />
+                        <div className="w-4 h-3 rounded-xs bg-sky-700/70 border border-sky-600/50" title="Средняя" />
+                        <div className="w-4 h-3 rounded-xs bg-sky-600/90 border border-sky-500/70" title="Высокая" />
+                        <div className="w-4 h-3 rounded-xs bg-sky-500 border border-sky-300" title="Пик" />
+                      </>
+                    )}
+                    {activityMetric === 'joins' && (
+                      <>
+                        <div className="w-4 h-3 rounded-xs bg-slate-950 border border-slate-800" title="0" />
+                        <div className="w-4 h-3 rounded-xs bg-emerald-950/40 border border-emerald-900/30" title="Низкая" />
+                        <div className="w-4 h-3 rounded-xs bg-emerald-900/60 border border-emerald-800/40" title="Умеренная" />
+                        <div className="w-4 h-3 rounded-xs bg-emerald-700/70 border border-emerald-600/50" title="Средняя" />
+                        <div className="w-4 h-3 rounded-xs bg-emerald-600/90 border border-emerald-500/70" title="Высокая" />
+                        <div className="w-4 h-3 rounded-xs bg-emerald-500 border border-emerald-300" title="Пик" />
+                      </>
+                    )}
+                  </div>
+                  <span className="text-[10px] text-slate-300 font-mono font-bold">{maxMetricVal.toLocaleString()}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                <span>Кликните на любую ячейку карты для фиксации параметров интервала</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* VIEW 2: HOURLY 24H CHARTS */}
+        {activityViewMode === 'hourly' && (
+          <div className="space-y-4">
+            <div className="h-80 w-full pt-2">
+              <ResponsiveContainer width="100%" height="100%">
+                {hourlyChartType === 'bar' ? (
+                  <BarChart data={hourlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="hourlyMsgsGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#a855f7" stopOpacity={0.9} />
+                        <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.5} />
+                      </linearGradient>
+                      <linearGradient id="hourlyUsersGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#38bdf8" stopOpacity={0.9} />
+                        <stop offset="100%" stopColor="#0284c7" stopOpacity={0.5} />
+                      </linearGradient>
+                      <linearGradient id="hourlyJoinsGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#34d399" stopOpacity={0.9} />
+                        <stop offset="100%" stopColor="#059669" stopOpacity={0.5} />
+                      </linearGradient>
+                      <linearGradient id="peakHighlightGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="#f59e0b" stopOpacity={1} />
+                        <stop offset="100%" stopColor="#d97706" stopOpacity={0.7} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                    <XAxis 
+                      dataKey="time" 
+                      stroke="#64748b" 
+                      fontSize={10} 
+                      tickLine={false} 
+                      axisLine={false} 
+                      interval={1}
+                    />
+                    <YAxis stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
+                    <Tooltip content={<CustomHourlyTooltip />} />
+                    {activityMetric === 'msgs' && (
+                      <Bar dataKey="msgs" radius={[4, 4, 0, 0]} name="Сообщения">
+                        {hourlyData.map((entry, index) => (
+                          <Cell 
+                            key={`cell-${index}`} 
+                            fill={peakCell && entry.hour === peakCell.hour && peakCell.msgs > 0 ? 'url(#peakHighlightGrad)' : 'url(#hourlyMsgsGrad)'} 
+                          />
+                        ))}
+                      </Bar>
+                    )}
+                    {activityMetric === 'activeUsers' && (
+                      <Bar dataKey="activeUsers" fill="url(#hourlyUsersGrad)" radius={[4, 4, 0, 0]} name="Активные участники" />
+                    )}
+                    {activityMetric === 'joins' && (
+                      <Bar dataKey="joins" fill="url(#hourlyJoinsGrad)" radius={[4, 4, 0, 0]} name="Вступления" />
+                    )}
+                  </BarChart>
+                ) : (
+                  <AreaChart data={hourlyData} margin={{ top: 10, right: 10, left: -10, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id="areaMsgsGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#8b5cf6" stopOpacity={0.5} />
+                        <stop offset="95%" stopColor="#8b5cf6" stopOpacity={0.0} />
+                      </linearGradient>
+                      <linearGradient id="areaUsersGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#0ea5e9" stopOpacity={0.5} />
+                        <stop offset="95%" stopColor="#0ea5e9" stopOpacity={0.0} />
+                      </linearGradient>
+                      <linearGradient id="areaJoinsGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.5} />
+                        <stop offset="95%" stopColor="#10b981" stopOpacity={0.0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                    <XAxis 
+                      dataKey="time" 
+                      stroke="#64748b" 
+                      fontSize={10} 
+                      tickLine={false} 
+                      axisLine={false} 
+                      interval={1}
+                    />
+                    <YAxis stroke="#64748b" fontSize={11} tickLine={false} axisLine={false} />
+                    <Tooltip content={<CustomHourlyTooltip />} />
+                    {activityMetric === 'msgs' && (
+                      <Area type="monotone" dataKey="msgs" stroke="#8b5cf6" strokeWidth={3} fillOpacity={1} fill="url(#areaMsgsGrad)" name="Сообщения" />
+                    )}
+                    {activityMetric === 'activeUsers' && (
+                      <Area type="monotone" dataKey="activeUsers" stroke="#0ea5e9" strokeWidth={3} fillOpacity={1} fill="url(#areaUsersGrad)" name="Активные участники" />
+                    )}
+                    {activityMetric === 'joins' && (
+                      <Area type="monotone" dataKey="joins" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#areaJoinsGrad)" name="Вступления" />
+                    )}
+                  </AreaChart>
+                )}
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
 
         {/* Informational Footer Note */}
         <div className="bg-slate-950/40 border border-slate-800/60 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-slate-400">
           <Sparkles className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
           <div className="leading-relaxed">
             <span className="font-semibold text-slate-300">Совет по расписанию: </span>
-            {peakHour && peakHour.msgs > 0 ? (
+            {peakCell && peakCell[activityMetric] > 0 ? (
               <span>
-                Основной пик общения участников приходится на интервал <strong className="text-amber-300 font-medium">{peakHour.time} — {((peakHour.hour + 1) % 24).toString().padStart(2, '0')}:00</strong>. Это оптимальное время для запуска важных анонсов, рассылок и опросов с максимальным охватом.
+                Главный пик активности в сообществе зафиксирован в <strong className="text-amber-300 font-medium">{peakCell.dayFullName}, {peakCell.time} — {((peakCell.hour + 1) % 24).toString().padStart(2, '0')}:00</strong> ({peakCell[activityMetric].toLocaleString()} {activityMetric === 'msgs' ? 'сообщений' : activityMetric === 'activeUsers' ? 'активных участников' : 'вступлений'}). Публикация важных материалов в это время обеспечит максимальное вовлечение.
               </span>
             ) : (
               <span>
-                График автоматически агрегирует активность всех участников по часам суток на основе сообщений и системных событий из Telegram Bot API.
+                Тепловая карта 7×24 агрегирует активность пользователей по дням недели и часам суток на основе истории сообщений и системных событий Telegram.
               </span>
             )}
           </div>

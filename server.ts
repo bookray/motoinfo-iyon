@@ -1183,21 +1183,44 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     .sort((a, b) => b.count - a.count)
     .slice(0, 10);
 
-  // Calculate 24-hour distribution of user activity (messages, active users, joins)
+  // Calculate 24-hour and 7x24 Heatmap distribution of user activity
+  const DAY_NAMES = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+  const DAY_FULL_NAMES = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
+
   const hourlyUsersSets: Set<string>[] = Array.from({ length: 24 }, () => new Set<string>());
   const hourlyMsgsCount: number[] = Array.from({ length: 24 }, () => 0);
   const hourlyJoinsCount: number[] = Array.from({ length: 24 }, () => 0);
 
+  // Initialize 7x24 grid (7 days x 24 hours)
+  const heatmapUsersSets: Set<string>[][] = Array.from({ length: 7 }, () => 
+    Array.from({ length: 24 }, () => new Set<string>())
+  );
+  const heatmapMsgsCount: number[][] = Array.from({ length: 7 }, () => 
+    Array.from({ length: 24 }, () => 0)
+  );
+  const heatmapJoinsCount: number[][] = Array.from({ length: 7 }, () => 
+    Array.from({ length: 24 }, () => 0)
+  );
+
   // 1. Extract from filteredStatsHistory (aggregated stats records)
   filteredStatsHistory.forEach(point => {
+    const parsedDate = new Date(`${point.date}T12:00:00Z`);
+    const jsDay = parsedDate.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const dayIndex = (jsDay + 6) % 7; // 0=Пн .. 6=Вс
+
     if (point.hourly) {
       for (let h = 0; h < 24; h++) {
         const hData = point.hourly[h] || point.hourly[String(h)];
         if (hData) {
           hourlyMsgsCount[h] += (hData.msgs || 0);
           hourlyJoinsCount[h] += (hData.joins || 0);
+          heatmapMsgsCount[dayIndex][h] += (hData.msgs || 0);
+          heatmapJoinsCount[dayIndex][h] += (hData.joins || 0);
           if (Array.isArray(hData.activeUsers)) {
-            hData.activeUsers.forEach((u: string) => hourlyUsersSets[h].add(u));
+            hData.activeUsers.forEach((u: string) => {
+              hourlyUsersSets[h].add(u);
+              heatmapUsersSets[dayIndex][h].add(u);
+            });
           }
         }
       }
@@ -1210,7 +1233,10 @@ app.get('/api/stats', authenticateToken, (req, res) => {
             const hData = cStat.hourly[h] || cStat.hourly[String(h)];
             if (hData) {
               if (Array.isArray(hData.activeUsers)) {
-                hData.activeUsers.forEach((u: string) => hourlyUsersSets[h].add(u));
+                hData.activeUsers.forEach((u: string) => {
+                  hourlyUsersSets[h].add(u);
+                  heatmapUsersSets[dayIndex][h].add(u);
+                });
               }
             }
           }
@@ -1232,14 +1258,20 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     }
 
     try {
-      const msgHour = new Date(msg.timestamp).getHours();
+      const d = new Date(msg.timestamp);
+      const jsDay = d.getDay();
+      const dayIndex = (jsDay + 6) % 7;
+      const msgHour = d.getHours();
       if (msgHour >= 0 && msgHour < 24) {
-        // If stats point had 0 msgs recorded in that hour, ensure chatMessages are reflected
         if (hourlyMsgsCount[msgHour] === 0) {
           hourlyMsgsCount[msgHour]++;
         }
+        if (heatmapMsgsCount[dayIndex][msgHour] === 0) {
+          heatmapMsgsCount[dayIndex][msgHour]++;
+        }
         if (msg.userId) {
           hourlyUsersSets[msgHour].add(String(msg.userId));
+          heatmapUsersSets[dayIndex][msgHour].add(String(msg.userId));
         }
       }
     } catch (e) {
@@ -1257,14 +1289,50 @@ app.get('/api/stats', authenticateToken, (req, res) => {
       if (!chat || !allowedChatIds.includes(String(chat.id))) return;
     }
     try {
-      const logHour = new Date(l.timestamp).getHours();
+      const d = new Date(l.timestamp);
+      const jsDay = d.getDay();
+      const dayIndex = (jsDay + 6) % 7;
+      const logHour = d.getHours();
       if (logHour >= 0 && logHour < 24) {
         if (hourlyJoinsCount[logHour] === 0) {
           hourlyJoinsCount[logHour]++;
         }
+        if (heatmapJoinsCount[dayIndex][logHour] === 0) {
+          heatmapJoinsCount[dayIndex][logHour]++;
+        }
       }
     } catch (e) {}
   });
+
+  // Calculate max values for heatmap intensities
+  let maxHeatmapMsgs = 0;
+  for (let d = 0; d < 7; d++) {
+    for (let h = 0; h < 24; h++) {
+      if (heatmapMsgsCount[d][h] > maxHeatmapMsgs) maxHeatmapMsgs = heatmapMsgsCount[d][h];
+    }
+  }
+
+  const heatmapData: any[] = [];
+  for (let d = 0; d < 7; d++) {
+    for (let h = 0; h < 24; h++) {
+      const msgs = heatmapMsgsCount[d][h];
+      const activeUsers = heatmapUsersSets[d][h].size;
+      const joins = heatmapJoinsCount[d][h];
+      const intensity = maxHeatmapMsgs > 0 ? Math.round((msgs / maxHeatmapMsgs) * 100) : 0;
+
+      heatmapData.push({
+        day: d,
+        dayName: DAY_NAMES[d],
+        dayFullName: DAY_FULL_NAMES[d],
+        hour: h,
+        time: `${h.toString().padStart(2, '0')}:00`,
+        msgs,
+        activeUsers,
+        joins,
+        intensity
+      });
+    }
+  }
 
   const hourlyActivity = Array.from({ length: 24 }, (_, hour) => {
     const timeLabel = `${hour.toString().padStart(2, '0')}:00`;
@@ -1287,6 +1355,7 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     activeChats: activeChatsCount,
     chartData,
     hourlyActivity,
+    heatmapData,
     topActiveMembers,
     topActiveAdmins,
     topChatsByMembers,
