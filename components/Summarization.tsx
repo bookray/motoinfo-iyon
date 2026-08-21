@@ -1042,11 +1042,10 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                       onChange={(e) => setAiForm({ ...aiForm, geminiProxySource: e.target.value as any })}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     >
-                      <option value="auto">⚡ Авто (Telegram Proxy или CF Worker)</option>
-                      <option value="tg_proxy">📡 Telegram API Proxy {geminiStatus?.detectedTelegramProxy ? `(${geminiStatus.detectedTelegramProxy})` : ''}</option>
+                      <option value="auto">⚡ Авто (Cloudflare Worker или кастомный прокси)</option>
                       <option value="cf_worker">☁️ Cloudflare Worker {geminiStatus?.detectedCfWorker ? `(${geminiStatus.detectedCfWorker})` : ''}</option>
-                      <option value="custom">✏️ Кастомный Base URL (ввести вручную)</option>
-                      <option value="direct">⛔ Прямое подключение (без прокси)</option>
+                      <option value="custom">✏️ Кастомный Base URL / Прокси (ввести вручную)</option>
+                      <option value="direct">⛔ Прямое подключение к Google (без прокси)</option>
                     </select>
                   </div>
                 </div>
@@ -1074,7 +1073,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                   <span className="font-mono text-[11px] text-emerald-300 truncate max-w-[240px]">
                     {aiForm.geminiProxySource === 'direct' 
                       ? 'Прямое подключение к Google' 
-                      : (aiForm.geminiBaseUrl || geminiStatus?.detectedTelegramProxy || geminiStatus?.detectedCfWorker || 'Telegram Proxy / CF Worker')}
+                      : (aiForm.geminiBaseUrl || (geminiStatus?.detectedCfWorker ? geminiStatus.detectedCfWorker : 'Прямое подключение к Google'))}
                   </span>
                 </div>
               </div>
@@ -1086,6 +1085,9 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                   <Zap className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                   <div>
                     <strong>Решение ошибки «User location is not supported»:</strong> OpenRouter работает без региональных ограничений и дает доступ к Gemini 2.5 Flash, DeepSeek и Llama 3.3.
+                    <div className="mt-1 text-slate-400">
+                      💡 <em>При создании ключа на OpenRouter оставьте лимит пустым и создавайте ключ со стандартной политикой (Default, без ограничений по доменам).</em>
+                    </div>
                   </div>
                 </div>
 
@@ -1121,10 +1123,14 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                     onChange={(e) => setAiForm({ ...aiForm, openRouterModel: e.target.value })}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500/50"
                   >
-                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Gemini через OpenRouter)</option>
+                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Google Gemini 2.5 Flash)</option>
+                    <option value="google/gemini-2.0-flash-exp:free">google/gemini-2.0-flash-exp:free (Бесплатный Gemini)</option>
+                    <option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free (Бесплатная Llama 3.3)</option>
+                    <option value="deepseek/deepseek-r1:free">deepseek/deepseek-r1:free (Бесплатный DeepSeek R1)</option>
+                    <option value="google/gemini-2.5-pro">google/gemini-2.5-pro (Флагман Gemini 2.5 Pro)</option>
                     <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (DeepSeek V3)</option>
-                    <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct</option>
-                    <option value="openai/gpt-4o-mini">openai/gpt-4o-mini</option>
+                    <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct (Meta Llama 3.3)</option>
+                    <option value="openai/gpt-4o-mini">openai/gpt-4o-mini (OpenAI GPT-4o mini)</option>
                   </select>
                 </div>
               </div>

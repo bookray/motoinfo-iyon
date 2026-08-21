@@ -41,35 +41,28 @@ function getGeminiEffectiveBaseUrl(options?: { customBaseUrl?: string; proxySour
   }
 
   if (source === 'custom' && settings?.geminiBaseUrl) {
-    return settings.geminiBaseUrl;
-  }
-
-  if (source === 'tg_proxy' && settings?.telegramApiRoot) {
-    return settings.telegramApiRoot;
+    return settings.geminiBaseUrl.trim();
   }
 
   if (source === 'cf_worker' && settings?.cfWorkerUrl && !settings.disableCloudflare) {
-    return settings.cfWorkerUrl;
+    return settings.cfWorkerUrl.trim();
   }
 
   // 'auto' mode or default:
-  if (settings?.geminiBaseUrl) {
-    return settings.geminiBaseUrl;
+  if (settings?.geminiBaseUrl && settings.geminiBaseUrl.trim()) {
+    return settings.geminiBaseUrl.trim();
   }
 
   if (settings?.geminiUseProxy === false) {
     return null;
   }
 
-  // Priority: Telegram Reverse Proxy, then Cloudflare Worker
-  if (settings?.telegramApiRoot) {
-    return settings.telegramApiRoot;
-  }
-
+  // Use Cloudflare Worker if available (it proxies /v1beta/* to Google)
   if (settings?.cfWorkerUrl && !settings.disableCloudflare) {
-    return settings.cfWorkerUrl;
+    return settings.cfWorkerUrl.trim();
   }
 
+  // NOTE: We do NOT use telegramApiRoot as a Gemini proxy because Telegram API proxies return 404 for Google endpoints!
   return null;
 }
 
@@ -86,10 +79,11 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
+        'Authorization': `Bearer ${apiKey.trim()}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': detectedAppUrl || 'https://teleguard.local',
-        'X-Title': 'TeleGuard Bot Manager'
+        'HTTP-Referer': 'https://openrouter.ai',
+        'X-Title': 'TeleGuard Bot Manager',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
       },
       body: JSON.stringify({
         model,
@@ -99,6 +93,9 @@ async function generateAIResponse(promptText: string, options?: { model?: string
 
     if (!response.ok) {
       const errBody = await response.text();
+      if (errBody.includes('Access denied by security policy')) {
+        throw new Error(`OpenRouter HTTP ${response.status}: Access denied by security policy.\n\n💡 Причина: В настройках API-ключа на openrouter.ai/keys включено ограничение по Allowed Origins или разрешенным моделям. Создайте новый API-ключ без ограничений (Default), либо проверьте баланс аккаунта.`);
+      }
       throw new Error(`OpenRouter API error (HTTP ${response.status}): ${errBody}`);
     }
 
@@ -123,7 +120,7 @@ async function generateAIResponse(promptText: string, options?: { model?: string
       'Content-Type': 'application/json'
     };
     if (apiKey) {
-      headers['Authorization'] = `Bearer ${apiKey}`;
+      headers['Authorization'] = `Bearer ${apiKey.trim()}`;
     }
 
     const response = await fetch(url, {
@@ -158,7 +155,7 @@ async function generateAIResponse(promptText: string, options?: { model?: string
   const executeGemini = async (baseUrl: string | null): Promise<string> => {
     if (baseUrl) {
       const cleanBase = baseUrl.replace(/\/$/, '');
-      const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+      const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${geminiKey.trim()}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -195,9 +192,9 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     return await executeGemini(effectiveBaseUrl);
   } catch (err: any) {
     const msg = err?.message || String(err);
-    // If direct failed because of region restriction and a proxy is available, auto-retry via proxy!
+    // If direct failed because of region restriction and a Cloudflare worker proxy is available, auto-retry via worker!
     if (!effectiveBaseUrl && (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION'))) {
-      const fallbackProxy = settings?.telegramApiRoot || (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null);
+      const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
       if (fallbackProxy) {
         console.log(`[Gemini] Direct connection blocked by region. Auto-retrying through detected proxy: ${fallbackProxy}`);
         try {
@@ -206,7 +203,7 @@ async function generateAIResponse(promptText: string, options?: { model?: string
           console.error(`[Gemini] Fallback proxy attempt also failed:`, proxyErr);
         }
       }
-      throw new Error('❌ Ошибка Google Gemini: Геолокация сервера ограничена Google (User location is not supported).\n\n💡 Решение:\n1. Включите опцию «Маршрутизировать Gemini через Telegram Reverse Proxy / Cloudflare Worker» в Настройках ИИ.\n2. Либо переключитесь на OpenRouter (вкладка ИИ-Суммаризация -> Настройки ИИ) — работает без региональных ограничений по всему миру.\n3. Укажите свой Cloudflare Worker или Nginx Proxy в Настройках.');
+      throw new Error('❌ Ошибка Google Gemini: Геолокация сервера ограничена Google (User location is not supported).\n\n💡 Решение:\n1. Переключитесь на OpenRouter (вкладка ИИ-Суммаризация -> Настройки ИИ) — работает без региональных ограничений.\n2. Или разверните Cloudflare Worker по инструкции и укажите его URL в Настройках.');
     }
     throw err;
   }
@@ -1834,10 +1831,11 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
       const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${key}`,
+          'Authorization': `Bearer ${key.trim()}`,
           'Content-Type': 'application/json',
-          'HTTP-Referer': detectedAppUrl || 'https://teleguard.local',
-          'X-Title': 'TeleGuard Bot Manager'
+          'HTTP-Referer': 'https://openrouter.ai',
+          'X-Title': 'TeleGuard Bot Manager',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
         },
         body: JSON.stringify({
           model,
@@ -1861,7 +1859,7 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...(key ? { 'Authorization': `Bearer ${key}` } : {})
+          ...(key ? { 'Authorization': `Bearer ${key.trim()}` } : {})
         },
         body: JSON.stringify({
           model,
@@ -1894,7 +1892,7 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
       if (effectiveBase) {
         usedProxyUrl = effectiveBase;
         const cleanBase = effectiveBase.replace(/\/$/, '');
-        const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${key}`;
+        const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${key.trim()}`;
         const r = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1908,7 +1906,7 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
         resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       } else {
         try {
-          const client = new GoogleGenAI({ apiKey: key });
+          const client = new GoogleGenAI({ apiKey: key.trim() });
           const resp = await client.models.generateContent({
             model,
             contents: [{ role: 'user', parts: [{ text: testPrompt }] }]
@@ -1917,11 +1915,11 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
         } catch (directErr: any) {
           const msg = directErr?.message || String(directErr);
           if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
-            const fallbackProxy = settings?.telegramApiRoot || (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null);
+            const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
             if (fallbackProxy) {
               console.log(`[Gemini Test] Direct failed by region. Testing detected proxy fallback: ${fallbackProxy}`);
               const cleanBase = fallbackProxy.replace(/\/$/, '');
-              const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${key}`;
+              const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${key.trim()}`;
               const r = await fetch(url, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1959,10 +1957,16 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
     const duration = Date.now() - startTime;
     const msg = err?.message || String(err);
     let hint = '';
-    if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
-      hint = 'Геолокация сервера ограничена Google. Решение: включите маршрутизацию через Telegram API Proxy (Reverse Proxy) / Cloudflare Worker в настройках или переключитесь на OpenRouter.';
-    } else if (msg.includes('API_KEY_INVALID') || msg.includes('invalid api key') || msg.includes('401') || msg.includes('403')) {
+    if (msg.includes('Access denied by security policy')) {
+      hint = 'OpenRouter отклонил запрос политикой безопасности ключа. Решение: 1) В кабинете openrouter.ai/keys создайте ключ без ограничений (Default). 2) Если баланс $0, укажите бесплатную модель (например, google/gemini-2.0-flash-exp:free или meta-llama/llama-3.3-70b-instruct:free). 3) В настройках аккаунта openrouter.ai/settings/privacy проверьте правила доступа.';
+    } else if (msg.includes('404') && (msg.includes('Proxy') || msg.includes('description":"Not Found"'))) {
+      hint = 'Указанный прокси вернул 404 Not Found. Обратите внимание: Telegram API Proxy (telegram-bot-api) предназначен исключительно для Telegram и не умеет обрабатывать запросы к Google Gemini. Для Gemini используйте Cloudflare Worker или переключитесь на OpenRouter.';
+    } else if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
+      hint = 'Геолокация сервера ограничена Google. Решение: разверните Cloudflare Worker по инструкции и укажите его в Настройках, либо переключитесь на OpenRouter.';
+    } else if (msg.includes('API_KEY_INVALID') || msg.includes('invalid api key') || msg.includes('401')) {
       hint = 'Неверный API-ключ. Проверьте правильность скопированного ключа.';
+    } else if (msg.includes('403')) {
+      hint = 'Доступ запрещен (HTTP 403). Проверьте права API-ключа, баланс или ограничения безопасности провайдера.';
     }
 
     res.status(400).json({
@@ -3428,11 +3432,37 @@ async function initBot(token: string) {
           // Reputation Trigger: Gratitude replies / quotes
           if (filters.reputationEnabled !== false && ctx.message && 'text' in ctx.message) {
             const replyTo = ctx.message.reply_to_message;
-            if (replyTo && replyTo.from && !replyTo.from.is_bot && replyTo.from.id !== ctx.from.id) {
-              const textLower = ctx.message.text.trim().toLowerCase();
-              const gratitudeRegex = /(^|\s)(спасибо|спс|благодарю|благодарствую|от души|сяп|спасибки|thx|thanks|thank you|\+1|\+)([\s!?.,]|$)/i;
+            const threadId = (ctx.message as any).message_thread_id;
+            
+            // Check that this is a genuine user quote/reply, NOT a topic header, channel forward, bot, or service message
+            const isAutomaticOrSystem = replyTo && (
+              Boolean((replyTo as any).is_automatic_forward) ||
+              Boolean((replyTo as any).forum_topic_created) ||
+              Boolean((replyTo as any).pinned_message) ||
+              Boolean((replyTo as any).sender_chat) ||
+              Boolean(threadId && replyTo.message_id === threadId) || // replying to forum topic origin
+              Boolean(replyTo.from && [777000, 1087968824, 136817688].includes(replyTo.from.id))
+            );
+
+            // The replied message must contain actual user content (text, caption, media)
+            const hasRepliedContent = replyTo && Boolean(
+              replyTo.text || (replyTo as any).caption || (replyTo as any).photo || 
+              (replyTo as any).document || (replyTo as any).video || (replyTo as any).voice || 
+              (replyTo as any).audio || (replyTo as any).sticker
+            );
+
+            if (replyTo && replyTo.from && !replyTo.from.is_bot && replyTo.from.id !== ctx.from.id && !isAutomaticOrSystem && hasRepliedContent) {
+              const textRaw = ctx.message.text.trim();
+              const textLower = textRaw.toLowerCase();
+              const gratitudeRegex = /(^|\s)(спасибо|спс|благодарю|благодарствую|от души|сяп|спасибки|thx|thanks|thank you)([\s!?.,]|$)/i;
               
-              if (gratitudeRegex.test(textLower) || textLower === '+' || textLower === '+1' || textLower === '👍') {
+              // Only trigger if message is concise (<= 80 chars) and represents gratitude, or is a plus/thumbs up
+              const isGratitude = textRaw.length <= 80 && (
+                gratitudeRegex.test(textLower) || 
+                textRaw === '+' || textRaw === '+1' || textRaw === '👍' || textRaw === '🤝' || textRaw === '❤️' || textRaw === '🔥'
+              );
+
+              if (isGratitude) {
                 const rep = await adjustUserReputation(
                   String(replyTo.from.id),
                   1,

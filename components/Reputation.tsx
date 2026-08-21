@@ -35,6 +35,29 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
 
   const warnLimit = filters?.warnLimit || 3;
+  const isReputationActive = filters?.reputationEnabled !== false;
+
+  const handleToggleReputation = async () => {
+    if (!onUpdateFilters) return;
+    const newStatus = !isReputationActive;
+    const updatedFilters = { ...filters, reputationEnabled: newStatus };
+    try {
+      const token = localStorage.getItem('token');
+      await fetch('/api/filters', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify(updatedFilters)
+      });
+      onUpdateFilters(updatedFilters);
+      setActionSuccess(newStatus ? 'Система репутации включена' : 'Система репутации временно отключена (режим тестирования)');
+      setTimeout(() => setActionSuccess(null), 3500);
+    } catch (err) {
+      console.error('Failed to toggle reputation:', err);
+    }
+  };
 
   const loadData = async () => {
     try {
@@ -253,19 +276,49 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
               <Award className="w-8 h-8" />
             </div>
             <div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <h2 className="text-2xl font-bold text-white tracking-tight">Репутация и предупреждения</h2>
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
                   Все чаты
                 </span>
+                {isReputationActive ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    Активна
+                  </span>
+                ) : (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                    Отключена (Тестирование)
+                  </span>
+                )}
               </div>
               <p className="text-sm text-slate-400 mt-1">
-                Глобальный рейтинг участников, благодарности («Спасибо»), реакции (👍/❤️ +1, 👎/🤡 -1) и система варнов ({warnLimit} варна до бана)
+                Глобальный рейтинг участников, благодарности («Спасибо» по цитате), реакции (👍/❤️ +1, 👎/🤡 -1) и система варнов ({warnLimit} варна до бана)
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+            <button
+              onClick={handleToggleReputation}
+              className={`flex-1 sm:flex-initial px-4 py-2.5 text-sm font-semibold rounded-xl transition-all border flex items-center justify-center gap-2 ${
+                isReputationActive 
+                  ? 'bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white border-slate-700' 
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white border-emerald-500 shadow-lg shadow-emerald-600/20'
+              }`}
+              title={isReputationActive ? 'Приостановить работу системы рейтинга' : 'Включить работу системы рейтинга'}
+            >
+              {isReputationActive ? (
+                <>
+                  <span>⏸️ Отключить рейтинг (Тест)</span>
+                </>
+              ) : (
+                <>
+                  <span>▶️ Включить систему рейтинга</span>
+                </>
+              )}
+            </button>
             <button
               onClick={() => setIsRepModalOpen(true)}
               className="flex-1 sm:flex-initial px-4 py-2.5 bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold rounded-xl transition-colors shadow-lg shadow-amber-600/20 flex items-center justify-center gap-2"
@@ -282,6 +335,23 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
             </button>
           </div>
         </div>
+
+        {!isReputationActive && (
+          <div className="mt-4 p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs sm:text-sm flex items-center justify-between gap-3 animate-in fade-in">
+            <div className="flex items-center gap-2.5">
+              <span className="text-base">⏸️</span>
+              <span>
+                <strong>Система рейтинга и «Спасибо» временно отключена.</strong> Бот не начисляет баллы в чатах при ответах «Спасибо» или реакциях, пока идет тестирование.
+              </span>
+            </div>
+            <button
+              onClick={handleToggleReputation}
+              className="px-3 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors"
+            >
+              Включить
+            </button>
+          </div>
+        )}
 
         {actionSuccess && (
           <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400 text-sm flex items-center gap-2 animate-in fade-in">

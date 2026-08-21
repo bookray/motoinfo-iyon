@@ -224,6 +224,7 @@ export interface BotSettings {
   customAiEndpoint?: string;
   customAiApiKey?: string;
   customAiModel?: string;
+  reputationEnabled?: boolean;
 }
 
 export interface ChatBan {

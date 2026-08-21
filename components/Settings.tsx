@@ -604,11 +604,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
                     onChange={(e) => setLocalSettings({ ...localSettings, geminiProxySource: e.target.value as any })}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all text-sm font-medium"
                   >
-                    <option value="auto">⚡ Авто (Telegram API Proxy или CF Worker)</option>
-                    <option value="tg_proxy">📡 Использовать Telegram API Proxy ({localSettings.telegramApiRoot || 'не задан'})</option>
+                    <option value="auto">⚡ Авто (Cloudflare Worker или кастомный прокси)</option>
                     <option value="cf_worker">☁️ Использовать Cloudflare Worker ({localSettings.cfWorkerUrl || 'не задан'})</option>
-                    <option value="custom">✏️ Кастомный Base URL (ручной ввод)</option>
-                    <option value="direct">⛔ Прямое подключение (без прокси)</option>
+                    <option value="custom">✏️ Кастомный Base URL / Прокси (ручной ввод)</option>
+                    <option value="direct">⛔ Прямое подключение к Google (без прокси)</option>
                   </select>
                 </div>
 
@@ -638,7 +637,7 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
                   <span className="font-mono text-emerald-300 font-bold truncate max-w-sm">
                     {localSettings.geminiProxySource === 'direct' 
                       ? 'Прямое подключение к Google API' 
-                      : (localSettings.geminiBaseUrl || localSettings.telegramApiRoot || localSettings.cfWorkerUrl || 'Прямое / Автоопределение')}
+                      : (localSettings.geminiBaseUrl || (localSettings.cfWorkerUrl && !localSettings.disableCloudflare ? localSettings.cfWorkerUrl : 'Прямое подключение к Google API'))}
                   </span>
                 </div>
               </>
@@ -651,7 +650,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
                   <div className="p-3.5 bg-indigo-500/10 border border-indigo-500/20 rounded-xl text-xs text-indigo-300 flex items-start gap-2.5">
                     <Zap className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                     <div>
-                      <strong>OpenRouter решает проблему «User location is not supported»</strong>: работает в любой стране без блокировок регионов, дает доступ к Gemini 2.5 Flash, DeepSeek V3, Llama 3.3 и др.
+                      <strong>OpenRouter решает проблему «User location is not supported»</strong>: работает в любой стране без блокировок регионов, дает доступ к Gemini 2.5 Flash, DeepSeek, Llama 3.3 и др.
+                      <div className="mt-1 text-slate-400">
+                        💡 <em>При создании ключа на OpenRouter оставьте лимит пустым и создавайте ключ со стандартной политикой (Default, без ограничений по доменам).</em>
+                      </div>
                     </div>
                   </div>
 
@@ -691,8 +693,11 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
                     onChange={(e) => setLocalSettings({ ...localSettings, openRouterModel: e.target.value })}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all text-sm font-medium"
                   >
-                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Google Gemini через OpenRouter)</option>
-                    <option value="google/gemini-2.5-pro">google/gemini-2.5-pro (Флагман Gemini)</option>
+                    <option value="google/gemini-2.5-flash">google/gemini-2.5-flash (Google Gemini 2.5 Flash)</option>
+                    <option value="google/gemini-2.0-flash-exp:free">google/gemini-2.0-flash-exp:free (Бесплатный Gemini)</option>
+                    <option value="meta-llama/llama-3.3-70b-instruct:free">meta-llama/llama-3.3-70b-instruct:free (Бесплатная Llama 3.3)</option>
+                    <option value="deepseek/deepseek-r1:free">deepseek/deepseek-r1:free (Бесплатный DeepSeek R1)</option>
+                    <option value="google/gemini-2.5-pro">google/gemini-2.5-pro (Флагман Gemini 2.5 Pro)</option>
                     <option value="deepseek/deepseek-chat">deepseek/deepseek-chat (DeepSeek V3)</option>
                     <option value="meta-llama/llama-3.3-70b-instruct">meta-llama/llama-3.3-70b-instruct (Meta Llama 3.3)</option>
                     <option value="openai/gpt-4o-mini">openai/gpt-4o-mini (OpenAI GPT-4o mini)</option>
