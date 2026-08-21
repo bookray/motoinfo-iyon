@@ -30,6 +30,127 @@ interface SummarizationProps {
   chats: Chat[];
 }
 
+export const TelegramFormattedDigest: React.FC<{ text: string }> = ({ text }) => {
+  const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
+  const [expandedQuotes, setExpandedQuotes] = useState<Record<number, boolean>>({});
+
+  const parseBlocks = (raw: string) => {
+    let processed = raw || '';
+    // Standardize any markdown bold/italic/headers if mixed
+    processed = processed.replace(/^###?\s+(.+)$/gm, '<b>$1</b>');
+    processed = processed.replace(/^#\s+(.+)$/gm, '<b>$1</b>');
+    processed = processed.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+    processed = processed.replace(/__(.+?)__/g, '<b>$1</b>');
+    processed = processed.replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, '<i>$1</i>');
+    processed = processed.replace(/(?<!\w)_([^_]+?)_(?!\w)/g, '<i>$1</i>');
+    processed = processed.replace(/`([^`]+)`/g, '<code>$1</code>');
+    processed = processed.replace(/^[\*\-]\s+/gm, '• ');
+
+    // Match expandable and normal blockquotes
+    const segments: Array<{ type: 'text' | 'expandable' | 'quote'; content: string }> = [];
+    const quoteRegex = /<blockquote(\s+expandable)?>([\s\S]*?)<\/blockquote>/gi;
+    let lastIndex = 0;
+    let match;
+
+    while ((match = quoteRegex.exec(processed)) !== null) {
+      if (match.index > lastIndex) {
+        segments.push({ type: 'text', content: processed.slice(lastIndex, match.index) });
+      }
+      const isExpandable = !!match[1] || match[0].includes('expandable');
+      segments.push({
+        type: isExpandable ? 'expandable' : 'quote',
+        content: match[2].trim()
+      });
+      lastIndex = quoteRegex.lastIndex;
+    }
+
+    if (lastIndex < processed.length) {
+      segments.push({ type: 'text', content: processed.slice(lastIndex) });
+    }
+
+    return segments;
+  };
+
+  const segments = parseBlocks(text || '');
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between pb-2 border-b border-slate-800 text-xs">
+        <div className="flex items-center gap-2 text-slate-400">
+          <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
+          <span className="font-medium text-slate-300">Telegram HTML (свёрнутые блоки &lt;blockquote expandable&gt;)</span>
+        </div>
+        <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+          <button
+            type="button"
+            onClick={() => setViewMode('preview')}
+            className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+              viewMode === 'preview' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Telegram Вид
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('code')}
+            className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+              viewMode === 'code' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Код HTML
+          </button>
+        </div>
+      </div>
+
+      {viewMode === 'code' ? (
+        <pre className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs font-mono text-emerald-400 whitespace-pre-wrap leading-relaxed overflow-x-auto select-all">
+          {text}
+        </pre>
+      ) : (
+        <div className="bg-slate-950/90 border border-slate-800/80 rounded-xl p-5 text-sm text-slate-200 font-sans leading-relaxed space-y-3 shadow-inner">
+          {segments.map((seg, idx) => {
+            if (seg.type === 'expandable') {
+              const isExpanded = !!expandedQuotes[idx];
+              return (
+                <div key={idx} className="my-2.5 rounded-lg border-l-4 border-blue-500 bg-blue-950/20 border border-slate-800/60 overflow-hidden">
+                  <div 
+                    onClick={() => setExpandedQuotes(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                    className="p-3 flex items-center justify-between cursor-pointer hover:bg-blue-900/20 transition-all select-none text-xs font-semibold text-blue-400"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span>💬 Подробности обсуждения / Цитаты</span>
+                    </span>
+                    <span className="flex items-center gap-1 text-[11px] text-blue-400/90 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
+                      {isExpanded ? 'Свернуть ▲' : 'Развернуть ▼'}
+                    </span>
+                  </div>
+                  {isExpanded && (
+                    <div className="p-3 pt-1 border-t border-slate-800/40 text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">
+                      <span dangerouslySetInnerHTML={{ __html: seg.content }} />
+                    </div>
+                  )}
+                </div>
+              );
+            }
+            if (seg.type === 'quote') {
+              return (
+                <blockquote key={idx} className="my-2 border-l-4 border-slate-600 bg-slate-900/40 pl-3.5 pr-2 py-2 rounded-r-lg text-xs italic text-slate-300">
+                  <span dangerouslySetInnerHTML={{ __html: seg.content }} />
+                </blockquote>
+              );
+            }
+            return (
+              <div key={idx} className="whitespace-pre-wrap">
+                <span dangerouslySetInnerHTML={{ __html: seg.content }} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   const [configs, setConfigs] = useState<ChatDigestConfig[]>([]);
   const [history, setHistory] = useState<ChatDigestEntry[]>([]);
@@ -275,7 +396,9 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
         const err = await res.json();
         const errMsg = err.error || 'Ошибка при генерации дайджеста';
         let hint = '';
-        if (errMsg.includes('User location is not supported') || errMsg.includes('FAILED_PRECONDITION')) {
+        if (errMsg.includes('минимум 10') || errMsg.includes('зафиксировано только')) {
+          hint = 'Дайджест не составляется для чатов с низкой активностью (< 10 сообщений за 24 ч), чтобы не спамить участников.';
+        } else if (errMsg.includes('User location is not supported') || errMsg.includes('FAILED_PRECONDITION')) {
           hint = 'Google блокирует запросы из региона сервера. Нажмите «Настройки ИИ» и выберите OpenRouter — это снимет ограничение!';
         }
         showNotification(errMsg, 'error', hint);
@@ -797,14 +920,12 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                 <div className="flex items-center gap-3 text-xs text-slate-400 font-mono bg-slate-950 p-2.5 rounded-lg border border-slate-800">
                   <span>Чат: <strong className="text-white">{currentDigest.chatTitle}</strong></span>
                   <span>•</span>
-                  <span>Сообщений: <strong className="text-blue-400">{currentDigest.messageCount}</strong></span>
+                  <span>Период: <strong className="text-blue-400">{currentDigest.hoursBack || 24}ч</strong></span>
                   <span>•</span>
-                  <span>Участников: <strong className="text-emerald-400">{currentDigest.userCount}</strong></span>
+                  <span>Сформирован: <strong className="text-slate-300">{new Date(currentDigest.createdAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</strong></span>
                 </div>
 
-                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 text-sm text-slate-200 whitespace-pre-wrap font-sans leading-relaxed">
-                  {currentDigest.summary}
-                </div>
+                <TelegramFormattedDigest text={currentDigest.summary} />
               </div>
             ) : (
               <div className="py-20 text-center text-slate-500 space-y-3">
@@ -857,7 +978,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                             )}
                           </div>
                           <span className="text-xs text-slate-500 font-mono">
-                            {new Date(item.createdAt).toLocaleString('ru-RU')} • {item.messageCount} сообщ. • {item.userCount} уч.
+                            {new Date(item.createdAt).toLocaleString('ru-RU')} • {item.hoursBack || 24} ч
                           </span>
                         </div>
                       </div>
@@ -904,8 +1025,8 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
 
                     {isExpanded && (
                       <div className="p-5 pt-0 border-t border-slate-800/80 bg-slate-950/40">
-                        <div className="mt-3 bg-slate-950 border border-slate-800/80 rounded-xl p-4 text-xs text-slate-200 whitespace-pre-wrap leading-relaxed">
-                          {item.summary}
+                        <div className="mt-3">
+                          <TelegramFormattedDigest text={item.summary} />
                         </div>
                       </div>
                     )}

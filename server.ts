@@ -2374,10 +2374,7 @@ app.post('/api/digests/send', authenticateToken, async (req, res) => {
     }
 
     const destChatId = targetChatId || digest.targetChatId || digest.chatId;
-    const parts = splitTelegramMessage(digest.summary, 4000);
-    for (const part of parts) {
-      await bot.telegram.sendMessage(destChatId, part, { parse_mode: 'Markdown' });
-    }
+    await sendTelegramHtmlMessage(destChatId, digest.summary);
 
     digest.sentToTelegram = true;
     digest.sentAt = new Date().toISOString();
@@ -2666,6 +2663,143 @@ async function recordChatMessage(record: {
   queueWrite('chat_messages', record.id, cleanData(record));
 }
 
+interface BlackListPost {
+  id: string;
+  url: string;
+  datetime: string;
+  text: string;
+}
+
+async function getRecentMotoBlackListPosts(hours = 24): Promise<BlackListPost[]> {
+  try {
+    const res = await fetch('https://t.me/s/MotoBlackList', {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+      },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+    const cutoff = Date.now() - hours * 3600 * 1000;
+    
+    const wrapRegex = /<div class="tgme_widget_message_wrap\b[^>]*>([\s\S]*?)(?=<div class="tgme_widget_message_wrap\b|<\/body|$)/g;
+    const posts: BlackListPost[] = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = wrapRegex.exec(html)) !== null) {
+      const wrap = match[1];
+      const postMatch = wrap.match(/data-post="MotoBlackList\/(\d+)"/);
+      const dateMatch = wrap.match(/<time[^>]*datetime="([^"]+)"/);
+      const textMatch = wrap.match(/<div class="tgme_widget_message_text[^"]*"[^>]*>([\s\S]*?)<\/div>/);
+
+      if (postMatch && dateMatch) {
+        const id = postMatch[1];
+        const dtStr = dateMatch[1];
+        const postTime = new Date(dtStr).getTime();
+        
+        if (!isNaN(postTime) && postTime >= cutoff) {
+          let text = textMatch ? textMatch[1] : '';
+          text = text
+            .replace(/<br\s*\/?>/gi, ' ')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&#33;/g, '!')
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .trim();
+
+          if (!text) text = 'Новая публикация с материалами расследования / скриншотами.';
+          
+          posts.push({
+            id,
+            url: `https://t.me/MotoBlackList/${id}`,
+            datetime: dtStr,
+            text: text.length > 200 ? text.slice(0, 197) + '...' : text
+          });
+        }
+      }
+    }
+    return posts;
+  } catch (err) {
+    console.warn('[MotoBlackList] Could not fetch channel posts:', err);
+    return [];
+  }
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function formatSummaryForTelegramHtml(text: string, blackListPosts?: BlackListPost[]): string {
+  if (!text) return '';
+  let out = text;
+
+  // Remove any remaining lines with message/user counts if model generated them
+  out = out.replace(/^[^\n]*?(?:сообщений|сообщения|участников|участника|сообщение|участник)\s*:\s*\d+[^\n]*?\n?/gim, '');
+  out = out.replace(/^[^\n]*?(?:💬|👥)\s*[^\n]*?(?:Сообщений|Участников|Обработано)[^\n]*?\n?/gim, '');
+
+  // Convert markdown headers to bold
+  out = out.replace(/^###?\s+(.+)$/gm, '<b>$1</b>');
+  out = out.replace(/^#\s+(.+)$/gm, '<b>$1</b>');
+
+  // Convert markdown bold (**text** or __text__)
+  out = out.replace(/\*\*(.+?)\*\*/g, '<b>$1</b>');
+  out = out.replace(/__(.+?)__/g, '<b>$1</b>');
+
+  // Convert markdown italics (*text* or _text_)
+  out = out.replace(/(?<!\w)\*([^*]+?)\*(?!\w)/g, '<i>$1</i>');
+  out = out.replace(/(?<!\w)_([^_]+?)_(?!\w)/g, '<i>$1</i>');
+
+  // Convert markdown inline code
+  out = out.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Convert markdown blockquotes (> text) if not already in html
+  out = out.replace(/^>\s?(.*)$/gm, '<blockquote>$1</blockquote>');
+  out = out.replace(/<\/blockquote>\n<blockquote>/g, '\n');
+
+  // Convert markdown bullet points
+  out = out.replace(/^[\*\-]\s+/gm, '• ');
+
+  // If MotoBlackList has recent posts and not already mentioned in summary
+  if (blackListPosts && blackListPosts.length > 0 && !out.includes('MotoBlackList')) {
+    const latestPost = blackListPosts[blackListPosts.length - 1];
+    const banner = `\n\n🚨 <b>Сводка MotoBlackList (Черный список мото-продавцов)</b>\nЗа последние сутки на канале <a href="https://t.me/MotoBlackList">@MotoBlackList</a> вышел новый пост:\n<blockquote expandable>⚠️ <a href="${latestPost.url}"><b>Публикация #${latestPost.id}</b></a>: «${escapeHtml(latestPost.text)}»\n👉 <a href="${latestPost.url}">Открыть и прочитать на канале MotoBlackList</a></blockquote>`;
+    out += banner;
+  }
+
+  return out.trim();
+}
+
+async function sendTelegramHtmlMessage(chatId: string | number, text: string) {
+  if (!bot) throw new Error('Telegram bot is not initialized');
+  const formatted = formatSummaryForTelegramHtml(text);
+  const parts = splitTelegramMessage(formatted, 4000);
+
+  for (const part of parts) {
+    try {
+      await bot.telegram.sendMessage(chatId, part, { 
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: false }
+      });
+    } catch (htmlErr: any) {
+      console.warn(`[Telegram HTML Send] Error with HTML for chat ${chatId}:`, htmlErr?.message);
+      try {
+        // Fallback: strip unsupported tags and retry
+        const stripped = part.replace(/<(?!\/?(b|i|u|s|a|code|pre|blockquote|tg-spoiler)\b)[^>]+>/gi, '');
+        await bot.telegram.sendMessage(chatId, stripped, { parse_mode: 'HTML' });
+      } catch (retryErr) {
+        // Ultimate fallback: plain text without formatting
+        const plainText = part.replace(/<[^>]+>/g, '');
+        await bot.telegram.sendMessage(chatId, plainText);
+      }
+    }
+  }
+}
+
 function splitTelegramMessage(text: string, limit = 4000): string[] {
   if (text.length <= limit) return [text];
   const parts: string[] = [];
@@ -2712,6 +2846,24 @@ async function generateChatSummary(
   const userCount = uniqueUsers.size;
   const messageCount = msgs.length;
 
+  // RULE 1: Minimum 10 messages requirement
+  if (messageCount < 10) {
+    throw new Error(`В чате за последние ${hoursBack} ч зафиксировано только ${messageCount} сообщений (требуется минимум 10). Суммаризация не проводится.`);
+  }
+
+  // RULE 3: Fetch recent MotoBlackList posts for the period
+  const blackListPosts = await getRecentMotoBlackListPosts(hoursBack);
+  let blackListContext = '';
+  if (blackListPosts.length > 0) {
+    const latest = blackListPosts[blackListPosts.length - 1];
+    blackListContext = `
+ВАЖНОЕ ПРЕДУПРЕЖДЕНИЕ: За последние ${hoursBack}ч на канале MotoBlackList (https://t.me/MotoBlackList) вышел новый пост #${latest.id}:
+Текст поста: «${latest.text}»
+Ссылка: ${latest.url}
+ОБЯЗАТЕЛЬНО включи в конец дайджеста блок предупреждения со ссылкой на этот пост! Используй тег <blockquote expandable> для описания подробностей.
+`;
+  }
+
   let formattedChatLog = '';
   if (msgs.length > 0) {
     formattedChatLog = msgs.map(m => {
@@ -2719,59 +2871,68 @@ async function generateChatSummary(
       const author = m.firstName ? `${m.firstName}${m.username ? ` (@${m.username})` : ''}` : (m.username ? `@${m.username}` : `User_${m.userId}`);
       return `[${timeStr}] ${author}: ${m.text}`;
     }).join('\n');
-  } else {
-    formattedChatLog = '(За последние 24 часа активных текстовых сообщений от участников не зафиксировано или бот был недавно подключен)';
   }
 
-  const dateRangeStr = `${new Date(Date.now() - hoursBack * 3600 * 1000).toLocaleDateString('ru-RU')} - ${new Date().toLocaleDateString('ru-RU')}`;
+  const todayStr = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
 
-  const promptText = `Ты — умный и доброжелательный ИИ-ассистент модератора Telegram-сообщества.
-Твоя цель: составить информативный, легкий для чтения и структурированный суточный дайджест (обзор) тем, обсуждавшихся в чате «${chatTitle}» за последние ${hoursBack} часов.
+  const promptText = `Ты — профессиональный ИИ-редактор и модератор Telegram-сообщества.
+Твоя цель: составить информативный, стильный и структурированный суточный дайджест тем, обсуждавшихся в чате «${chatTitle}» за последние ${hoursBack} часов.
 
 ${customPrompt ? `Специальные пожелания от администратора:\n«${customPrompt}»\n` : ''}
-
-Статистика сообщений:
-- Название чата: ${chatTitle}
-- Период: ${dateRangeStr} (последние ${hoursBack} ч)
-- Обработано сообщений: ${messageCount}
-- Активных участников: ${userCount}
+${blackListContext}
 
 Сообщения из чата:
 ---
 ${formattedChatLog.slice(0, 30000)}
 ---
 
-Сформируй суточный дайджест на русском языке со следующей визуальной структурой:
+ПРАВИЛА ОФОРМЛЕНИЯ (СТРОГО TELEGRAM HTML):
+1. Используй ТОЛЬКО поддерживаемые Telegram HTML-теги для красивой и современной разметки:
+   - <b>Жирный текст для заголовков и главных мыслей</b>
+   - <i>Курсив для цитат или пометок</i>
+   - <blockquote expandable>Длинные детали обсуждений, споры, подробные советы или мнения участников ВСЕГДА помещай внутрь свёрнутого блока (expandable blockquote)! В Telegram он отображается как аккуратный сворачиваемый блок с кнопкой разворачивания.</blockquote>
+   - <blockquote>Короткие важные цитаты или тезисы</blockquote>
+   - <code>Команды, артикулы или тех. обозначения</code>
+   - <a href="URL">Кликабельные ссылки</a>
+2. СТРОГОЕ ТРЕБОВАНИЕ: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать сколько участников было в обсуждении и количество сообщений за сутки (не пиши никаких строк вроде "Сообщений: 45", "Участников: 12", "В беседе участвовало..."). Переходи сразу к дате и сути тем!
+3. Не используй Markdown-решетки (#, ##) или звездочки (**). Используй только чистые HTML-теги: <b>, <i>, <blockquote>, <blockquote expandable>.
 
-📊 **Суточный дайджест: ${chatTitle}**
-📅 За последние ${hoursBack}ч (${new Date().toLocaleDateString('ru-RU')})
-💬 Сообщений: ${messageCount} | 👥 Участников: ${userCount}
+Примерная визуальная структура:
 
-🔥 **Главные темы и обсуждения**
-• [Название темы 1]: Краткая суть обсуждения, выводы участников
-• [Название темы 2]: Краткая суть обсуждения...
+📊 <b>Суточный дайджест: ${chatTitle}</b>
+📅 <i>${todayStr}</i>
 
-💡 **Полезные советы и рекомендации**
-• (Если обсуждались конкретные локации, решения технических проблем, советы, отзывы)
+🔥 <b>Главные темы и обсуждения</b>
+• <b>[Название ключевой темы 1]</b>: Краткий вывод в 1 строку.
+<blockquote expandable>Подробности обсуждения: кто что предлагал, к какому выводу пришли участники, аргументы сторон.</blockquote>
 
-📣 **Анонсы, встречи и события**
-• (Если участники договаривались о поездках, встречах или публиковали объявления)
+• <b>[Название темы 2]</b>: Краткая суть...
+<blockquote expandable>Детали и нюансы обсуждения...</blockquote>
 
-👥 **Атмосфера дня**
-• (Кратко в 1-2 предложениях об общем настроении и активности)
+💡 <b>Полезные советы и находки</b>
+• (Если обсуждался ремонт, подбор запчастей, экипировка, проверенные сервисы или решения проблем)
 
-Правила:
-- Если сообщений было мало, честно отметь это и пожелай участникам отличного дня.
-- Пиши живо, емко, без канцелярита.
-- Используй четкий Markdown.`;
+📣 <b>Анонсы и встречи</b>
+• (Если договаривались о покатушках, встречах или публиковали важные объявления)
 
-  let summaryText = '';
+👥 <b>Атмосфера дня</b>
+• (Кратко в 1-2 предложениях об общем настроении)
+${blackListPosts.length > 0 ? `
+🚨 <b>Сводка MotoBlackList</b>
+<blockquote expandable>⚠️ На канале <a href="${blackListPosts[blackListPosts.length - 1].url}">@MotoBlackList вышел новый пост</a>: «${blackListPosts[blackListPosts.length - 1].text}». Будьте бдительны при сделках!</blockquote>` : ''}
+
+Сформируй дайджест на русском языке, живым и увлекательным языком, строго соблюдая HTML-разметку с <blockquote expandable>.`;
+
+  let rawSummaryText = '';
   try {
-    summaryText = await generateAIResponse(promptText);
+    rawSummaryText = await generateAIResponse(promptText);
   } catch (aiErr: any) {
     console.error('Failed to generate AI response:', aiErr);
     throw aiErr;
   }
+
+  // Format and enhance with HTML tags and MotoBlackList if needed
+  const summaryText = formatSummaryForTelegramHtml(rawSummaryText, blackListPosts);
 
   const digestEntry = {
     id: Math.random().toString(36).substr(2, 9),
@@ -2789,10 +2950,7 @@ ${formattedChatLog.slice(0, 30000)}
   if (sendImmediately && bot) {
     const destinationChatId = targetChatId || chatId;
     try {
-      const parts = splitTelegramMessage(summaryText, 4000);
-      for (const part of parts) {
-        await bot.telegram.sendMessage(destinationChatId, part, { parse_mode: 'Markdown' });
-      }
+      await sendTelegramHtmlMessage(destinationChatId, summaryText);
       digestEntry.sentToTelegram = true;
       (digestEntry as any).sentAt = new Date().toISOString();
       console.log(`Digest ${digestEntry.id} successfully sent to Telegram chat ${destinationChatId}`);
@@ -4426,26 +4584,32 @@ async function initBot(token: string) {
                   return;
                 }
 
-                const waitMsg = await ctx.reply('🤖 Собираю сообщения за 24ч и формирую дайджест с помощью Gemini AI... Пожалуйста, подождите 5-10 секунд.');
+                const waitMsg = await ctx.reply('🤖 Анализирую сообщения за 24ч и формирую дайджест с помощью Gemini AI... Пожалуйста, подождите несколько секунд.');
 
                 try {
                   const digest = await generateChatSummary(chatId, 24, undefined, false);
-                  const parts = splitTelegramMessage(digest.summary, 4000);
                   try {
                     await ctx.telegram.deleteMessage(chatId, waitMsg.message_id);
                   } catch (e) {}
 
-                  for (const part of parts) {
-                    await ctx.reply(part, { parse_mode: 'Markdown' });
-                  }
+                  await sendTelegramHtmlMessage(chatId, digest.summary);
                   digest.sentToTelegram = true;
                   (digest as any).sentAt = new Date().toISOString();
                   queueWrite('chat_digests', digest.id, cleanData(digest));
                 } catch (err: any) {
                   console.error('Failed to generate summary on command:', err);
+                  const isThresholdErr = err?.message?.includes('требуется минимум 10') || err?.message?.includes('только');
+                  const errorText = isThresholdErr 
+                    ? `ℹ️ <b>Дайджест не сформирован</b>\n\nЗа последние 24 часа в чате зафиксировано мало активности (меньше 10 сообщений). Дайджест составляется только при активном общении участников.`
+                    : `❌ <b>Ошибка генерации:</b> ${escapeHtml(err.message || String(err))}`;
+
                   try {
-                    await ctx.telegram.editMessageText(chatId, waitMsg.message_id, undefined, `❌ Ошибка генерации: ${err.message || err}`);
-                  } catch (e) {}
+                    await ctx.telegram.editMessageText(chatId, waitMsg.message_id, undefined, errorText, { parse_mode: 'HTML' });
+                  } catch (e) {
+                    try {
+                      await ctx.reply(errorText, { parse_mode: 'HTML' });
+                    } catch (replyErr) {}
+                  }
                 }
                 return;
               }
@@ -5943,8 +6107,12 @@ async function startServer() {
           config.lastSentAt = new Date().toISOString();
           await db.collection('config').doc('digest_configs').set({ configs: digestConfigs });
           console.log(`[AI Digest] Successfully completed scheduled digest for chat ${config.chatId}`);
-        } catch (digestErr) {
-          console.error(`[AI Digest] Failed scheduled digest for chat ${config.chatId}:`, digestErr);
+        } catch (digestErr: any) {
+          if (digestErr?.message?.includes('минимум 10')) {
+            console.log(`[AI Digest] Skipped chat ${config.chatId} (${config.chatTitle || 'chat'}): ${digestErr.message}`);
+          } else {
+            console.error(`[AI Digest] Failed scheduled digest for chat ${config.chatId}:`, digestErr);
+          }
         }
       }
     }
