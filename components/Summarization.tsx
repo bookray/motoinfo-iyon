@@ -22,9 +22,14 @@ import {
   Sliders,
   Cpu,
   X,
-  Check
+  Check,
+  Smile,
+  Flame,
+  Laugh,
+  Heart,
+  Sun
 } from 'lucide-react';
-import { Chat, ChatDigestConfig, ChatDigestEntry } from '../types';
+import { Chat, ChatDigestConfig, ChatDigestEntry, DigestToneStyle, TONE_STYLES, TONE_STYLE_LIST } from '../types';
 
 interface SummarizationProps {
   chats: Chat[];
@@ -168,6 +173,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string; hint?: string } | null>(null);
   const [expandedDigestId, setExpandedDigestId] = useState<string | null>(null);
   const [activeSubTab, setActiveSubTab] = useState<'schedule' | 'generator' | 'history'>('schedule');
+  const [selectedToneStyle, setSelectedToneStyle] = useState<DigestToneStyle>('default');
 
   // In-Admin AI Settings Modal State
   const [showAiModal, setShowAiModal] = useState<boolean>(false);
@@ -329,7 +335,8 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
         hoursBack: 24,
         includeTopics: true,
         includeStats: true,
-        autoSendTelegram: true
+        autoSendTelegram: true,
+        toneStyle: 'default'
       };
 
       const updated = { ...existing, ...updates };
@@ -360,7 +367,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
     }
   };
 
-  const handleGenerateNow = async (targetChatId?: string, overrideHours?: number, overridePrompt?: string, send = false) => {
+  const handleGenerateNow = async (targetChatId?: string, overrideHours?: number, overridePrompt?: string, send = false, overrideTone?: DigestToneStyle) => {
     const chatIdToUse = targetChatId || selectedChatId;
     if (!chatIdToUse) {
       showNotification('Выберите чат для генерации дайджеста', 'error');
@@ -372,13 +379,15 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
     setStatusMessage(null);
 
     try {
+      const toneToUse = overrideTone || selectedToneStyle;
       const res = await authFetch('/api/digests/generate', {
         method: 'POST',
         body: JSON.stringify({
           chatId: chatIdToUse,
           hoursBack: overrideHours || hoursBack,
           customPrompt: overridePrompt !== undefined ? overridePrompt : customPrompt,
-          sendImmediately: send || autoSendTelegram
+          sendImmediately: send || autoSendTelegram,
+          toneStyle: toneToUse
         })
       });
 
@@ -763,6 +772,28 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                       </div>
                     </div>
 
+                    {/* Tone Style Selector for Chat Schedule */}
+                    <div className="bg-slate-950/80 border border-slate-800 rounded-xl p-3">
+                      <label className="text-[11px] font-bold text-slate-400 uppercase flex items-center justify-between mb-1.5">
+                        <span>Стиль повествования</span>
+                        <span className="text-[10px] text-blue-400 font-normal">
+                          {TONE_STYLES[config.toneStyle || 'default']?.label}
+                        </span>
+                      </label>
+                      <select
+                        value={config.toneStyle || 'default'}
+                        disabled={!config.enabled}
+                        onChange={(e) => handleUpdateConfig(chat.id, { toneStyle: e.target.value as DigestToneStyle })}
+                        className="w-full bg-slate-900 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-blue-500 disabled:opacity-40"
+                      >
+                        {TONE_STYLE_LIST.map(style => (
+                          <option key={style.id} value={style.id}>
+                            {style.icon} {style.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
                     <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-xs">
                       <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
                         <input
@@ -775,7 +806,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                       </label>
 
                       <button
-                        onClick={() => handleGenerateNow(chat.id, config.hoursBack, undefined, true)}
+                        onClick={() => handleGenerateNow(chat.id, config.hoursBack, undefined, true, config.toneStyle)}
                         disabled={isGenerating}
                         className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 rounded-lg font-medium flex items-center gap-1.5 transition-all disabled:opacity-50"
                       >
@@ -836,6 +867,38 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                     }`}
                   >
                     {h} ч
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Tone Style Selector */}
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+                Стиль повествования ИИ
+              </label>
+              <div className="grid grid-cols-1 gap-2">
+                {TONE_STYLE_LIST.map(style => (
+                  <button
+                    key={style.id}
+                    type="button"
+                    onClick={() => setSelectedToneStyle(style.id)}
+                    className={`p-2.5 rounded-xl text-left transition-all border flex items-center justify-between ${
+                      selectedToneStyle === style.id
+                        ? 'bg-blue-600/15 text-white border-blue-500 shadow-sm'
+                        : 'bg-slate-950/60 text-slate-300 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <span className="text-lg">{style.icon}</span>
+                      <div>
+                        <div className="text-xs font-bold text-white">{style.label}</div>
+                        <div className="text-[10px] text-slate-400 leading-tight">{style.description}</div>
+                      </div>
+                    </div>
+                    {selectedToneStyle === style.id && (
+                      <Check className="w-4 h-4 text-blue-400 flex-shrink-0 ml-2" />
+                    )}
                   </button>
                 ))}
               </div>

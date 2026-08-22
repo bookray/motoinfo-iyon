@@ -2310,6 +2310,7 @@ app.post('/api/digests/configs', authenticateToken, async (req, res) => {
       hoursBack: Number(configData.hoursBack) || 24,
       targetChatId: configData.targetChatId || configData.chatId,
       customPrompt: configData.customPrompt || '',
+      toneStyle: configData.toneStyle || 'default',
       autoSendTelegram: configData.autoSendTelegram !== undefined ? !!configData.autoSendTelegram : true,
       lastGeneratedAt: configData.lastGeneratedAt,
       lastSentAt: configData.lastSentAt
@@ -2341,18 +2342,21 @@ app.get('/api/digests/history', authenticateToken, (req, res) => {
 
 app.post('/api/digests/generate', authenticateToken, async (req, res) => {
   try {
-    const { chatId, hoursBack, customPrompt, sendImmediately, targetChatId } = req.body;
+    const { chatId, hoursBack, customPrompt, sendImmediately, targetChatId, toneStyle } = req.body;
     if (!chatId) {
       return res.status(400).json({ error: 'chatId is required' });
     }
 
-    const digest = await generateChatSummary(
+    // Process through sequential queue to prevent concurrent AI bursts
+    const digest = await enqueueDigest({
+      id: Math.random().toString(36).substr(2, 9),
       chatId,
-      Number(hoursBack) || 24,
+      hoursBack: Number(hoursBack) || 24,
       customPrompt,
-      !!sendImmediately,
-      targetChatId
-    );
+      sendImmediately: !!sendImmediately,
+      targetChatId,
+      toneStyle: toneStyle || 'default'
+    });
 
     res.json(digest);
   } catch (err: any) {
@@ -2658,9 +2662,35 @@ async function recordChatMessage(record: {
   timestamp: string;
 }) {
   if (!record.text || record.text.trim().length === 0) return;
+  
+  // 48-hour retention in memory: prune messages older than 48 hours
+  const cutoff48h = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+  chatMessages = chatMessages.filter(m => m.timestamp >= cutoff48h);
+
   chatMessages.unshift(record);
-  if (chatMessages.length > 3000) chatMessages.pop();
+  if (chatMessages.length > 5000) chatMessages.pop();
   queueWrite('chat_messages', record.id, cleanData(record));
+}
+
+async function cleanupOldChatMessages() {
+  const cutoff48h = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+  const initialMemCount = chatMessages.length;
+  chatMessages = chatMessages.filter(m => m.timestamp >= cutoff48h);
+  if (chatMessages.length !== initialMemCount) {
+    console.log(`[Cleanup48h] Purged ${initialMemCount - chatMessages.length} expired chat messages from memory (kept ${chatMessages.length})`);
+  }
+
+  try {
+    const snap = await db.collection('chat_messages').where('timestamp', '<', cutoff48h).limit(100).get();
+    if (!snap.empty) {
+      console.log(`[Cleanup48h] Purging ${snap.size} chat messages older than 48 hours from Firestore...`);
+      for (const doc of snap.docs) {
+        queueDelete('chat_messages', doc.id);
+      }
+    }
+  } catch (err: any) {
+    console.warn('[Cleanup48h] Warning during database cleanup:', err?.message);
+  }
 }
 
 interface BlackListPost {
@@ -2817,12 +2847,80 @@ function splitTelegramMessage(text: string, limit = 4000): string[] {
   return parts;
 }
 
+const TONE_STYLE_PROMPTS: Record<string, string> = {
+  default: `СТИЛЬ ПОВЕСТВОВАНИЯ: 🤖 По-умолчанию.
+Придерживайся того же естественного стиля речи, который используют участники чата, структурированно и понятно излагая суть.`,
+  debaucher: `СТИЛЬ ПОВЕСТВОВАНИЯ: 🤬 ДЕБОШИР.
+Веди повествование так, будто ты после трёх бокалов — дерзкий, язвительный, саркастичный и без цензуры. Разрешается и приветствуется использовать крепкие выражения, стебать и подкалывать участников обсуждения, отпускать острые колкие шутки, иронизировать над их спорами и даже нарочито преувеличивать или комично искажать факты в стиле дружеской посиделки друзей, которые не обижаются на иронию и сарказм.`,
+  troll: `СТИЛЬ ПОВЕСТВОВАНИЯ: 😈 ТРОЛЛЬ.
+Язвительный, колкий стиль без перехода границ. По духу это всё тот же дебошир — с подколами, провокациями и стёбом участников обсуждения, но СТРОГО БЕЗ МАТА и ненормативной лексики. Иронизируй над спорами, наивностью и техническими теориями участников, тонко подкалывай их, создавая дерзкую и смешную атмосферу для ценителей колкого юмора.`,
+  sycophant: `СТИЛЬ ПОВЕСТВОВАНИЯ: 😍 ПОДХАЛИМ.
+Пиши в манере искусного льстеца и восторженного поклонника! Мастерски льсти участникам, подчеркивай ум, гениальность, мудрость и высокую значимость каждого участника чата, возводи их слова в ранг абсолютной истины, при этом добавляя тончайшую, забавную и лёгкую иронию. Для тех, кто любит лесть и похвалу!`,
+  chaos: `СТИЛЬ ПОВЕСТВОВАНИЯ: ☀️ СОЛНЕЧНЫЙ ХАОС.
+Добрый, весёлый и слегка безумный стиль, где обычный чат превращается в ситком, реалити-шоу и приключенческий сериал одновременно! Много тёплого юмора, лёгкого абсурда, неожиданных выводов, драматических преувеличений и театральных преувеличений с редкими вспышками очаровательного творческого безумия!`
+};
+
+interface DigestQueueTask {
+  id: string;
+  chatId: string;
+  hoursBack: number;
+  customPrompt?: string;
+  sendImmediately: boolean;
+  targetChatId?: string;
+  toneStyle?: string;
+  resolve?: (digest: any) => void;
+  reject?: (err: any) => void;
+}
+
+const digestQueue: DigestQueueTask[] = [];
+let isProcessingDigestQueue = false;
+
+function enqueueDigest(task: DigestQueueTask): Promise<any> {
+  return new Promise((resolve, reject) => {
+    task.resolve = resolve;
+    task.reject = reject;
+    digestQueue.push(task);
+    console.log(`[DigestQueue] Enqueued task for chat ${task.chatId}. Queue size: ${digestQueue.length}`);
+    processNextDigestInQueue();
+  });
+}
+
+async function processNextDigestInQueue() {
+  if (isProcessingDigestQueue || digestQueue.length === 0) return;
+  isProcessingDigestQueue = true;
+
+  const currentTask = digestQueue.shift()!;
+  console.log(`[DigestQueue] ⏳ Processing sequential digest for chat ${currentTask.chatId} (Remaining in queue: ${digestQueue.length})`);
+
+  try {
+    const digest = await generateChatSummary(
+      currentTask.chatId,
+      currentTask.hoursBack,
+      currentTask.customPrompt,
+      currentTask.sendImmediately,
+      currentTask.targetChatId,
+      currentTask.toneStyle || 'default'
+    );
+    if (currentTask.resolve) currentTask.resolve(digest);
+    console.log(`[DigestQueue] ✅ Finished digest for chat ${currentTask.chatId}`);
+  } catch (err: any) {
+    console.error(`[DigestQueue] ❌ Task failed for chat ${currentTask.chatId}:`, err);
+    if (currentTask.reject) currentTask.reject(err);
+  } finally {
+    // 2.5s pacing delay between AI generation requests to avoid quota spikes and rate limits
+    await new Promise(r => setTimeout(r, 2500));
+    isProcessingDigestQueue = false;
+    processNextDigestInQueue();
+  }
+}
+
 async function generateChatSummary(
   chatId: string,
   hoursBack = 24,
   customPrompt?: string,
   sendImmediately = false,
-  targetChatId?: string
+  targetChatId?: string,
+  toneStyle: string = 'default'
 ) {
   const chat = chats.find(c => String(c.id) === String(chatId));
   const chatTitle = chat ? chat.title : `Чат ${chatId}`;
@@ -2874,9 +2972,12 @@ async function generateChatSummary(
   }
 
   const todayStr = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+  const toneInstruction = TONE_STYLE_PROMPTS[toneStyle] || TONE_STYLE_PROMPTS.default;
 
   const promptText = `Ты — профессиональный ИИ-редактор и модератор Telegram-сообщества.
 Твоя цель: составить информативный, стильный и структурированный суточный дайджест тем, обсуждавшихся в чате «${chatTitle}» за последние ${hoursBack} часов.
+
+${toneInstruction}
 
 ${customPrompt ? `Специальные пожелания от администратора:\n«${customPrompt}»\n` : ''}
 ${blackListContext}
@@ -2921,7 +3022,7 @@ ${blackListPosts.length > 0 ? `
 🚨 <b>Сводка MotoBlackList</b>
 <blockquote expandable>⚠️ На канале <a href="${blackListPosts[blackListPosts.length - 1].url}">@MotoBlackList вышел новый пост</a>: «${blackListPosts[blackListPosts.length - 1].text}». Будьте бдительны при сделках!</blockquote>` : ''}
 
-Сформируй дайджест на русском языке, живым и увлекательным языком, строго соблюдая HTML-разметку с <blockquote expandable>.`;
+Сформируй дайджест на русском языке, согласно выбранному стилю повествования, строго соблюдая HTML-разметку с <blockquote expandable>.`;
 
   let rawSummaryText = '';
   try {
@@ -2942,6 +3043,7 @@ ${blackListPosts.length > 0 ? `
     messageCount,
     userCount,
     hoursBack,
+    toneStyle,
     createdAt: new Date().toISOString(),
     sentToTelegram: false,
     targetChatId: targetChatId || chatId
@@ -2969,7 +3071,7 @@ ${blackListPosts.length > 0 ? `
     type: 'SYSTEM',
     user: 'Gemini AI',
     chat: chatTitle,
-    details: `Сформирован суточный дайджест (${messageCount} сообщ.)${digestEntry.sentToTelegram ? ' и отправлен в чат' : ''}`
+    details: `Сформирован суточный дайджест (${messageCount} сообщ., стиль: ${toneStyle})${digestEntry.sentToTelegram ? ' и отправлен в чат' : ''}`
   });
 
   return digestEntry;
@@ -4455,6 +4557,124 @@ async function initBot(token: string) {
                 await ctx.reply('❌ Пользователь не найден. Ответьте на сообщение пользователя или укажите его имя/username.');
                 return;
               }
+            }
+          }
+
+          // Check Channel Subscription requirement (if enabled for this chat)
+          if (chat.requireChannelSubscription && chat.channelSubscriptionTarget && !isWhitelisted && !isCurrentAdmin) {
+            let isSenderAdmin = false;
+            try {
+              const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
+              isSenderAdmin = ['creator', 'administrator'].includes(member.status);
+            } catch (e) {
+              isSenderAdmin = false;
+            }
+
+            if (!isSenderAdmin) {
+              let targetChannel = chat.channelSubscriptionTarget.trim();
+              if (targetChannel.startsWith('https://t.me/')) {
+                const part = targetChannel.split('https://t.me/')[1]?.split('/')[0]?.split('?')[0];
+                if (part) targetChannel = `@${part}`;
+              } else if (!targetChannel.startsWith('@') && !targetChannel.startsWith('-100')) {
+                targetChannel = `@${targetChannel}`;
+              }
+
+              let isSubscribed = false;
+              try {
+                const chMember = await ctx.telegram.getChatMember(targetChannel, ctx.from.id);
+                isSubscribed = ['creator', 'administrator', 'member', 'restricted'].includes(chMember.status);
+              } catch (chErr: any) {
+                console.warn(`[ChannelSubscription] Verification check error for user ${ctx.from.id} in channel ${targetChannel}:`, chErr?.message);
+              }
+
+              if (!isSubscribed) {
+                try {
+                  await ctx.deleteMessage().catch(() => {});
+                  
+                  // Mute user for 24 hours (86400 seconds)
+                  const untilDate = Math.floor(Date.now() / 1000) + 86400;
+                  await ctx.telegram.restrictChatMember(chatId, ctx.from.id, {
+                    permissions: {
+                      can_send_messages: false,
+                      can_send_other_messages: false,
+                      can_add_web_page_previews: false
+                    },
+                    until_date: untilDate
+                  });
+
+                  const channelLink = targetChannel.startsWith('@') ? `https://t.me/${targetChannel.substring(1)}` : (targetChannel.startsWith('https://') ? targetChannel : `https://t.me/${targetChannel}`);
+                  const userMention = ctx.from.username ? `@${ctx.from.username}` : (ctx.from.first_name || 'Участник');
+                  const defaultMsg = `⚠️ <b>Ограничение отправки сообщений</b>\n\n${escapeHtml(userMention)}, для общения в этом чате необходимо быть подписчиком канала:\n👉 <a href="${channelLink}">${escapeHtml(targetChannel)}</a>\n\nВы временно обеззвучены на 24 часа. Подпишитесь на канал, чтобы писать в чате!`;
+                  const noticeMsg = chat.channelSubscriptionMessage?.trim() ? chat.channelSubscriptionMessage.replace('{user}', userMention).replace('{channel}', targetChannel) : defaultMsg;
+
+                  const warnReply = await ctx.reply(noticeMsg, {
+                    parse_mode: 'HTML',
+                    link_preview_options: { is_disabled: false }
+                  });
+
+                  setTimeout(async () => {
+                    try {
+                      await ctx.telegram.deleteMessage(chatId, warnReply.message_id);
+                    } catch (e) {}
+                  }, 60000);
+
+                  await addLog({
+                    id: Math.random().toString(36).substr(2, 9),
+                    timestamp: new Date().toISOString(),
+                    type: 'MUTE',
+                    user: ctx.from.first_name || String(ctx.from.id),
+                    chat: chat.title,
+                    details: `Мут на 24ч (нет подписки на канал ${targetChannel})`
+                  });
+                } catch (err) {
+                  console.error('[ChannelSubscription] Failed to restrict user:', err);
+                }
+                return;
+              }
+            }
+          }
+
+          // Check for Admin Tagger (@admin call)
+          const textRaw = (ctx.message && 'text' in ctx.message ? ctx.message.text : ((ctx.message as any)?.caption || '')) || '';
+          const hasAdminTag = /(?:^|\s)@admin(?:istrators?|s)?(?:\s|$|[.,!?])/i.test(textRaw) || textRaw.trim().startsWith('/admin');
+
+          if (hasAdminTag && (chat.tagAdminsEnabled !== false)) {
+            try {
+              const adminMembers = await ctx.telegram.getChatAdministrators(chatId);
+              // Exclude bots and anonymous/hidden admins
+              const visibleAdmins = adminMembers.filter(a => !a.user.is_bot && !a.is_anonymous);
+              
+              if (visibleAdmins.length > 0) {
+                const mentions = visibleAdmins.map(a => {
+                  if (a.user.username) {
+                    return `@${a.user.username}`;
+                  }
+                  return `<a href="tg://user?id=${a.user.id}">${escapeHtml(a.user.first_name || 'Администратор')}</a>`;
+                });
+
+                const customNotice = chat.tagAdminsMessage?.trim() || '🚨 <b>Вызов администрации чата</b>\nПоступил запрос от пользователя. Администраторы уведомлены:';
+                const tagMessage = `${customNotice}\n\n🛡 ${mentions.join(' ')}`;
+
+                await ctx.reply(tagMessage, {
+                  parse_mode: 'HTML',
+                  reply_parameters: { message_id: ctx.message.message_id }
+                });
+
+                await addLog({
+                  id: Math.random().toString(36).substr(2, 9),
+                  timestamp: new Date().toISOString(),
+                  type: 'SYSTEM',
+                  user: ctx.from.first_name || String(ctx.from.id),
+                  chat: chat.title,
+                  details: `Вызов администрации (@admin): тегнуто ${visibleAdmins.length} админов`
+                });
+              } else {
+                await ctx.reply('⚠️ В чате не найдено открытых администраторов (все админы скрыты или являются ботами).', {
+                  reply_parameters: { message_id: ctx.message.message_id }
+                });
+              }
+            } catch (tagErr: any) {
+              console.error('[AdminTagger] Error tagging administrators:', tagErr?.message);
             }
           }
 
@@ -6081,7 +6301,10 @@ async function startServer() {
       await db.collection('config').doc('deletions').set({ items: scheduledDeletions });
     }
 
-    // Handle scheduled daily AI digests
+    // Periodic 48h chat message retention cleanup (prunes messages older than 48 hours)
+    cleanupOldChatMessages().catch(e => console.warn('[Cleanup48h] Error:', e?.message));
+
+    // Handle scheduled daily AI digests using sequential queue
     const localHHmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     const todayDateStr = now.toISOString().split('T')[0];
 
@@ -6092,28 +6315,33 @@ async function startServer() {
           continue;
         }
 
-        console.log(`[AI Digest] Running scheduled daily summary for chat ${config.chatId} (${config.chatTitle})`);
-        try {
-          const hours = config.hoursBack || 24;
-          await generateChatSummary(
-            config.chatId,
-            hours,
-            config.customPrompt,
-            config.autoSendTelegram !== false,
-            config.targetChatId
-          );
+        // Mark as queued today to prevent double enqueueing in the same minute
+        config.lastSentAt = `${todayDateStr}T${localHHmm}:00.000Z`;
+        await db.collection('config').doc('digest_configs').set({ configs: digestConfigs });
 
+        console.log(`[AI Digest] 📥 Enqueueing scheduled daily summary for chat ${config.chatId} (${config.chatTitle}) into sequential queue`);
+        const hours = config.hoursBack || 24;
+
+        enqueueDigest({
+          id: Math.random().toString(36).substr(2, 9),
+          chatId: config.chatId,
+          hoursBack: hours,
+          customPrompt: config.customPrompt,
+          sendImmediately: config.autoSendTelegram !== false,
+          targetChatId: config.targetChatId,
+          toneStyle: config.toneStyle || 'default'
+        }).then(async () => {
           config.lastGeneratedAt = new Date().toISOString();
           config.lastSentAt = new Date().toISOString();
           await db.collection('config').doc('digest_configs').set({ configs: digestConfigs });
-          console.log(`[AI Digest] Successfully completed scheduled digest for chat ${config.chatId}`);
-        } catch (digestErr: any) {
+          console.log(`[AI Digest] ✅ Sequential queue completed scheduled digest for chat ${config.chatId}`);
+        }).catch(async (digestErr: any) => {
           if (digestErr?.message?.includes('минимум 10')) {
-            console.log(`[AI Digest] Skipped chat ${config.chatId} (${config.chatTitle || 'chat'}): ${digestErr.message}`);
+            console.log(`[AI Digest] ℹ️ Skipped chat ${config.chatId} (${config.chatTitle || 'chat'}): ${digestErr.message}`);
           } else {
-            console.error(`[AI Digest] Failed scheduled digest for chat ${config.chatId}:`, digestErr);
+            console.error(`[AI Digest] ❌ Failed scheduled digest in queue for chat ${config.chatId}:`, digestErr);
           }
-        }
+        });
       }
     }
 

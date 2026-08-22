@@ -208,9 +208,9 @@ export const ChatList: React.FC<ChatListProps> = ({
                   />
                 </div>
 
-                {/* Entry Settings */}
+                {/* Entry Settings & Channel Subscription */}
                 <div className="space-y-4">
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Вступление и Мут</h4>
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Вступление и Подписка</h4>
                   
                   <ToggleSetting 
                     label="Авто-одобрение заявок" 
@@ -246,12 +246,12 @@ export const ChatList: React.FC<ChatListProps> = ({
                       </div>
                     </div>
                   )}
+                  
                   <ToggleSetting 
                     label="Мут новичков" 
                     checked={chat.muteNewcomers} 
                     onChange={(val) => handleUpdateSetting(chat, 'muteNewcomers', val)} 
                   />
-
                   {chat.muteNewcomers && (
                     <div className="flex items-center gap-2 pl-2 animate-in fade-in duration-200">
                       <Clock className="w-4 h-4 text-slate-400" />
@@ -264,30 +264,87 @@ export const ChatList: React.FC<ChatListProps> = ({
                       <span className="text-xs text-slate-500">часов</span>
                     </div>
                   )}
+
+                  {/* Channel Subscription check */}
+                  <div className="pt-2 border-t border-slate-700/50">
+                    <ToggleSetting 
+                      label="Подписка на канал (Мут 24ч)" 
+                      checked={chat.requireChannelSubscription} 
+                      onChange={(val) => handleUpdateSetting(chat, 'requireChannelSubscription', val)} 
+                    />
+                    {chat.requireChannelSubscription && (
+                      <div className="space-y-2 pl-2 mt-2 animate-in fade-in duration-200 bg-slate-900/40 p-2.5 rounded-lg border border-slate-800">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[10px] text-indigo-400 uppercase font-bold">Целевой канал (@channel / username)</label>
+                          <input 
+                            type="text" 
+                            className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:border-indigo-500" 
+                            value={chat.channelSubscriptionTarget || ''}
+                            onChange={(e) => handleUpdateSetting(chat, 'channelSubscriptionTarget', e.target.value)}
+                            placeholder="@MotoBlackList"
+                          />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[10px] text-slate-400 uppercase font-bold">Текст оповещения (опционально)</label>
+                          <textarea 
+                            rows={2}
+                            className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:border-indigo-500" 
+                            value={chat.channelSubscriptionMessage || ''}
+                            onChange={(e) => handleUpdateSetting(chat, 'channelSubscriptionMessage', e.target.value)}
+                            placeholder="Для публикации в чате подпишитесь на канал {channel}..."
+                          />
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                {/* Forbidden Words */}
+                {/* Admin Tagger & Forbidden Words */}
                 <div className="space-y-4">
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Запрещенные слова</h4>
-                  <form onSubmit={(e) => handleAddWord(chat, e)} className="flex gap-2">
-                    <input 
-                      type="text" 
-                      className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white"
-                      placeholder="Добавить слово..."
-                      value={newWord}
-                      onChange={e => setNewWord(e.target.value)}
+                  {/* Admin Tagger */}
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Вызов администрации (@admin)</h4>
+                    <ToggleSetting 
+                      label="Тегер админов (@admin)" 
+                      checked={chat.tagAdminsEnabled !== false} 
+                      onChange={(val) => handleUpdateSetting(chat, 'tagAdminsEnabled', val)} 
                     />
-                    <button type="submit" className="bg-slate-700 hover:bg-slate-600 p-1 rounded">
-                      <Plus className="w-4 h-4 text-white" />
-                    </button>
-                  </form>
-                  <div className="flex flex-wrap gap-1">
-                    {(chat.forbiddenWords || []).map(word => (
-                      <span key={word} className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded text-[10px] flex items-center gap-1">
-                        {word}
-                        <button onClick={() => handleRemoveWord(chat, word)}><X className="w-3 h-3" /></button>
-                      </span>
-                    ))}
+                    {chat.tagAdminsEnabled !== false && (
+                      <div className="mt-2 pl-2 animate-in fade-in duration-200">
+                        <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Сообщение при вызове</label>
+                        <input 
+                          type="text" 
+                          className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white" 
+                          value={chat.tagAdminsMessage || ''}
+                          onChange={(e) => handleUpdateSetting(chat, 'tagAdminsMessage', e.target.value)}
+                          placeholder="🚨 Вызов администрации чата..."
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-700/50">
+                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Запрещенные слова</h4>
+                    <form onSubmit={(e) => handleAddWord(chat, e)} className="flex gap-2">
+                      <input 
+                        type="text" 
+                        className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white"
+                        placeholder="Добавить слово..."
+                        value={newWord}
+                        onChange={e => setNewWord(e.target.value)}
+                      />
+                      <button type="submit" className="bg-slate-700 hover:bg-slate-600 p-1 rounded">
+                        <Plus className="w-4 h-4 text-white" />
+                      </button>
+                    </form>
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {(chat.forbiddenWords || []).map(word => (
+                        <span key={word} className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-2 py-0.5 rounded text-[10px] flex items-center gap-1">
+                          {word}
+                          <button onClick={() => handleRemoveWord(chat, word)}><X className="w-3 h-3" /></button>
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </div>
 

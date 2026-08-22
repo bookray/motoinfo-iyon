@@ -27,6 +27,11 @@ export interface Chat {
   userVoteDuration?: number;
   notifyMultiChat?: boolean;
   multiChatThreshold?: number;
+  requireChannelSubscription?: boolean;
+  channelSubscriptionTarget?: string;
+  channelSubscriptionMessage?: string;
+  tagAdminsEnabled?: boolean;
+  tagAdminsMessage?: string;
 }
 
 export interface ScheduledMessage {
@@ -114,6 +119,11 @@ export interface FilterSettings {
   warnLimit: number;
   warnAction?: 'BAN' | 'MUTE';
   reputationEnabled?: boolean;
+  requireChannelSubscription?: boolean;
+  channelSubscriptionTarget?: string;
+  channelSubscriptionMessage?: string;
+  tagAdminsEnabled?: boolean;
+  tagAdminsMessage?: string;
 }
 
 export interface ReputationHistoryItem {
@@ -318,6 +328,50 @@ export interface BroadcastHistory {
   source: 'ADMIN' | 'BOT';
 }
 
+export type DigestToneStyle = 'default' | 'debaucher' | 'troll' | 'sycophant' | 'chaos';
+
+export interface ToneStyleInfo {
+  id: DigestToneStyle;
+  label: string;
+  icon: string;
+  description: string;
+}
+
+export const TONE_STYLES: Record<DigestToneStyle, ToneStyleInfo> = {
+  default: {
+    id: 'default',
+    label: 'По-умолчанию',
+    icon: '🤖',
+    description: 'Тот же стиль речи, что используют участники чата.'
+  },
+  debaucher: {
+    id: 'debaucher',
+    label: 'Дебошир',
+    icon: '🤬',
+    description: 'Будто после трёх бокалов — дерзкий, язвительный, может материться и стебать участников обсуждения. И даже искажать факты. Для чата друзей, которые не обижаются на иронию и сарказм.'
+  },
+  troll: {
+    id: 'troll',
+    label: 'Тролль',
+    icon: '😈',
+    description: 'Язвительный, колкий стиль без перехода границ. По духу это всё тот же дебошир — с подколами и провокациями - стебать участников обсуждения, но без мата. Для тех, кто ценит дерзкий юмор, но хотят обойтись без ненормативной лексики.'
+  },
+  sycophant: {
+    id: 'sycophant',
+    label: 'Подхалим',
+    icon: '😍',
+    description: 'Умеет мастерски льстить, подчеркивая ум и значимость участников, при этом добавляя лёгкую иронию. Для тех, кто любят лесть и похвалу.'
+  },
+  chaos: {
+    id: 'chaos',
+    label: 'Солнечный Хаос',
+    icon: '☀️',
+    description: 'Добрый, весёлый и слегка безумный стиль, где обычный чат превращается в ситком, реалити-шоу и приключенческий сериал одновременно. Много тёплого юмора, лёгкого абсурда, неожиданных выводов и театральных преувеличений с редкими вспышками очаровательного творческого безумия.'
+  }
+};
+
+export const TONE_STYLE_LIST: ToneStyleInfo[] = Object.values(TONE_STYLES);
+
 export interface ChatDigestConfig {
   chatId: string;
   chatTitle?: string;
@@ -328,6 +382,7 @@ export interface ChatDigestConfig {
   includeTopics?: boolean;
   includeStats?: boolean;
   customPrompt?: string;
+  toneStyle?: DigestToneStyle;
   autoSendTelegram?: boolean;
   lastGeneratedAt?: string;
   lastSentAt?: string;
@@ -344,6 +399,8 @@ export interface ChatDigestEntry {
   periodEnd: string;
   messageCount: number;
   userCount: number;
+  hoursBack?: number;
+  toneStyle?: DigestToneStyle;
   createdAt: string;
   sentToTelegram?: boolean;
   sentAt?: string;
