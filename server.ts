@@ -1647,24 +1647,106 @@ app.delete('/api/whitelist/:userId', async (req, res) => {
   }
 });
 
-app.post('/api/chats', async (req, res) => {
+app.post('/api/chats', authenticateToken, async (req, res) => {
   try {
-    const chat = req.body;
-    console.log('Adding chat:', chat);
-    await updateChat(chat);
-    res.json(chat);
+    const input = req.body;
+    if (!input || !input.id) {
+      return res.status(400).json({ error: 'Chat ID is required' });
+    }
+    const chatId = String(input.id).trim();
+    let title = input.title || `Chat ${chatId}`;
+    let members = Number(input.members) || 0;
+    let avatarUrl = input.avatarUrl || `https://picsum.photos/seed/${chatId}/200`;
+
+    if (bot) {
+      try {
+        const tgChat = await bot.telegram.getChat(chatId);
+        if ('title' in tgChat && tgChat.title) {
+          title = tgChat.title;
+        } else if ('first_name' in tgChat) {
+          title = `${tgChat.first_name || ''} ${tgChat.last_name || ''}`.trim() || title;
+        }
+        try {
+          members = await bot.telegram.getChatMembersCount(chatId);
+        } catch (e) {}
+        if (tgChat.photo) {
+          try {
+            const fileLink = await bot.telegram.getFileLink(tgChat.photo.small_file_id);
+            avatarUrl = fileLink.toString();
+          } catch (e) {}
+        }
+      } catch (err: any) {
+        console.warn(`Could not fetch chat info from Telegram for ${chatId}:`, err?.message);
+      }
+    }
+
+    const existingChat = chats.find(c => String(c.id) === chatId);
+    const newChat = {
+      id: chatId,
+      title,
+      members: members || existingChat?.members || 0,
+      muteNewcomers: input.muteNewcomers ?? existingChat?.muteNewcomers ?? false,
+      muteDurationMinutes: input.muteDurationMinutes ?? existingChat?.muteDurationMinutes ?? 30,
+      autoApprove: input.autoApprove ?? existingChat?.autoApprove ?? true,
+      msgCount: input.msgCount ?? existingChat?.msgCount ?? 0,
+      avatarUrl: avatarUrl || existingChat?.avatarUrl,
+      active: input.active !== undefined ? !!input.active : (existingChat ? existingChat.active : true)
+    };
+
+    console.log('Adding/updating chat via API:', newChat);
+    await updateChat(newChat, true);
+    res.json(newChat);
   } catch (err) {
     console.error('Failed to add chat:', err);
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-app.delete('/api/chats/:id', async (req, res) => {
+app.post('/api/chats/scan', authenticateToken, async (req, res) => {
   try {
-    const chatId = req.params.id;
+    if (!bot) {
+      return res.status(400).json({ error: 'Бот не инициализирован. Проверьте Bot Token в настройках.' });
+    }
+    console.log('Manually syncing chats with Telegram...');
+    let updatedCount = 0;
+    for (const chat of chats) {
+      try {
+        const tgChat = await bot.telegram.getChat(chat.id);
+        let memberCount = chat.members;
+        try {
+          memberCount = await bot.telegram.getChatMembersCount(chat.id);
+        } catch (e) {}
+        let avatarUrl = chat.avatarUrl;
+        if (tgChat.photo) {
+          try {
+            const fileLink = await bot.telegram.getFileLink(tgChat.photo.small_file_id);
+            avatarUrl = fileLink.toString();
+          } catch (e) {}
+        }
+        const updatedChat = {
+          ...chat,
+          title: 'title' in tgChat ? tgChat.title : chat.title,
+          members: memberCount,
+          avatarUrl
+        };
+        await updateChat(updatedChat, true);
+        updatedCount++;
+      } catch (e: any) {
+        console.warn(`Scan error for chat ${chat.id}:`, e?.message);
+      }
+    }
+    res.json({ success: true, updatedCount, totalChats: chats.length, chats });
+  } catch (err: any) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.delete('/api/chats/:id', authenticateToken, async (req, res) => {
+  try {
+    const chatId = String(req.params.id);
     console.log('Removing chat:', chatId);
     await db.collection('chats').doc(chatId).delete();
-    chats = chats.filter(c => c.id !== chatId);
+    chats = chats.filter(c => String(c.id) !== chatId);
     res.json({ success: true });
   } catch (err) {
     console.error(`Failed to remove chat ${req.params.id}:`, err);
@@ -1672,22 +1754,29 @@ app.delete('/api/chats/:id', async (req, res) => {
   }
 });
 
-app.put('/api/chats/:id', async (req, res) => {
+app.put('/api/chats/:id', authenticateToken, async (req, res) => {
   try {
-    const updatedChat = req.body;
+    const updatedChat = { ...req.body, id: String(req.params.id) };
     console.log(`Updating chat ${req.params.id} (immediate):`, updatedChat);
     await updateChat(updatedChat, true);
-    res.json({ success: true });
+    res.json({ success: true, chat: updatedChat });
   } catch (err) {
     console.error(`Failed to update chat ${req.params.id}:`, err);
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-app.post('/api/chats/:id/settings', async (req, res) => {
+app.post('/api/chats/:id/settings', authenticateToken, async (req, res) => {
   try {
     const chatSettings = req.body;
-    await db.collection('chats').doc(req.params.id).update({ settings: cleanData(chatSettings) });
+    const chatId = String(req.params.id);
+    const existing = chats.find(c => String(c.id) === chatId);
+    if (existing) {
+      existing.settings = { ...existing.settings, ...chatSettings };
+      await updateChat(existing, true);
+    } else {
+      await db.collection('chats').doc(chatId).update({ settings: cleanData(chatSettings) });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -2672,8 +2761,16 @@ async function recordChatMessage(record: {
   queueWrite('chat_messages', record.id, cleanData(record));
 }
 
-async function cleanupOldChatMessages() {
-  const cutoff48h = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+let lastCleanupTime = 0;
+async function cleanupOldChatMessages(force = false) {
+  const now = Date.now();
+  // Only run at most once every 30 minutes unless forced
+  if (!force && now - lastCleanupTime < 30 * 60 * 1000) {
+    return;
+  }
+  lastCleanupTime = now;
+
+  const cutoff48h = new Date(now - 48 * 3600 * 1000).toISOString();
   const initialMemCount = chatMessages.length;
   chatMessages = chatMessages.filter(m => m.timestamp >= cutoff48h);
   if (chatMessages.length !== initialMemCount) {
@@ -2682,10 +2779,15 @@ async function cleanupOldChatMessages() {
 
   try {
     const snap = await db.collection('chat_messages').where('timestamp', '<', cutoff48h).limit(100).get();
-    if (!snap.empty) {
-      console.log(`[Cleanup48h] Purging ${snap.size} chat messages older than 48 hours from Firestore...`);
+    const count = snap.size ?? snap.docs?.length ?? 0;
+    if (count > 0) {
+      console.log(`[Cleanup48h] Purging ${count} chat messages older than 48 hours from database...`);
       for (const doc of snap.docs) {
-        queueDelete('chat_messages', doc.id);
+        try {
+          await db.collection('chat_messages').doc(doc.id).delete();
+        } catch (delErr: any) {
+          // ignore single delete errors
+        }
       }
     }
   } catch (err: any) {
@@ -3132,142 +3234,160 @@ let settings = {
 // Sync functions
 async function syncData() {
   try {
-    console.log(`Starting data sync from ${process.env.DB_TYPE || 'database'}...`);
-    // Initial load
-    const chatsSnap = await db.collection('chats').get();
-    chats = chatsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${chats.length} chats`);
+    const dbType = process.env.DB_TYPE || 'database';
+    console.log(`Starting data sync from ${dbType}...`);
 
-    const tasksSnap = await db.collection('tasks').get();
-    tasks = tasksSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${tasks.length} tasks`);
+    const safeLoad = async (name: string, fn: () => Promise<void>) => {
+      try {
+        await fn();
+      } catch (err: any) {
+        console.warn(`[Sync] Warning loading collection '${name}':`, err?.message || err);
+      }
+    };
 
-    const bansSnap = await db.collection('bans').get();
-    bans = bansSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${bans.length} bans`);
+    // Load core collections with independent error tolerance
+    await safeLoad('chats', async () => {
+      const snap = await db.collection('chats').get();
+      chats = snap.docs.map(d => ({ id: String(d.id), ...d.data() } as any));
+      console.log(`Loaded ${chats.length} chats`);
+    });
 
-    const membershipsSnap = await db.collection('memberships').get();
-    memberships = membershipsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${memberships.length} memberships`);
+    await safeLoad('tasks', async () => {
+      const snap = await db.collection('tasks').get();
+      tasks = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${tasks.length} tasks`);
+    });
 
-    const whitelistSnap = await db.collection('whitelist').get();
-    whitelist = whitelistSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${whitelist.length} whitelisted users`);
+    await safeLoad('bans', async () => {
+      const snap = await db.collection('bans').get();
+      bans = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${bans.length} bans`);
+    });
 
-    const chatBansSnap = await db.collection('chat_bans').get();
-    chatBans = chatBansSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${chatBans.length} chat-specific bans`);
+    await safeLoad('memberships', async () => {
+      const snap = await db.collection('memberships').get();
+      memberships = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${memberships.length} memberships`);
+    });
 
-    const reputationsSnap = await db.collection('reputations').get();
-    reputations = reputationsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${reputations.length} reputation entries`);
+    await safeLoad('whitelist', async () => {
+      const snap = await db.collection('whitelist').get();
+      whitelist = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${whitelist.length} whitelisted users`);
+    });
 
-    const warningsSnap = await db.collection('warnings').get();
-    warnings = warningsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${warnings.length} warning entries`);
+    await safeLoad('chat_bans', async () => {
+      const snap = await db.collection('chat_bans').get();
+      chatBans = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${chatBans.length} chat-specific bans`);
+    });
 
-    const logsSnap = await db.collection('logs').orderBy('timestamp', 'desc').limit(100).get();
-    logs = logsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${logs.length} logs`);
+    await safeLoad('reputations', async () => {
+      const snap = await db.collection('reputations').get();
+      reputations = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${reputations.length} reputation entries`);
+    });
 
-    const statsSnap = await db.collection('stats').orderBy('date', 'asc').get();
-    statsHistory = statsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${statsHistory.length} stats history entries`);
+    await safeLoad('warnings', async () => {
+      const snap = await db.collection('warnings').get();
+      warnings = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${warnings.length} warning entries`);
+    });
 
-    const filtersDoc = await db.collection('config').doc('moderation').get();
-    if (filtersDoc.exists) {
-      filters = { ...filters, ...filtersDoc.data() as any };
-      console.log('Loaded moderation filters');
-    }
+    await safeLoad('logs', async () => {
+      const snap = await db.collection('logs').orderBy('timestamp', 'desc').limit(100).get();
+      logs = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${logs.length} logs`);
+    });
 
-    const settingsDoc = await db.collection('config').doc('settings').get();
-    if (settingsDoc.exists) {
-      settings = { ...settings, ...settingsDoc.data() as any };
-      console.log('Loaded settings');
-    }
+    await safeLoad('stats', async () => {
+      const snap = await db.collection('stats').orderBy('date', 'asc').get();
+      statsHistory = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${statsHistory.length} stats history entries`);
+    });
 
-    const broadcastDoc = await db.collection('config').doc('broadcast').get();
-    if (broadcastDoc.exists) {
-      lastBroadcastMessages = (broadcastDoc.data() as any).messages || [];
-    }
+    await safeLoad('config/moderation', async () => {
+      const filtersDoc = await db.collection('config').doc('moderation').get();
+      if (filtersDoc.exists) {
+        filters = { ...filters, ...filtersDoc.data() as any };
+        console.log('Loaded moderation filters');
+      }
+    });
 
-    const broadcastHistorySnap = await db.collection('broadcast_history').orderBy('timestamp', 'desc').limit(100).get();
-    broadcastHistory = broadcastHistorySnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${broadcastHistory.length} broadcast history entries`);
+    await safeLoad('config/settings', async () => {
+      const settingsDoc = await db.collection('config').doc('settings').get();
+      if (settingsDoc.exists) {
+        settings = { ...settings, ...settingsDoc.data() as any };
+        console.log('Loaded settings');
+      }
+    });
 
-    const deletionsDoc = await db.collection('config').doc('deletions').get();
-    if (deletionsDoc.exists) {
-      scheduledDeletions = (deletionsDoc.data() as any).items || [];
-    }
+    await safeLoad('config/broadcast', async () => {
+      const broadcastDoc = await db.collection('config').doc('broadcast').get();
+      if (broadcastDoc.exists) {
+        lastBroadcastMessages = (broadcastDoc.data() as any).messages || [];
+      }
+    });
 
-    const digestsSnap = await db.collection('chat_digests').orderBy('createdAt', 'desc').limit(50).get();
-    chatDigests = digestsSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${chatDigests.length} chat digests`);
+    await safeLoad('broadcast_history', async () => {
+      const snap = await db.collection('broadcast_history').orderBy('timestamp', 'desc').limit(100).get();
+      broadcastHistory = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${broadcastHistory.length} broadcast history entries`);
+    });
 
-    const digestConfigsDoc = await db.collection('config').doc('digest_configs').get();
-    if (digestConfigsDoc.exists) {
-      digestConfigs = (digestConfigsDoc.data() as any).configs || [];
-      console.log(`Loaded ${digestConfigs.length} digest configs`);
-    }
+    await safeLoad('config/deletions', async () => {
+      const deletionsDoc = await db.collection('config').doc('deletions').get();
+      if (deletionsDoc.exists) {
+        scheduledDeletions = (deletionsDoc.data() as any).items || [];
+      }
+    });
 
-    const messagesSnap = await db.collection('chat_messages').orderBy('timestamp', 'desc').limit(500).get();
-    chatMessages = messagesSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${chatMessages.length} cached chat messages for AI digests`);
+    await safeLoad('chat_digests', async () => {
+      const snap = await db.collection('chat_digests').orderBy('createdAt', 'desc').limit(50).get();
+      chatDigests = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${chatDigests.length} chat digests`);
+    });
 
-    const pinnedSnap = await db.collection('pinned_messages').orderBy('date', 'desc').limit(500).get();
-    pinnedMessages = pinnedSnap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-    console.log(`Loaded ${pinnedMessages.length} pinned messages history`);
+    await safeLoad('config/digest_configs', async () => {
+      const digestConfigsDoc = await db.collection('config').doc('digest_configs').get();
+      if (digestConfigsDoc.exists) {
+        digestConfigs = (digestConfigsDoc.data() as any).configs || [];
+        console.log(`Loaded ${digestConfigs.length} digest configs`);
+      }
+    });
+
+    await safeLoad('chat_messages', async () => {
+      const snap = await db.collection('chat_messages').orderBy('timestamp', 'desc').limit(500).get();
+      chatMessages = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${chatMessages.length} cached chat messages for AI digests`);
+    });
+
+    await safeLoad('pinned_messages', async () => {
+      const snap = await db.collection('pinned_messages').orderBy('date', 'desc').limit(500).get();
+      pinnedMessages = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${pinnedMessages.length} pinned messages history`);
+    });
 
     // Create default super admin if no users exist
-    const usersSnap = await db.collection('users').get();
-    if (usersSnap.empty) {
-      console.log('No users found. Creating default super admin...');
-      const adminId = 'admin';
-      const hashedPassword = await bcrypt.hash('admin123', 10);
-      const defaultAdmin = {
-        id: adminId,
-        username: 'admin',
-        email: 'admin@teleguard.local',
-        password: hashedPassword,
-        role: 'SUPER_ADMIN',
-        assignedChatIds: [],
-        createdAt: new Date().toISOString()
-      };
-      await db.collection('users').doc(adminId).set(defaultAdmin);
-      console.log('Default super admin created: admin / admin123');
-    }
-
-    // Periodically refresh chat info if bot is ready
-    setInterval(async () => {
-      if (!bot) return;
-      console.log('Refreshing chat info...');
-      for (const chat of chats) {
-        try {
-          const chatFull = await bot.telegram.getChat(chat.id);
-          const memberCount = await bot.telegram.getChatMembersCount(chat.id);
-          let avatarUrl = chat.avatarUrl;
-          
-          if (chatFull.photo) {
-            const fileId = chatFull.photo.small_file_id;
-            const fileLink = await bot.telegram.getFileLink(fileId);
-            avatarUrl = fileLink.toString();
-          }
-
-          const updatedChat = {
-            ...chat,
-            title: 'title' in chatFull ? chatFull.title : chat.title,
-            members: memberCount,
-            avatarUrl
-          };
-          
-          if (JSON.stringify(updatedChat) !== JSON.stringify(chat)) {
-            await updateChat(updatedChat);
-          }
-        } catch (e) {
-          console.error(`Failed to refresh chat info for ${chat.id}:`, e);
-        }
+    await safeLoad('users', async () => {
+      const usersSnap = await db.collection('users').get();
+      if (usersSnap.empty) {
+        console.log('No users found. Creating default super admin...');
+        const adminId = 'admin';
+        const hashedPassword = await bcrypt.hash('admin123', 10);
+        const defaultAdmin = {
+          id: adminId,
+          username: 'admin',
+          email: 'admin@teleguard.local',
+          password: hashedPassword,
+          role: 'SUPER_ADMIN',
+          assignedChatIds: [],
+          createdAt: new Date().toISOString()
+        };
+        await db.collection('users').doc(adminId).set(defaultAdmin);
+        console.log('Default super admin created: admin / admin123');
       }
-    }, 1000 * 60 * 60); // Every hour
+    });
 
     // Polling for config updates instead of unstable onSnapshot
     const syncConfig = async () => {
@@ -3287,7 +3407,7 @@ async function syncData() {
           const apiRootChanged = newSettings.telegramApiRoot !== settings.telegramApiRoot;
           settings = { ...settings, ...newSettings };
           if (tokenChanged || apiRootChanged) {
-            console.log('Bot token or Telegram API Root updated from Firestore (via polling), restarting...');
+            console.log('Bot token or Telegram API Root updated from database (via polling), restarting...');
             initBot(settings.botToken);
           }
         }
@@ -3300,7 +3420,7 @@ async function syncData() {
     await syncConfig();
     setInterval(syncConfig, 60000); // Check every minute
 
-    console.log('Data synced from Firestore successfully with polling enabled');
+    console.log('Data synced successfully with database and polling enabled');
   } catch (err) {
     handleFirestoreError(err, OperationType.LIST, 'initial_sync');
   }
@@ -3521,26 +3641,30 @@ async function applyWarning(
   return { warning: newWarn, activeWarns, banned };
 }
 
-// Helper to update Firestore and local state
+// Helper to update Firestore/Database and local state
 async function updateChat(chat: any, immediate = false) {
   try {
     if (!chat.id) throw new Error('Chat ID is required for update');
-    const cleaned = cleanData(chat);
+    const chatIdStr = String(chat.id).trim();
+    const chatNormalized = { ...chat, id: chatIdStr };
+    const cleaned = cleanData(chatNormalized);
     
-    const idx = chats.findIndex(c => c.id === chat.id.toString());
-    if (idx !== -1) chats[idx] = chat;
-    else chats.push(chat);
-
-    if (immediate) {
-      console.log(`Saving chat ${chat.id} to Firestore (immediate):`, cleaned);
-      await db.collection('chats').doc(chat.id.toString()).set(cleaned);
-      chatLastWrite.set(chat.id.toString(), Date.now());
+    const idx = chats.findIndex(c => String(c.id) === chatIdStr);
+    if (idx !== -1) {
+      chats[idx] = { ...chats[idx], ...chatNormalized };
     } else {
-      // Only queue write if last write was > 5 minutes ago or it's a new chat
-      const lastWrite = chatLastWrite.get(chat.id.toString()) || 0;
-      if (Date.now() - lastWrite > 5 * 60 * 1000) {
-        queueWrite('chats', chat.id.toString(), cleaned);
-        chatLastWrite.set(chat.id.toString(), Date.now());
+      chats.push(chatNormalized);
+    }
+
+    if (immediate || idx === -1) {
+      console.log(`Saving chat ${chatIdStr} to database:`, cleaned);
+      await db.collection('chats').doc(chatIdStr).set(cleaned);
+      chatLastWrite.set(chatIdStr, Date.now());
+    } else {
+      const lastWrite = chatLastWrite.get(chatIdStr) || 0;
+      if (Date.now() - lastWrite > 2 * 60 * 1000) {
+        queueWrite('chats', chatIdStr, cleaned);
+        chatLastWrite.set(chatIdStr, Date.now());
       }
     }
   } catch (err) {
@@ -4070,16 +4194,23 @@ async function initBot(token: string) {
       }
       
       // Update message count for existing chats
-      let chat = chats.find(c => c.id === chatId);
+      let chat = chats.find(c => String(c.id) === chatId);
       
       // Automatically add chat if it's a group/supergroup and not in the list
       if (!chat && (chatType === 'group' || chatType === 'supergroup')) {
         // Double check to prevent race condition duplicates
-        if (!chats.some(c => c.id === chatId)) {
+        if (!chats.some(c => String(c.id) === chatId)) {
           console.log(`New chat detected via message: ${chatId}`);
           let memberCount = 0;
+          let avatarUrl = `https://picsum.photos/seed/${chatId}/200`;
           try {
             memberCount = await ctx.telegram.getChatMembersCount(ctx.chat.id);
+            const chatFull = await ctx.telegram.getChat(ctx.chat.id);
+            if (chatFull.photo) {
+              const fileId = chatFull.photo.small_file_id;
+              const fileLink = await ctx.telegram.getFileLink(fileId);
+              avatarUrl = fileLink.toString();
+            }
           } catch (e) {
             console.error('Failed to get member count on message:', e);
           }
@@ -4092,7 +4223,7 @@ async function initBot(token: string) {
             muteDurationMinutes: 30,
             autoApprove: true,
             msgCount: 0,
-            avatarUrl: `https://picsum.photos/seed/${chatId}/200`,
+            avatarUrl,
             active: false // New chats are deactivated by default
           };
           await updateChat(chat, true);
@@ -5113,66 +5244,62 @@ async function initBot(token: string) {
       const { new_chat_member, chat } = ctx.myChatMember;
       const chatId = chat.id.toString();
 
-      if (new_chat_member.status === 'administrator') {
-        const chatExists = chats.find(c => c.id === chatId);
-        if (!chatExists) {
-          let memberCount = 0;
-          let avatarUrl = `https://picsum.photos/seed/${chatId}/200`;
-          
-          try {
-            memberCount = await ctx.telegram.getChatMembersCount(chat.id);
-            const chatFull = await ctx.telegram.getChat(chat.id);
-            if (chatFull.photo) {
-              const fileId = chatFull.photo.small_file_id;
-              const fileLink = await ctx.telegram.getFileLink(fileId);
-              avatarUrl = fileLink.toString();
-            }
-          } catch (e) {
-            console.error('Failed to get chat info:', e);
+      if (['administrator', 'member'].includes(new_chat_member.status)) {
+        const chatExists = chats.find(c => String(c.id) === chatId);
+        let memberCount = 0;
+        let avatarUrl = `https://picsum.photos/seed/${chatId}/200`;
+        
+        try {
+          memberCount = await ctx.telegram.getChatMembersCount(chat.id);
+          const chatFull = await ctx.telegram.getChat(chat.id);
+          if (chatFull.photo) {
+            const fileId = chatFull.photo.small_file_id;
+            const fileLink = await ctx.telegram.getFileLink(fileId);
+            avatarUrl = fileLink.toString();
           }
-
-          const newChat = {
-            id: chatId,
-            title: 'title' in chat ? chat.title : 'Private Chat',
-            members: memberCount,
-            muteNewcomers: false,
-            muteDurationMinutes: 30,
-            autoApprove: true,
-            msgCount: 0,
-            avatarUrl,
-            active: false // New chats are deactivated by default
-          };
-          await updateChat(newChat, true);
-          
-          await addLog({
-            id: Math.random().toString(36).substr(2, 9),
-            timestamp: new Date().toISOString(),
-            type: 'SYSTEM',
-            user: 'Bot',
-            chat: 'title' in chat ? chat.title : chatId,
-            details: 'Бот добавлен в чат как администратор. Чат добавлен в управление (деактивирован).'
-          });
-          
-          console.log(`Added new managed chat: ${'title' in chat ? chat.title : chatId}`);
+        } catch (e) {
+          console.error('Failed to get chat info:', e);
         }
-      } else if (['left', 'kicked', 'member'].includes(new_chat_member.status)) {
-        // If bot is no longer admin or left, remove from managed chats
-        const chatIndex = chats.findIndex(c => c.id === chatId);
-        if (chatIndex !== -1) {
-          const removedChat = chats[chatIndex];
-          await db.collection('chats').doc(chatId).delete();
-          chats.splice(chatIndex, 1);
+
+        const newChat = {
+          id: chatId,
+          title: 'title' in chat ? chat.title : (chatExists?.title || 'Group'),
+          members: memberCount || chatExists?.members || 0,
+          muteNewcomers: chatExists?.muteNewcomers ?? false,
+          muteDurationMinutes: chatExists?.muteDurationMinutes ?? 30,
+          autoApprove: chatExists?.autoApprove ?? true,
+          msgCount: chatExists?.msgCount || 0,
+          avatarUrl: avatarUrl || chatExists?.avatarUrl,
+          active: chatExists ? chatExists.active : false
+        };
+        await updateChat(newChat, true);
+        
+        await addLog({
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().toISOString(),
+          type: 'SYSTEM',
+          user: 'Bot',
+          chat: 'title' in chat ? chat.title : chatId,
+          details: `Бот зарегистрирован в чате (${new_chat_member.status}).`
+        });
+        
+        console.log(`Added/Updated managed chat: ${'title' in chat ? chat.title : chatId}`);
+      } else if (['left', 'kicked'].includes(new_chat_member.status)) {
+        const existingChat = chats.find(c => String(c.id) === chatId);
+        if (existingChat) {
+          existingChat.active = false;
+          await updateChat(existingChat, true);
           
           await addLog({
             id: Math.random().toString(36).substr(2, 9),
             timestamp: new Date().toISOString(),
             type: 'SYSTEM',
             user: 'Bot',
-            chat: removedChat.title,
-            details: 'Бот лишен прав администратора или удален из чата. Чат удален из управления.'
+            chat: existingChat.title || chatId,
+            details: 'Бот удален из чата. Чат деактивирован.'
           });
           
-          console.log(`Removed managed chat: ${removedChat.title}`);
+          console.log(`Bot left/kicked from chat: ${existingChat.title || chatId}`);
         }
       }
     });

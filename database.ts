@@ -70,6 +70,7 @@ class SQLiteCollection {
       const rows = this.db.prepare(sql).all(...params);
       return {
         empty: rows.length === 0,
+        size: rows.length,
         docs: rows.map((row: any) => ({
           id: row.id,
           data: () => {
@@ -84,7 +85,7 @@ class SQLiteCollection {
       };
     } catch (e) {
       console.error(`SQLite get error for ${this.tableName}:`, e);
-      return { empty: true, docs: [] };
+      return { empty: true, size: 0, docs: [] };
     }
   }
 }

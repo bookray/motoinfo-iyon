@@ -72,6 +72,7 @@ class CollectionCompat {
     const snap = await getDocs(q);
     return {
       empty: snap.empty,
+      size: snap.docs.length,
       docs: snap.docs.map(d => ({
         id: d.id,
         data: () => d.data(),
