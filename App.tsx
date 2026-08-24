@@ -623,6 +623,7 @@ const App: React.FC = () => {
               {activeTab === Tab.CHATS && (
                 <ChatList 
                   chats={filteredChats} 
+                  filters={filters}
                   onUpdateChat={handleUpdateChat}
                   onRemoveChat={handleRemoveChat}
                   onAddChat={handleAddChat}
@@ -645,6 +646,7 @@ const App: React.FC = () => {
                 <Moderation 
                   filters={filters}
                   onUpdateFilters={handleUpdateFilters}
+                  authenticatedFetch={authenticatedFetch}
                 />
               )}
               {activeTab === Tab.ANTI_SCAM && (

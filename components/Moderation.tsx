@@ -1,14 +1,26 @@
 import React, { useState } from 'react';
 import { FilterSettings } from '../types';
-import { ShieldAlert, Plus, X } from 'lucide-react';
+import { ShieldAlert, Plus, X, Radio, Bell, Layers, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
 
 interface ModerationProps {
   filters: FilterSettings;
   onUpdateFilters: (filters: FilterSettings) => void;
+  authenticatedFetch?: (url: string, options?: RequestInit) => Promise<Response>;
 }
 
-export const Moderation: React.FC<ModerationProps> = ({ filters, onUpdateFilters }) => {
+export const Moderation: React.FC<ModerationProps> = ({ 
+  filters, 
+  onUpdateFilters,
+  authenticatedFetch = fetch
+}) => {
   const [newWord, setNewWord] = useState('');
+  const [isApplyingBulk, setIsApplyingBulk] = useState(false);
+  const [statusNotice, setStatusNotice] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+
+  const showStatus = (message: string, type: 'success' | 'error' = 'success') => {
+    setStatusNotice({ message, type });
+    setTimeout(() => setStatusNotice(null), 4000);
+  };
 
   const handleAddWord = (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,19 +40,97 @@ export const Moderation: React.FC<ModerationProps> = ({ filters, onUpdateFilters
     });
   };
 
+  const handleBulkApply = async (fields?: string[] | 'all') => {
+    setIsApplyingBulk(true);
+    try {
+      const res = await authenticatedFetch('/api/chats/bulk-apply-filters', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        showStatus(`Глобальные настройки успешно применены к ${data.updatedCount || 'всем'} чатам!`);
+      } else {
+        showStatus('Не удалось применить настройки к чатам', 'error');
+      }
+    } catch (e: any) {
+      showStatus(e.message || 'Ошибка сети', 'error');
+    } finally {
+      setIsApplyingBulk(false);
+    }
+  };
+
+  const handleBulkReset = async () => {
+    if (!window.confirm('Сбросить индивидуальные настройки всех чатов на значения по умолчанию из этого раздела?')) return;
+    setIsApplyingBulk(true);
+    try {
+      const res = await authenticatedFetch('/api/chats/bulk-reset-overrides', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fields: 'all' })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        showStatus(`Все чаты (${data.updatedCount}) переведены на динамическое наследование общих правил!`);
+      } else {
+        showStatus('Не удалось сбросить индивидуальные настройки', 'error');
+      }
+    } catch (e: any) {
+      showStatus(e.message || 'Ошибка сети', 'error');
+    } finally {
+      setIsApplyingBulk(false);
+    }
+  };
+
   return (
-    <div className="max-w-4xl mx-auto animate-in fade-in duration-500">
+    <div className="max-w-4xl mx-auto animate-in fade-in duration-500 space-y-6">
       
+      {/* Toast Notification */}
+      {statusNotice && (
+        <div className={`p-4 rounded-xl flex items-center gap-3 border shadow-lg animate-in slide-in-from-top-2 duration-300 ${
+          statusNotice.type === 'success'
+            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+        }`}>
+          {statusNotice.type === 'success' ? <CheckCircle2 className="w-5 h-5 flex-shrink-0" /> : <AlertCircle className="w-5 h-5 flex-shrink-0" />}
+          <span className="text-sm font-medium">{statusNotice.message}</span>
+        </div>
+      )}
+
       {/* Auto-Moderation Filters */}
       <div className="space-y-6">
         <div className="bg-slate-900 p-8 rounded-2xl border border-slate-800 shadow-xl">
-          <div className="flex items-center gap-4 mb-8">
-            <div className="p-3 bg-orange-500/20 rounded-xl shadow-lg shadow-orange-900/10">
-              <ShieldAlert className="w-8 h-8 text-orange-400" />
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+            <div className="flex items-center gap-4">
+              <div className="p-3 bg-orange-500/20 rounded-xl shadow-lg shadow-orange-900/10">
+                <ShieldAlert className="w-8 h-8 text-orange-400" />
+              </div>
+              <div>
+                <h3 className="text-2xl font-bold text-white tracking-tight">Глобальные правила модерации</h3>
+                <p className="text-sm text-slate-400">Настройки по умолчанию для всех подключенных чатов</p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-2xl font-bold text-white tracking-tight">Глобальные правила модерации</h3>
-              <p className="text-sm text-slate-500">Настройки по умолчанию для всех подключенных чатов</p>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => handleBulkApply('all')}
+                disabled={isApplyingBulk}
+                className="px-3.5 py-2 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-md transition-all cursor-pointer"
+                title="Принудительно скопировать все текущие правила в настройки каждого чата"
+              >
+                {isApplyingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
+                <span>Применить ко всем чатам</span>
+              </button>
+              <button
+                onClick={handleBulkReset}
+                disabled={isApplyingBulk}
+                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-2 border border-slate-700 transition-all cursor-pointer"
+                title="Сбросить индивидуальные переопределения в чатах, чтобы они динамически следовали этим общим правилам"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Сбросить на по умолчанию</span>
+              </button>
             </div>
           </div>
 
@@ -98,6 +188,137 @@ export const Moderation: React.FC<ModerationProps> = ({ filters, onUpdateFilters
                 <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
               </label>
             </div>
+          </div>
+
+          {/* Mandatory Channel Subscription (Mute 24h) */}
+          <div className="mt-8 pt-8 border-t border-slate-800 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <Radio className="w-5 h-5 text-indigo-400" />
+                  <span className="text-lg font-bold text-white">Обязательная подписка на канал (Мут на 24 часа)</span>
+                </div>
+                <span className="text-xs text-slate-400 mt-1">
+                  Глобальный переключатель: участники без подписки на канал автоматически получают мут на 24ч при отправке сообщения
+                </span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  className="sr-only peer" 
+                  checked={!!filters.requireChannelSubscription} 
+                  onChange={() => onUpdateFilters({
+                    ...filters, 
+                    requireChannelSubscription: !filters.requireChannelSubscription
+                  })} 
+                />
+                <div className="w-14 h-7 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
+            </div>
+
+            {filters.requireChannelSubscription && (
+              <div className="grid grid-cols-1 gap-5 animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-indigo-900/30 shadow-inner">
+                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between pb-3 border-b border-slate-800/80">
+                  <span className="text-xs text-slate-400">
+                    Действует для всех чатов по умолчанию, если в чате не отключено индивидуально.
+                  </span>
+                  <button
+                    onClick={() => handleBulkApply(['requireChannelSubscription', 'channelSubscriptionTarget', 'channelSubscriptionMessage'])}
+                    disabled={isApplyingBulk}
+                    className="px-3 py-1.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Применить подписку ко всем чатам</span>
+                  </button>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">
+                    Канал для обязательной подписки (@username или ссылка)
+                  </label>
+                  <input 
+                    type="text" 
+                    value={filters.channelSubscriptionTarget || ''}
+                    onChange={(e) => onUpdateFilters({...filters, channelSubscriptionTarget: e.target.value})}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-mono"
+                    placeholder="@MotoBlackList или https://t.me/MotoBlackList"
+                  />
+                  <span className="text-[11px] text-slate-500 mt-1 block">
+                    Бот должен быть администратором этого канала для проверки участников.
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">
+                    Шаблон сообщения при муте за отсутствие подписки
+                  </label>
+                  <textarea 
+                    value={filters.channelSubscriptionMessage || ''}
+                    onChange={(e) => onUpdateFilters({...filters, channelSubscriptionMessage: e.target.value})}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all min-h-[90px]"
+                    placeholder="Оставьте пустым для стандартного уведомления. Доступны: {user} — имя пользователя, {channel} — ссылка на канал."
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Admin Tagger (@admin) */}
+          <div className="mt-8 pt-8 border-t border-slate-800 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <Bell className="w-5 h-5 text-amber-400" />
+                  <span className="text-lg font-bold text-white">Вызов администрации через @admin (Тегер администраторов)</span>
+                </div>
+                <span className="text-xs text-slate-400 mt-1">
+                  Глобальный переключатель: при упоминании @admin, @admins или /admin бот тегает всех открытых админов чата
+                </span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input 
+                  type="checkbox" 
+                  className="sr-only peer" 
+                  checked={filters.tagAdminsEnabled !== false} 
+                  onChange={() => onUpdateFilters({
+                    ...filters, 
+                    tagAdminsEnabled: filters.tagAdminsEnabled === false ? true : false
+                  })} 
+                />
+                <div className="w-14 h-7 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-amber-500"></div>
+              </label>
+            </div>
+
+            {filters.tagAdminsEnabled !== false && (
+              <div className="grid grid-cols-1 gap-5 animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-amber-900/30 shadow-inner">
+                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between pb-3 border-b border-slate-800/80">
+                  <span className="text-xs text-slate-400">
+                    Включено по умолчанию для всех групп. Скрытые администраторы и боты исключаются автоматически.
+                  </span>
+                  <button
+                    onClick={() => handleBulkApply(['tagAdminsEnabled', 'tagAdminsMessage'])}
+                    disabled={isApplyingBulk}
+                    className="px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Применить тегер ко всем чатам</span>
+                  </button>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">
+                    Текст заголовка при вызове администраторов
+                  </label>
+                  <input 
+                    type="text" 
+                    value={filters.tagAdminsMessage || ''}
+                    onChange={(e) => onUpdateFilters({...filters, tagAdminsMessage: e.target.value})}
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all"
+                    placeholder="🚨 Вызов администрации чата! Поступил запрос от пользователя."
+                  />
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="mt-8 pt-8 border-t border-slate-800">

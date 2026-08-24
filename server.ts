@@ -1783,6 +1783,114 @@ app.post('/api/chats/:id/settings', authenticateToken, async (req, res) => {
   }
 });
 
+// Bulk apply global filters to all or selected chats
+app.post('/api/chats/bulk-apply-filters', authenticateToken, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') return res.status(403).json({ error: 'Access denied' });
+
+    const { fields, targetChatIds } = req.body || {};
+    const targetChats = Array.isArray(targetChatIds) && targetChatIds.length > 0
+      ? chats.filter(c => targetChatIds.includes(String(c.id)))
+      : chats;
+
+    for (const chat of targetChats) {
+      if (fields === 'all' || !fields) {
+        chat.blockLinks = filters.blockLinks;
+        chat.blockTelegramLinks = filters.blockTelegramLinks;
+        chat.blockMedia = filters.blockMedia;
+        chat.blockForwards = filters.blockForwards;
+        chat.deleteSystemMessages = filters.deleteSystemMessages;
+        chat.deleteCommands = filters.deleteCommands;
+        chat.autoApprove = filters.autoApprove;
+        chat.captchaEnabled = filters.captchaEnabled;
+        chat.captchaQuestion = filters.captchaQuestion;
+        chat.captchaAnswer = filters.captchaAnswer;
+        chat.muteNewcomers = filters.muteNewcomers;
+        chat.muteDurationHours = filters.muteDurationHours;
+        chat.requireChannelSubscription = filters.requireChannelSubscription;
+        chat.channelSubscriptionTarget = filters.channelSubscriptionTarget;
+        chat.channelSubscriptionMessage = filters.channelSubscriptionMessage;
+        chat.tagAdminsEnabled = filters.tagAdminsEnabled;
+        chat.tagAdminsMessage = filters.tagAdminsMessage;
+      } else if (Array.isArray(fields)) {
+        for (const field of fields) {
+          (chat as any)[field] = (filters as any)[field];
+        }
+      }
+      await updateChat(chat, true);
+    }
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SETTINGS',
+      user: user.username,
+      chat: 'System',
+      details: `Массовое применение правил модерации к ${targetChats.length} чатам.`
+    });
+
+    res.json({ success: true, updatedCount: targetChats.length, chats });
+  } catch (err: any) {
+    console.error('Failed to bulk apply filters:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Bulk reset per-chat overrides so chats inherit global defaults dynamically
+app.post('/api/chats/bulk-reset-overrides', authenticateToken, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') return res.status(403).json({ error: 'Access denied' });
+
+    const { fields, targetChatIds } = req.body || {};
+    const targetChats = Array.isArray(targetChatIds) && targetChatIds.length > 0
+      ? chats.filter(c => targetChatIds.includes(String(c.id)))
+      : chats;
+
+    for (const chat of targetChats) {
+      if (fields === 'all' || !fields) {
+        delete chat.blockLinks;
+        delete chat.blockTelegramLinks;
+        delete chat.blockMedia;
+        delete chat.blockForwards;
+        delete chat.deleteSystemMessages;
+        delete chat.deleteCommands;
+        delete chat.autoApprove;
+        delete chat.captchaEnabled;
+        delete chat.captchaQuestion;
+        delete chat.captchaAnswer;
+        delete chat.muteNewcomers;
+        delete chat.muteDurationHours;
+        delete chat.requireChannelSubscription;
+        delete chat.channelSubscriptionTarget;
+        delete chat.channelSubscriptionMessage;
+        delete chat.tagAdminsEnabled;
+        delete chat.tagAdminsMessage;
+      } else if (Array.isArray(fields)) {
+        for (const field of fields) {
+          delete (chat as any)[field];
+        }
+      }
+      await updateChat(chat, true);
+    }
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SETTINGS',
+      user: user.username,
+      chat: 'System',
+      details: `Сброс индивидуальных настроек на глобальные по умолчанию для ${targetChats.length} чатов.`
+    });
+
+    res.json({ success: true, updatedCount: targetChats.length, chats });
+  } catch (err: any) {
+    console.error('Failed to bulk reset overrides:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Pinned messages management per chat with cumulative history
 app.get('/api/chats/:id/pinned', authenticateToken, async (req, res) => {
   const chatId = req.params.id;
@@ -2388,21 +2496,22 @@ app.post('/api/digests/configs', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'chatId is required' });
     }
 
-    const chat = chats.find(c => String(c.id) === String(configData.chatId));
-    const configIndex = digestConfigs.findIndex(c => String(c.chatId) === String(configData.chatId));
+    const chatIdStr = String(configData.chatId).trim();
+    const chat = chats.find(c => String(c.id) === chatIdStr);
+    const configIndex = digestConfigs.findIndex(c => String(c.chatId) === chatIdStr);
 
     const updatedConfig = {
-      chatId: String(configData.chatId),
-      chatTitle: chat?.title || configData.chatTitle || `Чат ${configData.chatId}`,
+      chatId: chatIdStr,
+      chatTitle: chat?.title || configData.chatTitle || `Чат ${chatIdStr}`,
       enabled: !!configData.enabled,
       scheduleTime: configData.scheduleTime || '21:00',
       hoursBack: Number(configData.hoursBack) || 24,
-      targetChatId: configData.targetChatId || configData.chatId,
+      targetChatId: configData.targetChatId || chatIdStr,
       customPrompt: configData.customPrompt || '',
       toneStyle: configData.toneStyle || 'default',
       autoSendTelegram: configData.autoSendTelegram !== undefined ? !!configData.autoSendTelegram : true,
-      lastGeneratedAt: configData.lastGeneratedAt,
-      lastSentAt: configData.lastSentAt
+      lastGeneratedAt: configData.lastGeneratedAt || null,
+      lastSentAt: configData.lastSentAt || null
     };
 
     if (configIndex >= 0) {
@@ -2411,9 +2520,51 @@ app.post('/api/digests/configs', authenticateToken, async (req, res) => {
       digestConfigs.push(updatedConfig);
     }
 
-    await db.collection('config').doc('digest_configs').set({ configs: digestConfigs });
+    const cleanedPayload = cleanData({ configs: digestConfigs });
+    await db.collection('config').doc('digest_configs').set(cleanedPayload);
+    console.log(`[DigestConfigs] Successfully persisted config for chat ${chatIdStr}. Enabled: ${updatedConfig.enabled}, Time: ${updatedConfig.scheduleTime}`);
     res.json(updatedConfig);
   } catch (err) {
+    console.error('[DigestConfigs] Failed to save config:', err);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/digests/configs/bulk', authenticateToken, async (req, res) => {
+  try {
+    const { configs: newConfigs } = req.body;
+    if (Array.isArray(newConfigs)) {
+      for (const item of newConfigs) {
+        if (!item.chatId) continue;
+        const chatIdStr = String(item.chatId).trim();
+        const chat = chats.find(c => String(c.id) === chatIdStr);
+        const idx = digestConfigs.findIndex(c => String(c.chatId) === chatIdStr);
+        const updated = {
+          chatId: chatIdStr,
+          chatTitle: chat?.title || item.chatTitle || `Чат ${chatIdStr}`,
+          enabled: !!item.enabled,
+          scheduleTime: item.scheduleTime || '21:00',
+          hoursBack: Number(item.hoursBack) || 24,
+          targetChatId: item.targetChatId || chatIdStr,
+          customPrompt: item.customPrompt || '',
+          toneStyle: item.toneStyle || 'default',
+          autoSendTelegram: item.autoSendTelegram !== undefined ? !!item.autoSendTelegram : true,
+          lastGeneratedAt: item.lastGeneratedAt || null,
+          lastSentAt: item.lastSentAt || null
+        };
+        if (idx >= 0) {
+          digestConfigs[idx] = { ...digestConfigs[idx], ...updated };
+        } else {
+          digestConfigs.push(updated);
+        }
+      }
+      const cleanedPayload = cleanData({ configs: digestConfigs });
+      await db.collection('config').doc('digest_configs').set(cleanedPayload);
+      console.log(`[DigestConfigs] Bulk saved ${newConfigs.length} digest configurations.`);
+    }
+    res.json({ success: true, configs: digestConfigs });
+  } catch (err) {
+    console.error('[DigestConfigs] Bulk save failed:', err);
     res.status(500).json({ error: (err as Error).message });
   }
 });
@@ -3392,13 +3543,21 @@ async function syncData() {
     // Polling for config updates instead of unstable onSnapshot
     const syncConfig = async () => {
       try {
-        const [modDoc, setDoc] = await Promise.all([
+        const [modDoc, setDoc, digestDoc] = await Promise.all([
           db.collection('config').doc('moderation').get(),
-          db.collection('config').doc('settings').get()
+          db.collection('config').doc('settings').get(),
+          db.collection('config').doc('digest_configs').get()
         ]);
 
         if (modDoc.exists) {
           filters = { ...filters, ...modDoc.data() as any };
+        }
+
+        if (digestDoc.exists) {
+          const loadedDigests = (digestDoc.data() as any).configs;
+          if (Array.isArray(loadedDigests)) {
+            digestConfigs = loadedDigests;
+          }
         }
 
         if (setDoc.exists) {
@@ -3923,7 +4082,9 @@ async function initBot(token: string) {
     if (bot) {
       console.log('Stopping existing bot instance...');
       try {
-        await bot.stop();
+        if ((bot as any).polling) {
+          await (bot as any).stop();
+        }
       } catch (err) {
         // Ignored if bot was not running
       }
@@ -4691,8 +4852,20 @@ async function initBot(token: string) {
             }
           }
 
-          // Check Channel Subscription requirement (if enabled for this chat)
-          if (chat.requireChannelSubscription && chat.channelSubscriptionTarget && !isWhitelisted && !isCurrentAdmin) {
+          // Check Channel Subscription requirement (if enabled for this chat or globally in filters)
+          const effectiveRequireSub = (chat.requireChannelSubscription !== undefined && chat.requireChannelSubscription !== null)
+            ? chat.requireChannelSubscription
+            : !!filters.requireChannelSubscription;
+
+          const rawSubTarget = (chat.channelSubscriptionTarget && chat.channelSubscriptionTarget.trim())
+            ? chat.channelSubscriptionTarget.trim()
+            : (filters.channelSubscriptionTarget && filters.channelSubscriptionTarget.trim()) ? filters.channelSubscriptionTarget.trim() : '';
+
+          const rawSubMessage = (chat.channelSubscriptionMessage && chat.channelSubscriptionMessage.trim())
+            ? chat.channelSubscriptionMessage.trim()
+            : (filters.channelSubscriptionMessage && filters.channelSubscriptionMessage.trim()) ? filters.channelSubscriptionMessage.trim() : '';
+
+          if (effectiveRequireSub && rawSubTarget && !isWhitelisted && !isCurrentAdmin) {
             let isSenderAdmin = false;
             try {
               const member = await ctx.telegram.getChatMember(chatId, ctx.from.id);
@@ -4702,7 +4875,7 @@ async function initBot(token: string) {
             }
 
             if (!isSenderAdmin) {
-              let targetChannel = chat.channelSubscriptionTarget.trim();
+              let targetChannel = rawSubTarget;
               if (targetChannel.startsWith('https://t.me/')) {
                 const part = targetChannel.split('https://t.me/')[1]?.split('/')[0]?.split('?')[0];
                 if (part) targetChannel = `@${part}`;
@@ -4736,7 +4909,7 @@ async function initBot(token: string) {
                   const channelLink = targetChannel.startsWith('@') ? `https://t.me/${targetChannel.substring(1)}` : (targetChannel.startsWith('https://') ? targetChannel : `https://t.me/${targetChannel}`);
                   const userMention = ctx.from.username ? `@${ctx.from.username}` : (ctx.from.first_name || 'Участник');
                   const defaultMsg = `⚠️ <b>Ограничение отправки сообщений</b>\n\n${escapeHtml(userMention)}, для общения в этом чате необходимо быть подписчиком канала:\n👉 <a href="${channelLink}">${escapeHtml(targetChannel)}</a>\n\nВы временно обеззвучены на 24 часа. Подпишитесь на канал, чтобы писать в чате!`;
-                  const noticeMsg = chat.channelSubscriptionMessage?.trim() ? chat.channelSubscriptionMessage.replace('{user}', userMention).replace('{channel}', targetChannel) : defaultMsg;
+                  const noticeMsg = rawSubMessage ? rawSubMessage.replace('{user}', userMention).replace('{channel}', targetChannel) : defaultMsg;
 
                   const warnReply = await ctx.reply(noticeMsg, {
                     parse_mode: 'HTML',
@@ -4769,7 +4942,15 @@ async function initBot(token: string) {
           const textRaw = (ctx.message && 'text' in ctx.message ? ctx.message.text : ((ctx.message as any)?.caption || '')) || '';
           const hasAdminTag = /(?:^|\s)@admin(?:istrators?|s)?(?:\s|$|[.,!?])/i.test(textRaw) || textRaw.trim().startsWith('/admin');
 
-          if (hasAdminTag && (chat.tagAdminsEnabled !== false)) {
+          const effectiveTagAdmins = (chat.tagAdminsEnabled !== undefined && chat.tagAdminsEnabled !== null)
+            ? chat.tagAdminsEnabled
+            : (filters.tagAdminsEnabled !== undefined ? filters.tagAdminsEnabled : true);
+
+          const rawTagAdminsMessage = (chat.tagAdminsMessage && chat.tagAdminsMessage.trim())
+            ? chat.tagAdminsMessage.trim()
+            : (filters.tagAdminsMessage && filters.tagAdminsMessage.trim()) ? filters.tagAdminsMessage.trim() : '🚨 <b>Вызов администрации чата</b>\nПоступил запрос от пользователя. Администраторы уведомлены:';
+
+          if (hasAdminTag && effectiveTagAdmins) {
             try {
               const adminMembers = await ctx.telegram.getChatAdministrators(chatId);
               // Exclude bots and anonymous/hidden admins
@@ -4783,8 +4964,7 @@ async function initBot(token: string) {
                   return `<a href="tg://user?id=${a.user.id}">${escapeHtml(a.user.first_name || 'Администратор')}</a>`;
                 });
 
-                const customNotice = chat.tagAdminsMessage?.trim() || '🚨 <b>Вызов администрации чата</b>\nПоступил запрос от пользователя. Администраторы уведомлены:';
-                const tagMessage = `${customNotice}\n\n🛡 ${mentions.join(' ')}`;
+                const tagMessage = `${rawTagAdminsMessage}\n\n🛡 ${mentions.join(' ')}`;
 
                 await ctx.reply(tagMessage, {
                   parse_mode: 'HTML',
@@ -5943,7 +6123,7 @@ async function initBot(token: string) {
 
     const appUrl = process.env.APP_URL || process.env.VITE_APP_URL;
     const isDevelopmentPreview = process.env.NODE_ENV !== 'production' || !!process.env.APPLET_ID;
-    const useWebhooks = !isDevelopmentPreview && (process.env.USE_WEBHOOKS === 'true' || !!cfWorkerUrl || (appUrl && appUrl.startsWith('https')));
+    const useWebhooks = process.env.USE_WEBHOOKS === 'true';
 
     if (useWebhooks && cfWorkerUrl) {
       try {
@@ -5953,51 +6133,51 @@ async function initBot(token: string) {
           ? `${cleanWorkerUrl}/webhook?target=${encodeURIComponent(targetUrl.replace(/\/$/, "") + "/telegram")}`
           : cleanWorkerUrl;
         
-        console.log(`Setting initial Telegram webhook via Cloudflare Worker target: ${targetWebhookUrl}`);
+        console.log(`Setting Telegram webhook via Cloudflare Worker target: ${targetWebhookUrl}`);
         await bot.telegram.setWebhook(targetWebhookUrl, {
-          allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
+          allowed_updates: ['message', 'edited_message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         });
         console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
-      } catch (err) {
-        console.error('Failed to set webhook on Telegram directly (expected due to sandboxed container network limits):', err);
-        console.log('Skipping active direct webhook registration. The webhook handler endpoint (/telegram) remains fully active, and if Cloudflare is already configured to route events here, the bot will process updates successfully!');
+      } catch (err: any) {
+        console.error('Failed to set webhook on Telegram:', err?.message || err);
       }
     } else if (useWebhooks && appUrl && appUrl.startsWith('https')) {
       const secretPath = `/telegraf-webhook/${token.split(':')[1]}`;
       try {
         await bot.telegram.setWebhook(`${appUrl}${secretPath}`, {
-          allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
+          allowed_updates: ['message', 'edited_message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         });
         console.log(`Telegram bot initialized with direct webhook at ${appUrl}${secretPath}`);
-      } catch (err) {
-        console.error('Failed to register webhook directly:', err);
-        console.log('Skipping active direct webhook registration. Webhook endpoint is registered and ready to receive requests.');
+      } catch (err: any) {
+        console.error('Failed to register webhook directly:', err?.message || err);
       }
     } else {
       try {
-        console.log('Starting Telegram bot in polling mode...');
+        console.log('Starting Telegram bot in Long Polling mode (reliable)...');
         isPollingMode = true;
-        // Delete webhook first to ensure polling works
+        // Delete any existing webhook so Telegram immediately delivers all updates to getUpdates polling
         try {
-          await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-        } catch (delErr) {
-          console.warn('Failed to delete webhook for polling mode:', delErr);
+          await bot.telegram.deleteWebhook({ drop_pending_updates: false });
+          console.log('Cleared Telegram webhook: active in Long Polling mode');
+        } catch (delErr: any) {
+          console.warn('Note on clearing webhook:', delErr?.message || delErr);
         }
         
         bot.launch({
-          allowedUpdates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
+          dropPendingUpdates: false,
+          allowedUpdates: ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         }).then(() => {
-          console.log('Telegram bot launched successfully using polling');
+          console.log('Telegram bot launched successfully and actively listening via Long Polling');
         }).catch(err => {
           if (err && (err.code === 409 || err.response?.error_code === 409 || String(err).includes('409') || String(err).includes('Conflict'))) {
-            console.warn('⚠️ Конфликт 409: Другой экземпляр бота с таким же токеном опрашивает Telegram API (например, на старом сервере или в окне предпросмотра). Для непрерывной работы опустите второй экземпляр.');
+            console.warn('⚠️ Конфликт 409: Другой экземпляр бота с таким же токеном опрашивает Telegram API. Остановите предыдущий процесс, если он запущен локально.');
           } else {
-            console.error('Failed to launch bot via polling:', err);
+            console.error('Failed to launch bot via polling:', err?.message || err);
           }
         });
       } catch (err: any) {
         if (err.response && err.response.error_code === 409) {
-          console.warn('Telegram bot conflict detected (409). Polling instance might be already active elsewhere.');
+          console.warn('Telegram bot conflict detected (409).');
         } else {
           throw err;
         }
@@ -6444,7 +6624,7 @@ async function startServer() {
 
         // Mark as queued today to prevent double enqueueing in the same minute
         config.lastSentAt = `${todayDateStr}T${localHHmm}:00.000Z`;
-        await db.collection('config').doc('digest_configs').set({ configs: digestConfigs });
+        await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs }));
 
         console.log(`[AI Digest] 📥 Enqueueing scheduled daily summary for chat ${config.chatId} (${config.chatTitle}) into sequential queue`);
         const hours = config.hoursBack || 24;
@@ -6460,7 +6640,7 @@ async function startServer() {
         }).then(async () => {
           config.lastGeneratedAt = new Date().toISOString();
           config.lastSentAt = new Date().toISOString();
-          await db.collection('config').doc('digest_configs').set({ configs: digestConfigs });
+          await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs }));
           console.log(`[AI Digest] ✅ Sequential queue completed scheduled digest for chat ${config.chatId}`);
         }).catch(async (digestErr: any) => {
           if (digestErr?.message?.includes('минимум 10')) {
@@ -6558,9 +6738,17 @@ startServer().catch(err => {
 // Enable graceful stop
 process.once('SIGINT', async () => {
   await flushWrites();
-  bot?.stop('SIGINT');
+  try {
+    if (bot && (bot as any).polling) {
+      bot.stop('SIGINT');
+    }
+  } catch (e) {}
 });
 process.once('SIGTERM', async () => {
   await flushWrites();
-  bot?.stop('SIGTERM');
+  try {
+    if (bot && (bot as any).polling) {
+      bot.stop('SIGTERM');
+    }
+  } catch (e) {}
 });

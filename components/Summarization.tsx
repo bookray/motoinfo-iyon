@@ -326,21 +326,33 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   };
 
   const handleUpdateConfig = async (chatId: string, updates: Partial<ChatDigestConfig>) => {
+    const chatIdStr = String(chatId);
+    const existing = configs.find(c => String(c.chatId) === chatIdStr) || {
+      chatId: chatIdStr,
+      chatTitle: chats.find(c => String(c.id) === chatIdStr)?.title || chatIdStr,
+      enabled: false,
+      scheduleTime: '21:00',
+      hoursBack: 24,
+      includeTopics: true,
+      includeStats: true,
+      autoSendTelegram: true,
+      toneStyle: 'default'
+    };
+
+    const updated = { ...existing, ...updates };
+
+    // Optimistic immediate update to local state so UI responds instantly without refresh
+    setConfigs(prev => {
+      const index = prev.findIndex(c => String(c.chatId) === chatIdStr);
+      if (index >= 0) {
+        const next = [...prev];
+        next[index] = updated;
+        return next;
+      }
+      return [...prev, updated];
+    });
+
     try {
-      const existing = configs.find(c => c.chatId === chatId) || {
-        chatId,
-        chatTitle: chats.find(c => c.id === chatId)?.title || chatId,
-        enabled: false,
-        scheduleTime: '21:00',
-        hoursBack: 24,
-        includeTopics: true,
-        includeStats: true,
-        autoSendTelegram: true,
-        toneStyle: 'default'
-      };
-
-      const updated = { ...existing, ...updates };
-
       const res = await authFetch('/api/digests/configs', {
         method: 'POST',
         body: JSON.stringify(updated)
@@ -349,7 +361,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
       if (res.ok) {
         const saved = await res.json();
         setConfigs(prev => {
-          const index = prev.findIndex(c => c.chatId === chatId);
+          const index = prev.findIndex(c => String(c.chatId) === chatIdStr);
           if (index >= 0) {
             const next = [...prev];
             next[index] = saved;
@@ -360,7 +372,60 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
         showNotification('Настройки расписания сохранены');
       } else {
         const err = await res.json();
+        // Rollback on failure
+        setConfigs(prev => {
+          const index = prev.findIndex(c => String(c.chatId) === chatIdStr);
+          if (index >= 0) {
+            const next = [...prev];
+            next[index] = existing;
+            return next;
+          }
+          return prev;
+        });
         showNotification(err.error || 'Ошибка при сохранении настроек', 'error');
+      }
+    } catch (e: any) {
+      // Rollback on network error
+      setConfigs(prev => {
+        const index = prev.findIndex(c => String(c.chatId) === chatIdStr);
+        if (index >= 0) {
+          const next = [...prev];
+          next[index] = existing;
+          return next;
+        }
+        return prev;
+      });
+      showNotification(e.message || 'Ошибка сети при сохранении', 'error');
+    }
+  };
+
+  const handleBulkToggleAll = async (enabled: boolean) => {
+    const updatedList = activeChats.map(chat => {
+      const existing = configs.find(c => String(c.chatId) === String(chat.id)) || {
+        chatId: String(chat.id),
+        chatTitle: chat.title,
+        enabled: false,
+        scheduleTime: '21:00',
+        hoursBack: 24,
+        includeTopics: true,
+        includeStats: true,
+        autoSendTelegram: true,
+        toneStyle: 'default'
+      };
+      return { ...existing, enabled };
+    });
+
+    setConfigs(updatedList);
+
+    try {
+      const res = await authFetch('/api/digests/configs/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ configs: updatedList })
+      });
+      if (res.ok) {
+        showNotification(enabled ? 'Расписание включено для всех активных чатов' : 'Расписание выключено для всех чатов');
+      } else {
+        showNotification('Не удалось сохранить групповые настройки', 'error');
       }
     } catch (e: any) {
       showNotification(e.message || 'Ошибка сети', 'error');
@@ -672,14 +737,30 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
       {/* TAB 1: SCHEDULE & CHATS */}
       {activeSubTab === 'schedule' && (
         <div className="space-y-6">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-bold text-white">Автоматическая отправка по расписанию</h3>
               <p className="text-sm text-slate-400">Настройте ежедневное время генерации и отправки дайджеста для каждого чата</p>
             </div>
-            <div className="text-xs text-slate-400 font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-2">
-              <Calendar className="w-3.5 h-3.5 text-blue-400" />
-              <span>Период: 24 часа</span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => handleBulkToggleAll(true)}
+                className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-semibold transition-all"
+                title="Включить ежедневное расписание для всех активных чатов"
+              >
+                Включить для всех
+              </button>
+              <button
+                onClick={() => handleBulkToggleAll(false)}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-semibold transition-all"
+                title="Отключить расписание для всех чатов"
+              >
+                Отключить для всех
+              </button>
+              <div className="text-xs text-slate-400 font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-2">
+                <Calendar className="w-3.5 h-3.5 text-blue-400" />
+                <span>Период: 24 часа</span>
+              </div>
             </div>
           </div>
 
@@ -694,15 +775,16 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
               {activeChats.map(chat => {
-                const config = configs.find(c => c.chatId === chat.id) || {
-                  chatId: chat.id,
+                const config = configs.find(c => String(c.chatId) === String(chat.id)) || {
+                  chatId: String(chat.id),
                   chatTitle: chat.title,
                   enabled: false,
                   scheduleTime: '21:00',
                   hoursBack: 24,
                   includeTopics: true,
                   includeStats: true,
-                  autoSendTelegram: true
+                  autoSendTelegram: true,
+                  toneStyle: 'default'
                 };
 
                 const isGeneratingThis = isGenerating && generatingChatId === chat.id;

@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Chat } from '../types';
-import { Settings, Trash2, Users, Clock, CheckCircle, Power, PowerOff, Shield, X, Plus, Pin } from 'lucide-react';
+import { Chat, FilterSettings } from '../types';
+import { Settings, Trash2, Users, Clock, CheckCircle, Power, PowerOff, Shield, X, Plus, Pin, RotateCcw, Info, Layers } from 'lucide-react';
 import { PinnedMessagesModal } from './PinnedMessagesModal';
 
 interface ChatListProps {
   chats: Chat[];
+  filters?: FilterSettings;
   onUpdateChat: (chat: Chat) => void;
   onRemoveChat: (id: string) => void;
   onAddChat: (id: string) => void;
@@ -13,6 +14,7 @@ interface ChatListProps {
 
 export const ChatList: React.FC<ChatListProps> = ({ 
   chats, 
+  filters,
   onUpdateChat, 
   onRemoveChat, 
   onAddChat,
@@ -29,6 +31,30 @@ export const ChatList: React.FC<ChatListProps> = ({
 
   const handleUpdateSetting = (chat: Chat, key: keyof Chat, value: any) => {
     onUpdateChat({ ...chat, [key]: value });
+  };
+
+  const handleResetChatToGroupDefaults = (chat: Chat) => {
+    if (!filters) return;
+    if (!window.confirm(`Сбросить настройки чата «${chat.title}» на значения по умолчанию из раздела «Модерация»?`)) return;
+    
+    const resetChat: Chat = {
+      ...chat,
+      blockLinks: filters.blockLinks,
+      blockTelegramLinks: filters.blockTelegramLinks,
+      blockMedia: filters.blockMedia,
+      blockForwards: filters.blockForwards,
+      deleteSystemMessages: filters.deleteSystemMessages,
+      deleteCommands: filters.deleteCommands,
+      autoApprove: filters.autoApprove,
+      captchaEnabled: filters.captchaEnabled,
+      muteNewcomers: filters.muteNewcomers,
+      requireChannelSubscription: filters.requireChannelSubscription,
+      channelSubscriptionTarget: filters.channelSubscriptionTarget || chat.channelSubscriptionTarget,
+      channelSubscriptionMessage: filters.channelSubscriptionMessage || chat.channelSubscriptionMessage,
+      tagAdminsEnabled: filters.tagAdminsEnabled !== false,
+      tagAdminsMessage: filters.tagAdminsMessage || chat.tagAdminsMessage
+    };
+    onUpdateChat(resetChat);
   };
 
   const handleAddWord = (chat: Chat, e: React.FormEvent) => {
@@ -169,57 +195,92 @@ export const ChatList: React.FC<ChatListProps> = ({
           </div>
 
           {editingChatId === chat.id && (
-            <div className="bg-slate-800/50 border-x border-b border-slate-700 rounded-b-xl p-6 mt-[-12px] animate-in slide-in-from-top-4 duration-300">
+            <div className="bg-slate-800/50 border-x border-b border-slate-700 rounded-b-xl p-6 mt-[-12px] animate-in slide-in-from-top-4 duration-300 space-y-6">
+              
+              {/* Header Bar with Defaults Indicator and Reset */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-slate-900/80 rounded-xl border border-slate-700/60">
+                <div className="flex items-center gap-2 text-xs text-slate-300">
+                  <Info className="w-4 h-4 text-blue-400 flex-shrink-0" />
+                  <span>
+                    Под каждым переключателем отображается значение <strong className="text-white">по умолчанию из общей группы</strong>.
+                  </span>
+                </div>
+                {filters && (
+                  <button
+                    onClick={() => handleResetChatToGroupDefaults(chat)}
+                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition-all self-start sm:self-auto shrink-0"
+                    title="Сбросить все правила этого чата на значения по умолчанию из раздела Модерация"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Сбросить на настройки группы</span>
+                  </button>
+                )}
+              </div>
+
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                 
                 {/* Moderation Toggles */}
-                <div className="space-y-4">
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Фильтры сообщений</h4>
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <Shield className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Фильтры сообщений</span>
+                  </h4>
                   
                   <ToggleSetting 
                     label="Блокировать ссылки" 
                     checked={chat.blockLinks} 
+                    groupDefault={filters?.blockLinks}
                     onChange={(val) => handleUpdateSetting(chat, 'blockLinks', val)} 
                   />
                   <ToggleSetting 
                     label="Блокировать Telegram-ссылки" 
                     checked={chat.blockTelegramLinks} 
+                    groupDefault={filters?.blockTelegramLinks}
                     onChange={(val) => handleUpdateSetting(chat, 'blockTelegramLinks', val)} 
                   />
                   <ToggleSetting 
                     label="Блокировать медиа" 
                     checked={chat.blockMedia} 
+                    groupDefault={filters?.blockMedia}
                     onChange={(val) => handleUpdateSetting(chat, 'blockMedia', val)} 
                   />
                   <ToggleSetting 
                     label="Блокировать пересылки" 
                     checked={chat.blockForwards} 
+                    groupDefault={filters?.blockForwards}
                     onChange={(val) => handleUpdateSetting(chat, 'blockForwards', val)} 
                   />
                   <ToggleSetting 
                     label="Удалять системные сообщения" 
                     checked={chat.deleteSystemMessages} 
+                    groupDefault={filters?.deleteSystemMessages}
                     onChange={(val) => handleUpdateSetting(chat, 'deleteSystemMessages', val)} 
                   />
                   <ToggleSetting 
                     label="Удалять команды" 
                     checked={chat.deleteCommands} 
+                    groupDefault={filters?.deleteCommands}
                     onChange={(val) => handleUpdateSetting(chat, 'deleteCommands', val)} 
                   />
                 </div>
 
                 {/* Entry Settings & Channel Subscription */}
-                <div className="space-y-4">
-                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Вступление и Подписка</h4>
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Вступление и Подписка</span>
+                  </h4>
                   
                   <ToggleSetting 
                     label="Авто-одобрение заявок" 
                     checked={chat.autoApprove} 
+                    groupDefault={filters?.autoApprove}
                     onChange={(val) => handleUpdateSetting(chat, 'autoApprove', val)} 
                   />
                   <ToggleSetting 
                     label="Каптча на входе" 
                     checked={chat.captchaEnabled} 
+                    groupDefault={filters?.captchaEnabled}
                     onChange={(val) => handleUpdateSetting(chat, 'captchaEnabled', val)} 
                   />
                   {chat.captchaEnabled && (
@@ -250,6 +311,7 @@ export const ChatList: React.FC<ChatListProps> = ({
                   <ToggleSetting 
                     label="Мут новичков" 
                     checked={chat.muteNewcomers} 
+                    groupDefault={filters?.muteNewcomers}
                     onChange={(val) => handleUpdateSetting(chat, 'muteNewcomers', val)} 
                   />
                   {chat.muteNewcomers && (
@@ -266,22 +328,28 @@ export const ChatList: React.FC<ChatListProps> = ({
                   )}
 
                   {/* Channel Subscription check */}
-                  <div className="pt-2 border-t border-slate-700/50">
+                  <div className="pt-2 border-t border-slate-700/50 space-y-2">
                     <ToggleSetting 
                       label="Подписка на канал (Мут 24ч)" 
-                      checked={chat.requireChannelSubscription} 
+                      checked={chat.requireChannelSubscription ?? filters?.requireChannelSubscription} 
+                      groupDefault={filters?.requireChannelSubscription}
                       onChange={(val) => handleUpdateSetting(chat, 'requireChannelSubscription', val)} 
                     />
-                    {chat.requireChannelSubscription && (
+                    {(chat.requireChannelSubscription ?? filters?.requireChannelSubscription) && (
                       <div className="space-y-2 pl-2 mt-2 animate-in fade-in duration-200 bg-slate-900/40 p-2.5 rounded-lg border border-slate-800">
                         <div className="flex flex-col gap-1">
-                          <label className="text-[10px] text-indigo-400 uppercase font-bold">Целевой канал (@channel / username)</label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-[10px] text-indigo-400 uppercase font-bold">Целевой канал (@channel / username)</label>
+                            {filters?.channelSubscriptionTarget && !chat.channelSubscriptionTarget && (
+                              <span className="text-[9px] text-slate-400 font-mono">Группа: {filters.channelSubscriptionTarget}</span>
+                            )}
+                          </div>
                           <input 
                             type="text" 
                             className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:border-indigo-500" 
                             value={chat.channelSubscriptionTarget || ''}
                             onChange={(e) => handleUpdateSetting(chat, 'channelSubscriptionTarget', e.target.value)}
-                            placeholder="@MotoBlackList"
+                            placeholder={filters?.channelSubscriptionTarget || '@MotoBlackList'}
                           />
                         </div>
                         <div className="flex flex-col gap-1">
@@ -291,7 +359,7 @@ export const ChatList: React.FC<ChatListProps> = ({
                             className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:border-indigo-500" 
                             value={chat.channelSubscriptionMessage || ''}
                             onChange={(e) => handleUpdateSetting(chat, 'channelSubscriptionMessage', e.target.value)}
-                            placeholder="Для публикации в чате подпишитесь на канал {channel}..."
+                            placeholder={filters?.channelSubscriptionMessage || 'Для публикации в чате подпишитесь на канал {channel}...'}
                           />
                         </div>
                       </div>
@@ -300,16 +368,19 @@ export const ChatList: React.FC<ChatListProps> = ({
                 </div>
 
                 {/* Admin Tagger & Forbidden Words */}
-                <div className="space-y-4">
+                <div className="space-y-3">
                   {/* Admin Tagger */}
                   <div>
-                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Вызов администрации (@admin)</h4>
+                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <span>Вызов администрации (@admin)</span>
+                    </h4>
                     <ToggleSetting 
                       label="Тегер админов (@admin)" 
-                      checked={chat.tagAdminsEnabled !== false} 
+                      checked={chat.tagAdminsEnabled !== undefined ? chat.tagAdminsEnabled : (filters?.tagAdminsEnabled !== false)} 
+                      groupDefault={filters?.tagAdminsEnabled !== false}
                       onChange={(val) => handleUpdateSetting(chat, 'tagAdminsEnabled', val)} 
                     />
-                    {chat.tagAdminsEnabled !== false && (
+                    {(chat.tagAdminsEnabled !== undefined ? chat.tagAdminsEnabled : (filters?.tagAdminsEnabled !== false)) && (
                       <div className="mt-2 pl-2 animate-in fade-in duration-200">
                         <label className="text-[10px] text-slate-400 uppercase font-bold block mb-1">Сообщение при вызове</label>
                         <input 
@@ -317,19 +388,26 @@ export const ChatList: React.FC<ChatListProps> = ({
                           className="w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white" 
                           value={chat.tagAdminsMessage || ''}
                           onChange={(e) => handleUpdateSetting(chat, 'tagAdminsMessage', e.target.value)}
-                          placeholder="🚨 Вызов администрации чата..."
+                          placeholder={filters?.tagAdminsMessage || '🚨 Вызов администрации чата...'}
                         />
                       </div>
                     )}
                   </div>
 
                   <div className="pt-2 border-t border-slate-700/50">
-                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Запрещенные слова</h4>
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">Запрещенные слова</h4>
+                      {filters?.forbiddenWords && filters.forbiddenWords.length > 0 && (
+                        <span className="text-[10px] text-slate-400 bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">
+                          Глобальных: {filters.forbiddenWords.length}
+                        </span>
+                      )}
+                    </div>
                     <form onSubmit={(e) => handleAddWord(chat, e)} className="flex gap-2">
                       <input 
                         type="text" 
                         className="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white"
-                        placeholder="Добавить слово..."
+                        placeholder="Добавить слово в этот чат..."
                         value={newWord}
                         onChange={e => setNewWord(e.target.value)}
                       />
@@ -367,17 +445,46 @@ export const ChatList: React.FC<ChatListProps> = ({
   );
 };
 
-const ToggleSetting: React.FC<{ label: string, checked?: boolean, onChange: (val: boolean) => void }> = ({ label, checked, onChange }) => (
-  <div className="flex items-center justify-between p-2 bg-slate-900/50 rounded-lg border border-slate-700/50">
-    <span className="text-xs text-slate-300">{label}</span>
-    <label className="relative inline-flex items-center cursor-pointer scale-75 origin-right">
-      <input 
-        type="checkbox" 
-        className="sr-only peer" 
-        checked={!!checked} 
-        onChange={() => onChange(!checked)} 
-      />
-      <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
-    </label>
-  </div>
-);
+const ToggleSetting: React.FC<{ 
+  label: string; 
+  checked?: boolean; 
+  groupDefault?: boolean;
+  onChange: (val: boolean) => void;
+}> = ({ label, checked, groupDefault, onChange }) => {
+  const isOverridden = groupDefault !== undefined && !!checked !== !!groupDefault;
+  
+  return (
+    <div className="flex items-center justify-between p-2.5 bg-slate-900/60 rounded-xl border border-slate-700/50 hover:border-slate-600/70 transition-all">
+      <div className="flex flex-col gap-0.5 min-w-0 pr-2">
+        <span className="text-xs text-slate-200 font-medium truncate">{label}</span>
+        {groupDefault !== undefined && (
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className={`text-[10px] font-mono font-medium px-1.5 py-0.2 rounded border ${
+              groupDefault 
+                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' 
+                : 'bg-slate-800 text-slate-400 border-slate-700'
+            }`}>
+              Группа: {groupDefault ? 'Вкл' : 'Выкл'}
+            </span>
+            {isOverridden && (
+              <span className="text-[9px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 px-1 rounded">
+                своё значение
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+
+      <label className="relative inline-flex items-center cursor-pointer scale-75 origin-right shrink-0">
+        <input 
+          type="checkbox" 
+          className="sr-only peer" 
+          checked={!!checked} 
+          onChange={() => onChange(!checked)} 
+        />
+        <div className="w-11 h-6 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-500"></div>
+      </label>
+    </div>
+  );
+};
+
