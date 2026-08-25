@@ -3210,11 +3210,6 @@ async function generateChatSummary(
   const userCount = uniqueUsers.size;
   const messageCount = msgs.length;
 
-  // RULE 1: Minimum 10 messages requirement
-  if (messageCount < 10) {
-    throw new Error(`В чате за последние ${hoursBack} ч зафиксировано только ${messageCount} сообщений (требуется минимум 10). Суммаризация не проводится.`);
-  }
-
   // RULE 3: Fetch recent MotoBlackList posts for the period
   const blackListPosts = await getRecentMotoBlackListPosts(hoursBack);
   let blackListContext = '';
@@ -3235,6 +3230,8 @@ async function generateChatSummary(
       const author = m.firstName ? `${m.firstName}` : (m.username ? `${m.username}` : `Участник`);
       return `[${timeStr}] ${author}: ${m.text}`;
     }).join('\n');
+  } else {
+    formattedChatLog = 'За указанный период в чате новых сообщений от участников не зафиксировано (активность спокойная/тишина в эфире).';
   }
 
   const todayStr = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -3248,10 +3245,12 @@ ${toneInstruction}
 ${customPrompt ? `Специальные пожелания от администратора:\n«${customPrompt}»\n` : ''}
 ${blackListContext}
 
-Сообщения из чата:
+Сообщения из чата (всего сообщений: ${messageCount}):
 ---
 ${formattedChatLog.slice(0, 30000)}
 ---
+
+${messageCount < 5 ? 'Примечание: сообщений за период немного. Опиши кратко то, что было упомянуто, либо отметь, что день прошел тихо и спокойно в ожидании новых событий.' : ''}
 
 ПРАВИЛА И СТРУКТУРА ОФОРМЛЕНИЯ (СТРОГО TELEGRAM HTML):
 1. СТРОЖАЙШИЙ ЗАПРЕТ НА ТЕГИ УЧАСТНИКОВ (@username):
@@ -3349,7 +3348,7 @@ ${blackListPosts.length > 0 ? `
   return digestEntry;
 }
 
-let filters = {
+let filters: FilterSettings = {
   blockLinks: true,
   blockTelegramLinks: false,
   blockMedia: false,
@@ -3373,7 +3372,12 @@ let filters = {
   multiChatThreshold: 5,
   warnLimit: 3,
   warnAction: 'BAN' as 'BAN' | 'MUTE',
-  reputationEnabled: true
+  reputationEnabled: true,
+  requireChannelSubscription: false,
+  channelSubscriptionTarget: '',
+  channelSubscriptionMessage: '',
+  tagAdminsEnabled: false,
+  tagAdminsMessage: ''
 };
 let settings = {
   botToken: process.env.TELEGRAM_BOT_TOKEN || '',

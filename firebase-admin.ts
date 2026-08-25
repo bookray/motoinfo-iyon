@@ -14,16 +14,45 @@ import {
   deleteDoc, 
   updateDoc,
   writeBatch, 
-  Timestamp 
+  Timestamp,
+  setLogLevel
 } from 'firebase/firestore';
-// ... (other imports)
 import fs from 'fs';
+
+// Silence internal transport-level reconnect traces
+setLogLevel('silent');
+
 const firebaseConfig = JSON.parse(fs.readFileSync('./firebase-applet-config.json', 'utf8'));
 
 const app = initializeApp(firebaseConfig);
 const firestore = initializeFirestore(app, {
   experimentalForceLongPolling: true,
+  experimentalAutoDetectLongPolling: false,
 }, firebaseConfig.firestoreDatabaseId);
+
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, delayMs = 300): Promise<T> {
+  let lastError: any;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const msg = err?.message || String(err);
+      if (
+        msg.includes('UNAVAILABLE') || 
+        msg.includes('ECONNRESET') || 
+        msg.includes('deadline') || 
+        msg.includes('network') ||
+        msg.includes('ETIMEDOUT')
+      ) {
+        await new Promise(r => setTimeout(r, delayMs * Math.pow(2, attempt)));
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
 
 // Compatibility layer to mimic Admin SDK API using Web SDK
 class FirestoreCompat {
@@ -64,21 +93,23 @@ class CollectionCompat {
   }
 
   async get() {
-    const colRef = collection(firestore, this.path);
-    const q = this.queryConstraints.length > 0 
-      ? query(colRef, ...this.queryConstraints)
-      : colRef;
-    
-    const snap = await getDocs(q);
-    return {
-      empty: snap.empty,
-      size: snap.docs.length,
-      docs: snap.docs.map(d => ({
-        id: d.id,
-        data: () => d.data(),
-        exists: d.exists()
-      }))
-    };
+    return await withRetry(async () => {
+      const colRef = collection(firestore, this.path);
+      const q = this.queryConstraints.length > 0 
+        ? query(colRef, ...this.queryConstraints)
+        : colRef;
+      
+      const snap = await getDocs(q);
+      return {
+        empty: snap.empty,
+        size: snap.docs.length,
+        docs: snap.docs.map(d => ({
+          id: d.id,
+          data: () => d.data(),
+          exists: d.exists()
+        }))
+      };
+    });
   }
 }
 
@@ -92,24 +123,32 @@ class DocCompat {
   }
 
   async set(data: any) {
-    return await setDoc(doc(firestore, this.colPath, this.id), data);
+    return await withRetry(async () => {
+      return await setDoc(doc(firestore, this.colPath, this.id), data);
+    });
   }
 
   async update(data: any) {
-    return await updateDoc(doc(firestore, this.colPath, this.id), data);
+    return await withRetry(async () => {
+      return await updateDoc(doc(firestore, this.colPath, this.id), data);
+    });
   }
 
   async delete() {
-    return await deleteDoc(doc(firestore, this.colPath, this.id));
+    return await withRetry(async () => {
+      return await deleteDoc(doc(firestore, this.colPath, this.id));
+    });
   }
 
   async get() {
-    const snap = await getDoc(doc(firestore, this.colPath, this.id));
-    return {
-      id: snap.id,
-      exists: snap.exists(),
-      data: () => snap.data()
-    };
+    return await withRetry(async () => {
+      const snap = await getDoc(doc(firestore, this.colPath, this.id));
+      return {
+        id: snap.id,
+        exists: snap.exists(),
+        data: () => snap.data()
+      };
+    });
   }
 
   onSnapshot(callback: (doc: any) => void, errorCallback?: (err: any) => void) {
@@ -122,7 +161,12 @@ class DocCompat {
           data: () => snap.data()
         });
       },
-      errorCallback
+      (err) => {
+        // Suppress transient stream disconnect errors or delegate to callback
+        if (errorCallback) {
+          errorCallback(err);
+        }
+      }
     );
   }
 }
@@ -131,3 +175,4 @@ export const adminDb = new FirestoreCompat() as any;
 export const adminAuth = {
   verifyIdToken: async (token: string) => ({ uid: token }),
 };
+
