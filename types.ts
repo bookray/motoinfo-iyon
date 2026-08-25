@@ -328,7 +328,7 @@ export interface BroadcastHistory {
   source: 'ADMIN' | 'BOT';
 }
 
-export type DigestToneStyle = 'default' | 'debaucher' | 'troll' | 'sycophant' | 'chaos';
+export type DigestToneStyle = 'default' | 'debaucher' | 'troll' | 'sycophant' | 'chaos' | 'motobat' | 'dushevny';
 
 export interface ToneStyleInfo {
   id: DigestToneStyle;
@@ -343,6 +343,18 @@ export const TONE_STYLES: Record<DigestToneStyle, ToneStyleInfo> = {
     label: 'По-умолчанию',
     icon: '🤖',
     description: 'Тот же стиль речи, что используют участники чата.'
+  },
+  motobat: {
+    id: 'motobat',
+    label: 'Мотобат',
+    icon: '👮‍♂️',
+    description: 'Доклад сотрудника ГИБДД (мотобата) своему начальнику о событиях в чате с байкерами. Строгий, служебный тон, с характерным профессиональным сленгом, где сотрудник иногда прямо отмечает, что байкеры — те ещё подонки и нарушители.'
+  },
+  dushevny: {
+    id: 'dushevny',
+    label: 'Душевный',
+    icon: '🫂',
+    description: 'Тёплое, родное, дружелюбное и почти отцовское повествование о происходящем в чате. В речи частые душевные обращения: «друзья», «братья», «родные», уютная и поддерживающая атмосфера.'
   },
   debaucher: {
     id: 'debaucher',
