@@ -156,7 +156,7 @@ export default {
         capabilities: ['telegram_bot_proxy', 'google_gemini_proxy', 'webhook_proxy'],
         endpoints: {
           telegramProxy: '/bot<token>/getMe',
-          geminiProxy: '/v1beta/models/gemini-2.5-flash:generateContent?key=<API_KEY>',
+          geminiProxy: '/v1beta/models/gemini-2.0-flash:generateContent?key=<API_KEY>',
           webhookProxy: '/webhook?target=https://your-app-url/telegram'
         }
       }, null, 2), {

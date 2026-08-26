@@ -284,27 +284,46 @@ export const ChatList: React.FC<ChatListProps> = ({
                     onChange={(val) => handleUpdateSetting(chat, 'captchaEnabled', val)} 
                   />
                   {chat.captchaEnabled && (
-                    <div className="space-y-2 pl-2 animate-in fade-in duration-200">
+                    <div className="space-y-2 pl-2 animate-in fade-in duration-200 bg-slate-900/40 p-2.5 rounded-lg border border-slate-800">
                       <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-slate-500 uppercase font-bold">Вопрос</label>
-                        <input 
-                          type="text" 
-                          className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white" 
-                          value={chat.captchaQuestion || ''}
-                          onChange={(e) => handleUpdateSetting(chat, 'captchaQuestion', e.target.value)}
-                          placeholder="Напр: 2+2?"
-                        />
+                        <label className="text-[10px] text-blue-400 uppercase font-bold">Тип каптчи</label>
+                        <select
+                          className="bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-xs text-white focus:border-blue-500"
+                          value={chat.captchaType || filters?.captchaType || 'random'}
+                          onChange={(e) => handleUpdateSetting(chat, 'captchaType', e.target.value)}
+                        >
+                          <option value="random">🎲 Случайный (Примеры + Эмодзи)</option>
+                          <option value="math">🧮 Математическая (14+19, 45-18)</option>
+                          <option value="emoji">🎯 Эмодзи-загадка (Выбор предмета)</option>
+                          <option value="button">🔘 Подтверждение (Кнопка "Я человек")</option>
+                          <option value="custom">✍️ Свой вопрос и ответ</option>
+                        </select>
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <label className="text-[10px] text-slate-500 uppercase font-bold">Ответ</label>
-                        <input 
-                          type="text" 
-                          className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white" 
-                          value={chat.captchaAnswer || ''}
-                          onChange={(e) => handleUpdateSetting(chat, 'captchaAnswer', e.target.value)}
-                          placeholder="Напр: 4"
-                        />
-                      </div>
+
+                      {(chat.captchaType === 'custom' || (!chat.captchaType && filters?.captchaType === 'custom')) && (
+                        <>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] text-slate-400 uppercase font-bold">Вопрос</label>
+                            <input 
+                              type="text" 
+                              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white" 
+                              value={chat.captchaQuestion || ''}
+                              onChange={(e) => handleUpdateSetting(chat, 'captchaQuestion', e.target.value)}
+                              placeholder={filters?.captchaQuestion || 'Напр: 2+2?'}
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1">
+                            <label className="text-[10px] text-slate-400 uppercase font-bold">Ответ</label>
+                            <input 
+                              type="text" 
+                              className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white" 
+                              value={chat.captchaAnswer || ''}
+                              onChange={(e) => handleUpdateSetting(chat, 'captchaAnswer', e.target.value)}
+                              placeholder={filters?.captchaAnswer || 'Напр: 4'}
+                            />
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                   
@@ -315,15 +334,17 @@ export const ChatList: React.FC<ChatListProps> = ({
                     onChange={(val) => handleUpdateSetting(chat, 'muteNewcomers', val)} 
                   />
                   {chat.muteNewcomers && (
-                    <div className="flex items-center gap-2 pl-2 animate-in fade-in duration-200">
-                      <Clock className="w-4 h-4 text-slate-400" />
+                    <div className="flex items-center gap-2 pl-2 animate-in fade-in duration-200 bg-slate-900/40 p-2 rounded-lg border border-slate-800">
+                      <Clock className="w-4 h-4 text-orange-400" />
                       <input 
                         type="number" 
-                        className="bg-slate-950 border border-slate-700 rounded px-2 py-1 w-16 text-xs text-white" 
-                        value={chat.muteDurationHours || 0}
-                        onChange={(e) => handleUpdateSetting(chat, 'muteDurationHours', parseInt(e.target.value) || 0)}
+                        className="bg-slate-950 border border-slate-700 rounded px-2 py-1 w-20 text-xs text-white focus:border-orange-500" 
+                        value={chat.muteDurationHours || 1}
+                        step="0.5"
+                        min="0.1"
+                        onChange={(e) => handleUpdateSetting(chat, 'muteDurationHours', Math.max(0.1, parseFloat(e.target.value) || 1))}
                       />
-                      <span className="text-xs text-slate-500">часов</span>
+                      <span className="text-xs text-slate-400">ч. (автоснятие)</span>
                     </div>
                   )}
 

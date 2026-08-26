@@ -9,7 +9,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
-import { FilterSettings, Chat, BotSettings } from './types';
+import { FilterSettings, Chat, BotSettings, ActiveMuteEntry } from './types';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -75,7 +75,10 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     if (!apiKey) {
       throw new Error('API-ключ OpenRouter не указан. Введите ключ в настройках ИИ.');
     }
-    const model = options?.model || settings?.openRouterModel || 'google/gemini-2.5-flash';
+    let model = options?.model || settings?.openRouterModel || 'google/gemini-2.0-flash-001';
+    if (model === 'google/gemini-2.5-flash') {
+      model = 'google/gemini-2.0-flash-001';
+    }
     
     const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
@@ -150,13 +153,25 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     throw new Error('Ключ Google Gemini API не задан. Введите ключ в панели управления в разделе «ИИ-Суммаризация» или «Настройки».');
   }
 
-  const model = options?.model || settings?.geminiModel || 'gemini-2.5-flash';
+  let initialModel = options?.model || settings?.geminiModel || 'gemini-2.0-flash';
+  // Sanitize deprecated models that return 404 from Google
+  if (initialModel === 'gemini-2.5-flash') {
+    initialModel = 'gemini-2.0-flash';
+  }
+
+  const candidateModels = Array.from(new Set([
+    initialModel,
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-1.5-flash'
+  ]));
+
   const effectiveBaseUrl = getGeminiEffectiveBaseUrl();
 
-  const executeGemini = async (baseUrl: string | null): Promise<string> => {
+  const executeGeminiSingle = async (modelToUse: string, baseUrl: string | null): Promise<string> => {
     if (baseUrl) {
       const cleanBase = baseUrl.replace(/\/$/, '');
-      const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${geminiKey.trim()}`;
+      const url = `${cleanBase}/v1beta/models/${modelToUse}:generateContent?key=${geminiKey.trim()}`;
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -166,7 +181,10 @@ async function generateAIResponse(promptText: string, options?: { model?: string
       });
       if (!response.ok) {
         const errText = await response.text();
-        throw new Error(`Gemini Proxy (${cleanBase}) HTTP ${response.status}: ${errText}`);
+        const errObj: any = new Error(`Gemini Proxy (${cleanBase}) HTTP ${response.status}: ${errText}`);
+        errObj.status = response.status;
+        errObj.raw = errText;
+        throw errObj;
       }
       const data: any = await response.json();
       const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -175,7 +193,7 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     } else {
       const client = getGeminiClient();
       const response = await client.models.generateContent({
-        model,
+        model: modelToUse,
         contents: [
           {
             role: 'user',
@@ -189,25 +207,60 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     }
   };
 
-  try {
-    return await executeGemini(effectiveBaseUrl);
-  } catch (err: any) {
-    const msg = err?.message || String(err);
-    // If direct failed because of region restriction and a Cloudflare worker proxy is available, auto-retry via worker!
-    if (!effectiveBaseUrl && (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION'))) {
-      const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
-      if (fallbackProxy) {
-        console.log(`[Gemini] Direct connection blocked by region. Auto-retrying through detected proxy: ${fallbackProxy}`);
-        try {
-          return await executeGemini(fallbackProxy);
-        } catch (proxyErr: any) {
-          console.error(`[Gemini] Fallback proxy attempt also failed:`, proxyErr);
+  let lastErr: any = null;
+
+  for (let i = 0; i < candidateModels.length; i++) {
+    const currentModel = candidateModels[i];
+    try {
+      return await executeGeminiSingle(currentModel, effectiveBaseUrl);
+    } catch (err: any) {
+      lastErr = err;
+      const msg = err?.message || String(err);
+      const is404 = err?.status === 404 || msg.includes('404') || msg.includes('is no longer available') || msg.includes('not found');
+      const is429 = err?.status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota exceeded');
+      const isRegionError = !effectiveBaseUrl && (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION'));
+
+      // If region blocked and proxy available, try proxy for this model immediately
+      if (isRegionError) {
+        const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
+        if (fallbackProxy) {
+          console.log(`[Gemini] Direct connection blocked by region. Trying via proxy (${fallbackProxy}) for model ${currentModel}...`);
+          try {
+            return await executeGeminiSingle(currentModel, fallbackProxy);
+          } catch (proxyErr: any) {
+            lastErr = proxyErr;
+          }
         }
       }
-      throw new Error('❌ Ошибка Google Gemini: Геолокация сервера ограничена Google (User location is not supported).\n\n💡 Решение:\n1. Переключитесь на OpenRouter (вкладка ИИ-Суммаризация -> Настройки ИИ) — работает без региональных ограничений.\n2. Или разверните Cloudflare Worker по инструкции и укажите его URL в Настройках.');
+
+      // If 404 or 429 and we have fallback models left, log and try next model
+      if ((is404 || is429) && i < candidateModels.length - 1) {
+        console.warn(`[Gemini] Model ${currentModel} returned ${is429 ? '429 (Rate Limit/Quota)' : '404 (Not Found)'}. Trying fallback model ${candidateModels[i + 1]}...`);
+        continue;
+      }
+
+      // If last model or other error, break loop
+      break;
     }
-    throw err;
   }
+
+  // Handle final error formatting
+  const finalMsg = lastErr?.message || String(lastErr);
+  if (finalMsg.includes('429') || finalMsg.includes('RESOURCE_EXHAUSTED') || finalMsg.includes('Quota exceeded')) {
+    const retryMatch = finalMsg.match(/retry in\s+([0-9.]+\s*s(?:econds?)?)/i);
+    const retryTime = retryMatch ? retryMatch[1] : '20-30 секунд';
+    throw new Error(`❌ Превышен лимит запросов Google Gemini (HTTP 429 RESOURCE_EXHAUSTED).\n\n💡 Google API Free Tier временно ограничил запросы (квота 15-20 req/min). Пожалуйста, подождите ${retryTime} перед повторной генерацией, либо переключитесь на OpenRouter в настройках ИИ.`);
+  }
+
+  if (finalMsg.includes('is no longer available') || (finalMsg.includes('404') && finalMsg.includes('models/'))) {
+    throw new Error(`❌ Модель устарела или недоступна в Google API (HTTP 404).\n\n💡 Решение: В разделе «Настройки ИИ» выберите поддерживаемую модель (например, gemini-2.0-flash или gemini-1.5-flash).`);
+  }
+
+  if (finalMsg.includes('User location is not supported') || finalMsg.includes('FAILED_PRECONDITION')) {
+    throw new Error('❌ Ошибка Google Gemini: Геолокация сервера ограничена Google (User location is not supported).\n\n💡 Решение:\n1. Переключитесь на OpenRouter (вкладка ИИ-Суммаризация -> Настройки ИИ) — работает без региональных ограничений.\n2. Или разверните Cloudflare Worker по инструкции и укажите его URL в Настройках.');
+  }
+
+  throw lastErr;
 }
 
 app.use(cors());
@@ -2173,6 +2226,78 @@ app.delete('/api/warnings/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// Active Mutes API Endpoints
+app.get('/api/active-mutes', authenticateToken, async (req, res) => {
+  try {
+    const { chatId } = req.query as { chatId?: string };
+    let list = [...activeMutes];
+    if (chatId && chatId !== 'all') {
+      list = list.filter(m => String(m.chatId) === String(chatId));
+    }
+    const enriched = list.map(m => {
+      const chat = chats.find(c => String(c.id) === String(m.chatId));
+      return {
+        ...m,
+        chatTitle: chat?.title || m.chatId
+      };
+    });
+    enriched.sort((a, b) => (b.unmuteAt || 0) - (a.unmuteAt || 0));
+    res.json(enriched);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/active-mutes/unmute', authenticateToken, async (req, res) => {
+  try {
+    const { chatId, userId } = req.body;
+    const user = (req as any).user;
+    if (!chatId || !userId) {
+      return res.status(400).json({ error: 'chatId and userId are required' });
+    }
+    await unmuteUser(String(chatId), String(userId), user?.username || 'Администратор (панель)');
+    res.json({ success: true, message: 'Ограничения успешно сняты' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/active-mutes', authenticateToken, async (req, res) => {
+  try {
+    const { chatId, userId, durationHours, reason, userName } = req.body;
+    if (!chatId || !userId) {
+      return res.status(400).json({ error: 'chatId and userId are required' });
+    }
+    const hours = Number(durationHours) || 1;
+    const newMute = await applyMuteToUser(
+      String(chatId),
+      String(userId),
+      hours,
+      reason || 'command',
+      userName
+    );
+    res.json(newMute);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Periodic background auto-unmute check (runs every 30 seconds)
+setInterval(async () => {
+  if (!activeMutes || activeMutes.length === 0) return;
+  const now = Date.now();
+  const expiredMutes = activeMutes.filter(m => m.unmuteAt && m.unmuteAt <= now);
+  
+  for (const mute of expiredMutes) {
+    try {
+      console.log(`[AutoUnmute] Expired mute for user ${mute.userId} in chat ${mute.chatId}. Unmuting...`);
+      await unmuteUser(mute.chatId, mute.userId, 'Автоматически (истек срок)');
+    } catch (e: any) {
+      console.error(`[AutoUnmute] Failed to unmute user ${mute.userId}:`, e?.message || e);
+    }
+  }
+}, 30000);
+
 // Gemini & AI Status API
 app.get(['/api/gemini/status', '/api/ai/status'], authenticateToken, (req, res) => {
   const provider = settings?.aiProvider || 'gemini';
@@ -2224,12 +2349,12 @@ app.get(['/api/gemini/status', '/api/ai/status'], authenticateToken, (req, res) 
     settings: {
       aiProvider: settings?.aiProvider || 'gemini',
       geminiApiKey: settings?.geminiApiKey ? (settings.geminiApiKey.slice(0, 6) + '...' + settings.geminiApiKey.slice(-4)) : (process.env.GEMINI_API_KEY ? 'Настроен в .env' : ''),
-      geminiModel: settings?.geminiModel || 'gemini-2.5-flash',
+      geminiModel: settings?.geminiModel || 'gemini-2.0-flash',
       geminiBaseUrl: settings?.geminiBaseUrl || '',
       geminiUseProxy: settings?.geminiUseProxy !== false,
       geminiProxySource: settings?.geminiProxySource || 'auto',
       openRouterApiKey: settings?.openRouterApiKey ? (settings.openRouterApiKey.slice(0, 8) + '...' + settings.openRouterApiKey.slice(-4)) : '',
-      openRouterModel: settings?.openRouterModel || 'google/gemini-2.5-flash',
+      openRouterModel: settings?.openRouterModel || 'google/gemini-2.0-flash-001',
       customAiEndpoint: settings?.customAiEndpoint || '',
       customAiApiKey: settings?.customAiApiKey ? '••••••••' : '',
       customAiModel: settings?.customAiModel || 'gpt-4o-mini'
@@ -2382,7 +2507,10 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
         : (settings?.geminiApiKey || process.env.GEMINI_API_KEY);
 
       if (!key) throw new Error('API-ключ Google Gemini не указан.');
-      const model = testModel || settings?.geminiModel || 'gemini-2.5-flash';
+      let model = testModel || settings?.geminiModel || 'gemini-2.0-flash';
+      if (model === 'gemini-2.5-flash') {
+        model = 'gemini-2.0-flash';
+      }
       
       let effectiveBase = getGeminiEffectiveBaseUrl({
         customBaseUrl: testBaseUrl,
@@ -2460,12 +2588,16 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
     const duration = Date.now() - startTime;
     const msg = err?.message || String(err);
     let hint = '';
-    if (msg.includes('Access denied by security policy')) {
+    if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota exceeded')) {
+      const retryMatch = msg.match(/retry in\s+([0-9.]+\s*s(?:econds?)?)/i);
+      const retryTime = retryMatch ? retryMatch[1] : '20-30 секунд';
+      hint = `Превышен лимит запросов Google Gemini Free Tier (HTTP 429). Подождите ${retryTime}, либо выберите модель gemini-2.0-flash / OpenRouter.`;
+    } else if (msg.includes('Access denied by security policy')) {
       hint = 'OpenRouter отклонил запрос политикой безопасности ключа. Решение: 1) В кабинете openrouter.ai/keys создайте ключ без ограничений (Default). 2) Если баланс $0, укажите бесплатную модель. 3) В настройках аккаунта openrouter.ai/settings/privacy проверьте правила доступа.';
     } else if (msg.includes('is no longer available') || (msg.includes('404') && msg.includes('models/'))) {
-      hint = 'Выбранная модель устарела в Google API. В настройках ИИ выберите актуальную модель: gemini-3.6-flash или gemini-3.7-flash.';
+      hint = 'Выбранная модель устарела в Google API. В настройках ИИ выберите актуальную модель: gemini-2.0-flash, gemini-1.5-flash или gemini-3.7-flash.';
     } else if (msg.includes('524') || msg.includes('A timeout occurred') || msg.includes('timeout')) {
-      hint = 'Cloudflare Worker вернул ошибку 524 (Timeout). Решение: обновите код Worker в Cloudflare Dashboard, добавив заголовок Host: generativelanguage.googleapis.com, либо выберите модель gemini-3.6-flash.';
+      hint = 'Cloudflare Worker вернул ошибку 524 (Timeout). Решение: обновите код Worker в Cloudflare Dashboard, добавив заголовок Host: generativelanguage.googleapis.com, либо выберите модель gemini-2.0-flash.';
     } else if (msg.includes('404') && (msg.includes('Proxy') || msg.includes('description":"Not Found"'))) {
       hint = 'Указанный прокси вернул 404 Not Found. Обратите внимание: Telegram API Proxy (telegram-bot-api) предназначен исключительно для Telegram и не умеет обрабатывать запросы к Google Gemini. Для Gemini используйте Cloudflare Worker или переключитесь на OpenRouter.';
     } else if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
@@ -2747,7 +2879,432 @@ setInterval(flushWrites, 30000); // Flush every 30 seconds to reduce write frequ
 
 let lastBroadcastMessages: { chatId: string, messageId: number }[] = [];
 let scheduledDeletions: { chatId: string, messageId: number, deleteAt: string }[] = [];
-let captchaSessions = new Map<string, { chatId: string, answer: string, timestamp: number }>();
+
+interface CaptchaSessionData {
+  chatId: string;
+  type: 'math' | 'emoji' | 'button' | 'custom';
+  answer: string;
+  question: string;
+  options?: string[];
+  userObj: any;
+  timestamp: number;
+}
+
+interface SubscriptionChoiceSessionData {
+  chatId: string;
+  targetChannel: string;
+  newcomerMuteHours: number;
+  userObj: any;
+  timestamp: number;
+}
+
+let captchaSessions = new Map<string, CaptchaSessionData>();
+let subscriptionChoiceSessions = new Map<string, SubscriptionChoiceSessionData>();
+let activeMutes: ActiveMuteEntry[] = [];
+
+const EMOJI_CAPTCHA_POOL = [
+  { emoji: '🏍️', name: 'Мотоцикл' },
+  { emoji: '🚗', name: 'Автомобиль' },
+  { emoji: '🚀', name: 'Ракета' },
+  { emoji: '⚽', name: 'Футбольный мяч' },
+  { emoji: '🍕', name: 'Пицца' },
+  { emoji: '🍎', name: 'Яблоко' },
+  { emoji: '🐱', name: 'Кот' },
+  { emoji: '🎸', name: 'Гитара' },
+  { emoji: '☕', name: 'Чашка кофе' },
+  { emoji: '🍔', name: 'Бургер' },
+  { emoji: '🚲', name: 'Велосипед' },
+  { emoji: '✈️', name: 'Самолет' },
+  { emoji: '🦁', name: 'Лев' },
+  { emoji: '🏀', name: 'Баскетбольный мяч' },
+  { emoji: '🚁', name: 'Вертолет' },
+  { emoji: '🍦', name: 'Мороженое' },
+  { emoji: '🍉', name: 'Арбуз' },
+  { emoji: '🐶', name: 'Собака' },
+  { emoji: '⚓', name: 'Якорь' },
+  { emoji: '🎯', name: 'Мишень' }
+];
+
+interface CaptchaChallenge {
+  question: string;
+  type: 'math' | 'emoji' | 'button' | 'custom';
+  answer: string;
+  keyboard?: any;
+}
+
+function generateCaptchaChallenge(
+  rawType?: string,
+  customQuestion?: string,
+  customAnswer?: string,
+  userId?: string
+): CaptchaChallenge {
+  let type = rawType || 'math';
+  if (type === 'random') {
+    const types: ('math' | 'emoji' | 'button')[] = ['math', 'emoji', 'button'];
+    type = types[Math.floor(Math.random() * types.length)];
+  }
+
+  if (type === 'custom') {
+    const q = customQuestion && customQuestion.trim() ? customQuestion.trim() : 'Сколько будет 2 + 2?';
+    const a = customAnswer && customAnswer.trim() ? customAnswer.trim() : '4';
+    return {
+      type: 'custom',
+      question: `🛡️ <b>Вопрос для проверки:</b>\n\n${escapeHtml(q)}\n\n<i>Отправьте ответ текстовым сообщением в этот диалог.</i>`,
+      answer: a.toLowerCase(),
+      keyboard: {
+        inline_keyboard: [
+          [{ text: '🔄 Обновить вопрос', callback_data: `cap_refresh_${userId || 'user'}` }]
+        ]
+      }
+    };
+  }
+
+  if (type === 'button') {
+    return {
+      type: 'button',
+      question: `🛡️ <b>Проверка на человека</b>\n\nПодтвердите, что вы реальный пользователь, нажав соответствующую кнопку ниже:`,
+      answer: 'human',
+      keyboard: {
+        inline_keyboard: [
+          [
+            { text: '🙋‍♂️ Я человек (Подтверждаю)', callback_data: `cap_ans_human_${userId || 'user'}` }
+          ],
+          [
+            { text: '🤖 Я робот / бот', callback_data: `cap_ans_bot_${userId || 'user'}` },
+            { text: '🚫 Отмена', callback_data: `cap_ans_cancel_${userId || 'user'}` }
+          ],
+          [
+            { text: '🔄 Обновить проверку', callback_data: `cap_refresh_${userId || 'user'}` }
+          ]
+        ]
+      }
+    };
+  }
+
+  if (type === 'emoji') {
+    const shuffled = [...EMOJI_CAPTCHA_POOL].sort(() => 0.5 - Math.random());
+    const selected = shuffled.slice(0, 6);
+    const target = selected[Math.floor(Math.random() * selected.length)];
+
+    const row1 = selected.slice(0, 3).map(item => ({
+      text: item.emoji,
+      callback_data: `cap_ans_${encodeURIComponent(item.emoji)}_${userId || 'user'}`
+    }));
+    const row2 = selected.slice(3, 6).map(item => ({
+      text: item.emoji,
+      callback_data: `cap_ans_${encodeURIComponent(item.emoji)}_${userId || 'user'}`
+    }));
+
+    return {
+      type: 'emoji',
+      question: `🧩 <b>Проверка на внимательность</b>\n\nНайдите и нажмите кнопку с предметом:\n👉 <b>${target.emoji} ${target.name}</b>`,
+      answer: target.emoji,
+      keyboard: {
+        inline_keyboard: [
+          row1,
+          row2,
+          [{ text: '🔄 Другие варианты', callback_data: `cap_refresh_${userId || 'user'}` }]
+        ]
+      }
+    };
+  }
+
+  // Default: math
+  const ops = ['+', '-', '*'];
+  const op = ops[Math.floor(Math.random() * ops.length)];
+  let num1 = 0;
+  let num2 = 0;
+  let result = 0;
+
+  if (op === '+') {
+    num1 = Math.floor(Math.random() * 40) + 5;
+    num2 = Math.floor(Math.random() * 40) + 5;
+    result = num1 + num2;
+  } else if (op === '-') {
+    num1 = Math.floor(Math.random() * 50) + 20;
+    num2 = Math.floor(Math.random() * (num1 - 5)) + 3;
+    result = num1 - num2;
+  } else {
+    num1 = Math.floor(Math.random() * 8) + 2;
+    num2 = Math.floor(Math.random() * 8) + 2;
+    result = num1 * num2;
+  }
+
+  const wrongAnswers = new Set<number>();
+  while (wrongAnswers.size < 3) {
+    const delta = (Math.floor(Math.random() * 7) + 1) * (Math.random() > 0.5 ? 1 : -1);
+    const wrong = result + delta;
+    if (wrong !== result && wrong > 0) {
+      wrongAnswers.add(wrong);
+    }
+  }
+
+  const allOptions = [result, ...Array.from(wrongAnswers)].sort(() => 0.5 - Math.random());
+  const buttonsRow1 = allOptions.slice(0, 2).map(opt => ({
+    text: `${opt}`,
+    callback_data: `cap_ans_${opt}_${userId || 'user'}`
+  }));
+  const buttonsRow2 = allOptions.slice(2, 4).map(opt => ({
+    text: `${opt}`,
+    callback_data: `cap_ans_${opt}_${userId || 'user'}`
+  }));
+
+  return {
+    type: 'math',
+    question: `🔢 <b>Математическая проверка</b>\n\nРешите пример для подтверждения:\n👉 <b>${num1} ${op} ${num2} = ?</b>\n\n<i>Выберите ответ кнопкой ниже или напишите число в чат:</i>`,
+    answer: String(result),
+    keyboard: {
+      inline_keyboard: [
+        buttonsRow1,
+        buttonsRow2,
+        [{ text: '🔄 Другой пример', callback_data: `cap_refresh_${userId || 'user'}` }]
+      ]
+    }
+  };
+}
+
+async function applyMuteToUser(
+  chatId: string, 
+  userId: string, 
+  durationHours: number, 
+  reason: 'newcomer' | 'channel_subscription_refusal' | 'channel_subscription_required' | 'command' | 'voting', 
+  userName?: string
+): Promise<ActiveMuteEntry> {
+  const untilDate = Math.floor(Date.now() / 1000) + Math.max(60, Math.floor(durationHours * 3600));
+  const unmuteAt = Date.now() + Math.max(60000, Math.floor(durationHours * 3600 * 1000));
+  const muteId = `${chatId}_${userId}`;
+
+  try {
+    if (bot) {
+      await bot.telegram.restrictChatMember(chatId, Number(userId), {
+        until_date: untilDate,
+        permissions: {
+          can_send_messages: false,
+          can_send_audios: false,
+          can_send_documents: false,
+          can_send_photos: false,
+          can_send_videos: false,
+          can_send_video_notes: false,
+          can_send_voice_notes: false,
+          can_send_polls: false,
+          can_send_other_messages: false,
+          can_add_web_page_previews: false,
+          can_change_info: false,
+          can_invite_users: false,
+          can_pin_messages: false
+        }
+      });
+      console.log(`[MuteManager] Successfully restricted user ${userId} in chat ${chatId} for ${durationHours}h (reason: ${reason}) until ${new Date(unmuteAt).toISOString()}`);
+    }
+  } catch (err: any) {
+    console.error(`[MuteManager] Error applying restrictChatMember to user ${userId} in chat ${chatId}:`, err?.message || err);
+  }
+
+  const newMute: ActiveMuteEntry = {
+    id: muteId,
+    userId: String(userId),
+    chatId: String(chatId),
+    userName: userName || `ID ${userId}`,
+    mutedAt: new Date().toISOString(),
+    unmuteAt,
+    durationHours,
+    reason
+  };
+
+  const existingIdx = activeMutes.findIndex(m => m.id === muteId);
+  if (existingIdx !== -1) {
+    activeMutes[existingIdx] = newMute;
+  } else {
+    activeMutes.push(newMute);
+  }
+  queueWrite('active_mutes', muteId, cleanData(newMute));
+
+  const chat = chats.find(c => String(c.id) === String(chatId));
+  const reasonText = reason === 'channel_subscription_refusal' 
+    ? 'Отказ от подписки на канал (24ч)' 
+    : (reason === 'newcomer' ? `Мут новичков (${durationHours}ч)` : `Мут (${durationHours}ч)`);
+
+  await addLog({
+    id: Math.random().toString(36).substr(2, 9),
+    timestamp: new Date().toISOString(),
+    type: 'MUTE',
+    user: userName || String(userId),
+    chat: chat?.title || chatId,
+    details: `Наложен ${reasonText}. Окончание: ${new Date(unmuteAt).toLocaleTimeString()}`
+  });
+
+  return newMute;
+}
+
+async function unmuteUser(chatId: string, userId: string, adminName?: string) {
+  const muteId = `${chatId}_${userId}`;
+  try {
+    if (bot) {
+      await bot.telegram.restrictChatMember(chatId, Number(userId), {
+        until_date: 0,
+        permissions: {
+          can_send_messages: true,
+          can_send_audios: true,
+          can_send_documents: true,
+          can_send_photos: true,
+          can_send_videos: true,
+          can_send_video_notes: true,
+          can_send_voice_notes: true,
+          can_send_polls: true,
+          can_send_other_messages: true,
+          can_add_web_page_previews: true,
+          can_change_info: true,
+          can_invite_users: true,
+          can_pin_messages: true
+        }
+      });
+      console.log(`[MuteManager] Lifted restrictions for user ${userId} in chat ${chatId}`);
+    }
+  } catch (err: any) {
+    console.warn(`[MuteManager] Lift restriction note for user ${userId} in chat ${chatId}:`, err?.message || err);
+  }
+
+  activeMutes = activeMutes.filter(m => m.id !== muteId);
+  queueDelete('active_mutes', muteId);
+
+  const chat = chats.find(c => String(c.id) === String(chatId));
+  await addLog({
+    id: Math.random().toString(36).substr(2, 9),
+    timestamp: new Date().toISOString(),
+    type: 'UNMUTE',
+    user: adminName || 'Система (автоматически)',
+    chat: chat?.title || chatId,
+    details: `Сняты ограничения с пользователя ID ${userId}`
+  });
+}
+
+async function handleCaptchaPassed(ctx: any, chatId: string, userId: string, userObj: any) {
+  const chat = chats.find(c => String(c.id) === String(chatId));
+  const chatTitle = chat?.title || 'Группа';
+
+  // Check Channel Subscription requirement
+  const effectiveRequireSub = (chat?.requireChannelSubscription !== undefined && chat.requireChannelSubscription !== null)
+    ? chat.requireChannelSubscription
+    : !!filters.requireChannelSubscription;
+
+  const rawSubTarget = (chat?.channelSubscriptionTarget && chat.channelSubscriptionTarget.trim())
+    ? chat.channelSubscriptionTarget.trim()
+    : (filters.channelSubscriptionTarget && filters.channelSubscriptionTarget.trim()) ? filters.channelSubscriptionTarget.trim() : '';
+
+  const effectiveMuteNewcomers = (chat?.muteNewcomers !== undefined && chat.muteNewcomers !== null)
+    ? chat.muteNewcomers
+    : !!filters.muteNewcomers;
+
+  const effectiveMuteDurationHours = (chat?.muteDurationHours !== undefined && chat.muteDurationHours !== null)
+    ? chat.muteDurationHours
+    : (filters.muteDurationHours || 1);
+
+  if (effectiveRequireSub && rawSubTarget) {
+    let targetChannel = rawSubTarget;
+    let channelLink = targetChannel;
+    if (targetChannel.startsWith('@')) {
+      channelLink = `https://t.me/${targetChannel.substring(1)}`;
+    } else if (!targetChannel.startsWith('https://')) {
+      channelLink = `https://t.me/${targetChannel}`;
+      targetChannel = `@${targetChannel}`;
+    }
+
+    // Save session for subscription choice
+    subscriptionChoiceSessions.set(userId, {
+      chatId,
+      targetChannel,
+      newcomerMuteHours: effectiveMuteNewcomers ? effectiveMuteDurationHours : 0,
+      userObj,
+      timestamp: Date.now()
+    });
+
+    const newcomerMuteText = effectiveMuteNewcomers && effectiveMuteDurationHours > 0
+      ? `мут новичка ${effectiveMuteDurationHours}ч`
+      : `без мута (полный доступ)`;
+
+    const subChoiceMessage = `🎉 <b>Проверка успешно пройдена!</b>\n\n` +
+      `В чате «<b>${escapeHtml(chatTitle)}</b>» действует правило обязательной подписки на канал:\n` +
+      `👉 <a href="${channelLink}">${escapeHtml(targetChannel)}</a>\n\n` +
+      `<b>У вас есть два варианта вступления:</b>\n` +
+      `1️⃣ <b>Подписаться на канал</b> — после подтверждения подписки вы будете приняты в чат со стандартными правилами (${newcomerMuteText}).\n` +
+      `2️⃣ <b>Отказаться от подписки</b> — вы будете приняты в чат, но с <b>мутом на 24 часа</b>. Спустя 24ч мут снимется автоматически.\n\n` +
+      `<i>Выберите вариант кнопкой ниже:</i>`;
+
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: '📢 Перейти в канал', url: channelLink }
+        ],
+        [
+          { text: `✅ Я подписался (Вступить с ${effectiveMuteNewcomers ? `${effectiveMuteDurationHours}ч мутом` : 'полным доступом'})`, callback_data: `sub_confirm_${userId}` }
+        ],
+        [
+          { text: '⛔ Отказаться от подписки (Вступить с мутом 24ч)', callback_data: `sub_refuse_${userId}` }
+        ]
+      ]
+    };
+
+    try {
+      if (ctx.editMessageText) {
+        await ctx.editMessageText(subChoiceMessage, { parse_mode: 'HTML', reply_markup: keyboard, link_preview_options: { is_disabled: false } });
+      } else {
+        await ctx.telegram.sendMessage(userId, subChoiceMessage, { parse_mode: 'HTML', reply_markup: keyboard, link_preview_options: { is_disabled: false } });
+      }
+    } catch (e) {
+      await ctx.telegram.sendMessage(userId, subChoiceMessage, { parse_mode: 'HTML', reply_markup: keyboard, link_preview_options: { is_disabled: false } }).catch(() => {});
+    }
+    return;
+  }
+
+  // No channel subscription required -> Approve immediately
+  try {
+    await ctx.telegram.approveChatJoinRequest(chatId, Number(userId));
+    console.log(`[JoinFlow] Approved join request for user ${userId} in chat ${chatId}`);
+
+    await trackMembership(chatId, {
+      id: Number(userId),
+      username: userObj?.username,
+      first_name: userObj?.first_name || userObj?.firstName,
+      last_name: userObj?.last_name || userObj?.lastName
+    });
+
+    if (effectiveMuteNewcomers && effectiveMuteDurationHours > 0) {
+      await applyMuteToUser(chatId, userId, effectiveMuteDurationHours, 'newcomer', userObj?.first_name || userObj?.firstName);
+      const approveText = `✅ <b>Ваша заявка в чат «${escapeHtml(chatTitle)}» одобрена!</b>\n\n` +
+        `⏳ В чате установлен временный мут для новичков на <b>${effectiveMuteDurationHours} ч.</b> ` +
+        `По истечении времени вы сможете свободно отправлять сообщения.`;
+
+      if (ctx.editMessageText) {
+        await ctx.editMessageText(approveText, { parse_mode: 'HTML' }).catch(() => {});
+      } else {
+        await ctx.telegram.sendMessage(userId, approveText, { parse_mode: 'HTML' }).catch(() => {});
+      }
+    } else {
+      const approveText = `✅ <b>Ваша заявка в чат «${escapeHtml(chatTitle)}» одобрена!</b>\n\nДобро пожаловать в сообщество!`;
+      if (ctx.editMessageText) {
+        await ctx.editMessageText(approveText, { parse_mode: 'HTML' }).catch(() => {});
+      } else {
+        await ctx.telegram.sendMessage(userId, approveText, { parse_mode: 'HTML' }).catch(() => {});
+      }
+    }
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SYSTEM',
+      user: userObj?.first_name || userObj?.firstName || String(userId),
+      chat: chatTitle,
+      details: 'Заявка на вступление одобрена после успешной проверки каптчи.'
+    });
+  } catch (err: any) {
+    console.error(`[JoinFlow] Error approving join request for user ${userId}:`, err?.message || err);
+    if (ctx.editMessageText) {
+      await ctx.editMessageText('❌ Ошибка при одобрении заявки. Возможно, заявка устарела или была отменена.').catch(() => {});
+    } else {
+      await ctx.telegram.sendMessage(userId, '❌ Ошибка при одобрении заявки. Попробуйте подать заявку снова.').catch(() => {});
+    }
+  }
+}
 let broadcastSessions = new Map<string, { 
   message: any, 
   messages?: any[],
@@ -3394,12 +3951,12 @@ let settings = {
   telegramApiRoot: process.env.TELEGRAM_API_ROOT || '',
   aiProvider: 'gemini' as 'gemini' | 'openrouter' | 'custom',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
-  geminiModel: 'gemini-3.6-flash',
+  geminiModel: 'gemini-2.0-flash',
   geminiBaseUrl: '',
   geminiUseProxy: true,
   geminiProxySource: 'auto' as 'auto' | 'tg_proxy' | 'cf_worker' | 'custom' | 'direct',
   openRouterApiKey: '',
-  openRouterModel: 'google/gemini-2.5-flash',
+  openRouterModel: 'google/gemini-2.0-flash-001',
   customAiEndpoint: '',
   customAiApiKey: '',
   customAiModel: 'gpt-4o-mini'
@@ -3478,6 +4035,12 @@ async function syncData() {
       const snap = await db.collection('stats').orderBy('date', 'asc').get();
       statsHistory = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
       console.log(`Loaded ${statsHistory.length} stats history entries`);
+    });
+
+    await safeLoad('active_mutes', async () => {
+      const snap = await db.collection('active_mutes').get();
+      activeMutes = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${activeMutes.length} active mutes`);
     });
 
     await safeLoad('config/moderation', async () => {
@@ -4344,31 +4907,12 @@ async function initBot(token: string) {
           console.log(`User ${userId} provided captcha answer: "${userAnswer}". Expected: "${expectedAnswer}"`);
           
           if (userAnswer === expectedAnswer) {
+            captchaSessions.delete(userId);
             try {
-              await ctx.telegram.approveChatJoinRequest(session.chatId, ctx.from.id);
-              
-              // Track membership on captcha success
-              await trackMembership(session.chatId, {
-                id: ctx.from.id,
-                username: ctx.from.username,
-                first_name: ctx.from.first_name,
-                last_name: ctx.from.last_name
-              });
-
-              captchaSessions.delete(userId);
-              ctx.reply('✅ Правильно! Ваша заявка одобрена.');
-              
-              await addLog({
-                id: Math.random().toString(36).substr(2, 9),
-                timestamp: new Date().toISOString(),
-                type: 'SYSTEM',
-                user: ctx.from.first_name,
-                chat: 'Private',
-                details: `Пользователь прошел каптчу и был одобрен в чат.`
-              });
+              await handleCaptchaPassed(ctx, session.chatId, userId, session.userObj || ctx.from);
             } catch (e) {
-              console.error('Failed to approve after captcha:', e);
-              ctx.reply('❌ Ошибка при одобрении заявки. Возможно, срок действия заявки истек.');
+              console.error('Failed to handle captcha success flow:', e);
+              ctx.reply('❌ Ошибка при обработке заявки. Возможно, срок действия заявки истек.').catch(() => {});
             }
           } else {
             ctx.reply('❌ Неверный ответ. Попробуйте еще раз.');
@@ -5245,100 +5789,59 @@ async function initBot(token: string) {
 
       const effectiveAutoApprove = chat.autoApprove !== undefined ? chat.autoApprove : filters.autoApprove;
       const effectiveCaptchaEnabled = chat.captchaEnabled !== undefined ? chat.captchaEnabled : filters.captchaEnabled;
+      const effectiveCaptchaType = (chat.captchaType || filters.captchaType || 'math') as any;
       const effectiveCaptchaQuestion = chat.captchaQuestion !== undefined ? chat.captchaQuestion : filters.captchaQuestion;
+      const effectiveCaptchaAnswer = chat.captchaAnswer !== undefined ? chat.captchaAnswer : filters.captchaAnswer;
 
       if (!effectiveAutoApprove) return;
 
       if (effectiveCaptchaEnabled) {
         try {
-          const effectiveCaptchaAnswer = chat.captchaAnswer !== undefined ? chat.captchaAnswer : filters.captchaAnswer;
+          const challenge = generateCaptchaChallenge(effectiveCaptchaType, effectiveCaptchaQuestion, effectiveCaptchaAnswer, userId);
           
-          // Send captcha DM
-          await ctx.telegram.sendMessage(ctx.from.id, `Привет! Вы подали заявку на вступление в чат "${chat.title}".\n\nДля подтверждения ответьте на вопрос:\n${effectiveCaptchaQuestion}`);
+          const greetingText = `👋 Привет, <b>${escapeHtml(ctx.from.first_name || 'пользователь')}</b>!\n` +
+            `Вы подали заявку на вступление в чат «<b>${escapeHtml(chat.title)}</b>».\n\n` +
+            challenge.question;
+
+          await ctx.telegram.sendMessage(ctx.from.id, greetingText, {
+            parse_mode: 'HTML',
+            reply_markup: challenge.keyboard
+          });
+
           captchaSessions.set(userId, { 
             chatId, 
-            answer: effectiveCaptchaAnswer, 
+            type: challenge.type,
+            answer: challenge.answer,
+            question: challenge.question,
+            userObj: {
+              id: ctx.from.id,
+              username: ctx.from.username,
+              first_name: ctx.from.first_name,
+              last_name: ctx.from.last_name
+            },
             timestamp: Date.now() 
           });
           
-          console.log(`Captcha sent to user ${userId} for chat ${chatId}. Expected answer: ${effectiveCaptchaAnswer}`);
+          console.log(`[Captcha] Sent ${challenge.type} challenge to user ${userId} for chat ${chatId}. Expected answer: ${challenge.answer}`);
           await addLog({
             id: Math.random().toString(36).substr(2, 9),
             timestamp: new Date().toISOString(),
             type: 'SYSTEM',
             user: ctx.from.first_name,
             chat: chat.title,
-            details: `Отправлена каптча новому участнику: ${effectiveCaptchaQuestion}`
+            details: `Отправлена каптча (${challenge.type}) новому участнику.`
           });
-        } catch (e) {
-          console.error('Failed to send captcha DM:', e);
-          // If DM fails, we might want to approve anyway or notify the admins
-          // For now, let's try to approve if DM fails to avoid blocking users
+        } catch (e: any) {
+          console.error('Failed to send captcha DM:', e?.message || e);
+          // If DM fails (e.g. user blocked bot or hasn't started DM), fallback to handleCaptchaPassed
           try {
-            await ctx.telegram.approveChatJoinRequest(chatId, Number(userId));
-            console.log(`Auto-approved user ${userId} for chat ${chatId} because DM failed`);
-            
-            // Track membership on auto-approval
-            await trackMembership(chatId, {
-              id: ctx.from.id,
-              username: ctx.from.username,
-              first_name: ctx.from.first_name,
-              last_name: ctx.from.last_name
-            });
+            await handleCaptchaPassed(ctx, chatId, userId, ctx.from);
           } catch (approveErr) {
             console.error('Failed to approve after DM fail:', approveErr);
           }
         }
       } else {
-        try {
-          await ctx.telegram.approveChatJoinRequest(chatId, Number(userId));
-          console.log(`Auto-approved user ${userId} for chat ${chatId}`);
-          
-          // Track membership on auto-approval
-          await trackMembership(chatId, {
-            id: ctx.from.id,
-            username: ctx.from.username,
-            first_name: ctx.from.first_name,
-            last_name: ctx.from.last_name
-          });
-
-          const todayDate = new Date().toISOString().split('T')[0];
-          let today = statsHistory.find(s => s.date === todayDate);
-          if (!today) {
-            const [y, m, d] = todayDate.split('-');
-            today = { 
-              date: todayDate, 
-              name: `${d}.${m}.${y}`, 
-              joins: 0, 
-              leaves: 0, 
-              msgs: 0, 
-              chatStats: {},
-              activeUsers: [],
-              onlineUsers: []
-            };
-          }
-          today.joins = (today.joins || 0) + 1;
-          if (!today.chatStats) today.chatStats = {};
-          if (!today.chatStats[chatId]) today.chatStats[chatId] = { joins: 0, leaves: 0, msgs: 0, activeUsers: [], onlineUsers: [] };
-          today.chatStats[chatId].joins++;
-          
-          // Update total members for today
-          today.totalMembers = chats.filter(c => c.active).reduce((acc, c) => acc + (c.members || 0), 0);
-          today.chatStats[chatId].totalMembers = chat.members;
-          
-          await updateStats(today);
-
-          await addLog({
-            id: Math.random().toString(36).substr(2, 9),
-            timestamp: new Date().toISOString(),
-            type: 'SYSTEM',
-            user: ctx.from.first_name,
-            chat: chat.title,
-            details: 'Автоматическое одобрение участника.'
-          });
-        } catch (e) {
-          console.error('Failed to auto-approve:', e);
-        }
+        await handleCaptchaPassed(ctx, chatId, userId, ctx.from);
       }
     });
 
@@ -5389,33 +5892,14 @@ async function initBot(token: string) {
       const effectiveMuteDurationHours = chat.muteDurationHours !== undefined ? chat.muteDurationHours : filters.muteDurationHours;
       const effectiveMuteMessage = chat.muteMessage !== undefined ? chat.muteMessage : filters.muteMessage;
 
-      if (effectiveMuteNewcomers) {
+      if (effectiveMuteNewcomers && effectiveMuteDurationHours > 0) {
         for (const member of (ctx.message as any).new_chat_members) {
           if (member.is_bot) continue;
           try {
             console.log(`Muting newcomer ${member.id} in chat ${chatId} for ${effectiveMuteDurationHours}h`);
-            const untilDate = Math.floor(Date.now() / 1000) + (effectiveMuteDurationHours * 3600);
-            
-            await ctx.telegram.restrictChatMember(chatId, member.id, {
-              until_date: untilDate,
-              permissions: {
-                can_send_messages: false,
-                can_send_audios: false,
-                can_send_documents: false,
-                can_send_photos: false,
-                can_send_videos: false,
-                can_send_video_notes: false,
-                can_send_voice_notes: false,
-                can_send_polls: false,
-                can_send_other_messages: false,
-                can_add_web_page_previews: false,
-                can_change_info: false,
-                can_invite_users: false,
-                can_pin_messages: false
-              }
-            });
+            await applyMuteToUser(chatId, String(member.id), effectiveMuteDurationHours, 'newcomer', member.first_name);
 
-            const welcomeMsg = effectiveMuteMessage.replace('{hours}', effectiveMuteDurationHours.toString());
+            const welcomeMsg = (effectiveMuteMessage || 'вам выдан временный мут на {hours} ч.').replace('{hours}', effectiveMuteDurationHours.toString());
             const mention = `[${member.first_name}](tg://user?id=${member.id})`;
             const sentMsg = await ctx.reply(`${mention}, ${welcomeMsg}`, { parse_mode: 'Markdown' });
 
@@ -5425,15 +5909,6 @@ async function initBot(token: string) {
                 await ctx.telegram.deleteMessage(chatId, sentMsg.message_id);
               } catch (e) {}
             }, 60000);
-
-            await addLog({
-              id: Math.random().toString(36).substr(2, 9),
-              timestamp: new Date().toISOString(),
-              type: 'MUTE_INFO',
-              user: member.first_name,
-              chat: chat.title,
-              details: `Новый участник замучен на ${effectiveMuteDurationHours}ч.`
-            });
           } catch (e) {
             console.error('Failed to mute newcomer:', e);
           }
@@ -5555,6 +6030,193 @@ async function initBot(token: string) {
       const userId = ctx.from.id.toString();
       const username = ctx.from.username;
       const data = (ctx.callbackQuery as any).data;
+
+      // Captcha Refresh
+      if (data.startsWith('cap_refresh_')) {
+        const session = captchaSessions.get(userId);
+        if (!session) {
+          return ctx.answerCbQuery('⚠️ Сессия проверки устарела. Подайте заявку заново.');
+        }
+        const chat = chats.find(c => c.id === session.chatId);
+        const effectiveCaptchaType = (chat?.captchaType || filters.captchaType || 'math') as any;
+        const effectiveCaptchaQuestion = chat?.captchaQuestion !== undefined ? chat.captchaQuestion : filters.captchaQuestion;
+        const effectiveCaptchaAnswer = chat?.captchaAnswer !== undefined ? chat.captchaAnswer : filters.captchaAnswer;
+
+        const challenge = generateCaptchaChallenge(effectiveCaptchaType, effectiveCaptchaQuestion, effectiveCaptchaAnswer, userId);
+        session.type = challenge.type;
+        session.answer = challenge.answer;
+        session.question = challenge.question;
+        session.timestamp = Date.now();
+
+        const greetingText = `👋 Привет, <b>${escapeHtml(ctx.from.first_name || 'пользователь')}</b>!\n` +
+          `Вы подали заявку на вступление в чат «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+          challenge.question;
+
+        try {
+          await ctx.editMessageText(greetingText, {
+            parse_mode: 'HTML',
+            reply_markup: challenge.keyboard
+          });
+          await ctx.answerCbQuery('🔄 Вопрос обновлен!');
+        } catch (err) {}
+        return;
+      }
+
+      // Captcha Answer Click
+      if (data.startsWith('cap_ans_')) {
+        const parts = data.split('_');
+        const targetUserId = parts[parts.length - 1];
+        if (targetUserId !== 'user' && targetUserId !== userId) {
+          return ctx.answerCbQuery('⚠️ Эта кнопка предназначена не для вас.', { show_alert: true });
+        }
+
+        const rawAns = parts.slice(2, parts.length - 1).join('_');
+        const selectedAnswer = decodeURIComponent(rawAns).trim().toLowerCase();
+
+        const session = captchaSessions.get(userId);
+        if (!session) {
+          return ctx.answerCbQuery('⚠️ Сессия проверки не найдена или уже завершена.');
+        }
+
+        const expected = String(session.answer).trim().toLowerCase();
+        if (selectedAnswer === expected) {
+          await ctx.answerCbQuery('✅ Верно!');
+          captchaSessions.delete(userId);
+          await handleCaptchaPassed(ctx, session.chatId, userId, session.userObj || ctx.from);
+        } else {
+          await ctx.answerCbQuery('❌ Неверно! Попробуйте другой вариант или обновите вопрос.', { show_alert: true });
+        }
+        return;
+      }
+
+      // Subscription Choice: Confirm Subscription
+      if (data.startsWith('sub_confirm_')) {
+        const sessionUserId = data.replace('sub_confirm_', '');
+        if (sessionUserId !== userId) {
+          return ctx.answerCbQuery('⚠️ Это действие доступно только для заявителя.', { show_alert: true });
+        }
+
+        const session = subscriptionChoiceSessions.get(userId);
+        if (!session) {
+          return ctx.answerCbQuery('⚠️ Сессия выбора устарела. Подайте заявку заново.', { show_alert: true });
+        }
+
+        const { chatId, targetChannel, newcomerMuteHours, userObj } = session;
+        const chat = chats.find(c => String(c.id) === String(chatId));
+
+        // Check actual subscription in Telegram channel
+        let isSubscribed = false;
+        try {
+          let checkTarget = targetChannel;
+          if (checkTarget.startsWith('https://t.me/')) {
+            const part = checkTarget.split('https://t.me/')[1]?.split('/')[0]?.split('?')[0];
+            if (part) checkTarget = `@${part}`;
+          } else if (!checkTarget.startsWith('@') && !checkTarget.startsWith('-100')) {
+            checkTarget = `@${checkTarget}`;
+          }
+
+          const chMember = await ctx.telegram.getChatMember(checkTarget, Number(userId));
+          isSubscribed = ['creator', 'administrator', 'member', 'restricted'].includes(chMember.status);
+        } catch (chErr: any) {
+          console.warn(`[SubCheck] Could not verify membership in channel ${targetChannel} for user ${userId}:`, chErr?.message || chErr);
+          // If channel check fails due to bot not being admin, let user through
+          isSubscribed = true;
+        }
+
+        if (!isSubscribed) {
+          return ctx.answerCbQuery(`⚠️ Вы еще не подписались на канал ${targetChannel}! Подпишитесь и нажмите кнопку снова.`, { show_alert: true });
+        }
+
+        // User is confirmed subscribed!
+        subscriptionChoiceSessions.delete(userId);
+        await ctx.answerCbQuery('✅ Подписка подтверждена!');
+
+        try {
+          await ctx.telegram.approveChatJoinRequest(chatId, Number(userId));
+          await trackMembership(chatId, {
+            id: Number(userId),
+            username: userObj?.username,
+            first_name: userObj?.first_name || userObj?.firstName,
+            last_name: userObj?.last_name || userObj?.lastName
+          });
+
+          if (newcomerMuteHours > 0) {
+            await applyMuteToUser(chatId, userId, newcomerMuteHours, 'newcomer', userObj?.first_name || userObj?.firstName);
+            const approvedText = `✅ <b>Подписка на канал подтверждена! Заявка одобрена.</b>\n\n` +
+              `⏳ В чате «<b>${escapeHtml(chat?.title || 'Группа')}</b>» действует стандартный мут новичка на <b>${newcomerMuteHours} ч.</b>\n` +
+              `По истечении времени вы сможете писать в чат. Спасибо за подписку!`;
+            await ctx.editMessageText(approvedText, { parse_mode: 'HTML' });
+          } else {
+            const approvedText = `✅ <b>Подписка на канал подтверждена! Заявка одобрена.</b>\n\n` +
+              `Добро пожаловать в чат «<b>${escapeHtml(chat?.title || 'Группа')}</b>»!`;
+            await ctx.editMessageText(approvedText, { parse_mode: 'HTML' });
+          }
+
+          await addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'SYSTEM',
+            user: userObj?.first_name || userObj?.firstName || String(userId),
+            chat: chat?.title || chatId,
+            details: `Принят в чат после подтверждения подписки на канал ${targetChannel}.`
+          });
+        } catch (apprErr: any) {
+          console.error(`[SubCheck] Failed to approve user ${userId}:`, apprErr);
+          await ctx.editMessageText('❌ Ошибка при одобрении заявки. Возможно, срок заявки истек.').catch(() => {});
+        }
+        return;
+      }
+
+      // Subscription Choice: Refuse Subscription -> 24h Mute
+      if (data.startsWith('sub_refuse_')) {
+        const sessionUserId = data.replace('sub_refuse_', '');
+        if (sessionUserId !== userId) {
+          return ctx.answerCbQuery('⚠️ Это действие доступно только для заявителя.', { show_alert: true });
+        }
+
+        const session = subscriptionChoiceSessions.get(userId);
+        if (!session) {
+          return ctx.answerCbQuery('⚠️ Сессия выбора устарела. Подайте заявку заново.', { show_alert: true });
+        }
+
+        const { chatId, targetChannel, userObj } = session;
+        const chat = chats.find(c => String(c.id) === String(chatId));
+
+        subscriptionChoiceSessions.delete(userId);
+        await ctx.answerCbQuery('ℹ️ Вы отказались от подписки. Будет применен мут на 24ч.');
+
+        try {
+          await ctx.telegram.approveChatJoinRequest(chatId, Number(userId));
+          await trackMembership(chatId, {
+            id: Number(userId),
+            username: userObj?.username,
+            first_name: userObj?.first_name || userObj?.firstName,
+            last_name: userObj?.last_name || userObj?.lastName
+          });
+
+          // Apply 24h mute for refusing subscription
+          await applyMuteToUser(chatId, userId, 24, 'channel_subscription_refusal', userObj?.first_name || userObj?.firstName);
+
+          const refuseResultText = `⚠️ <b>Вы приняты в чат «${escapeHtml(chat?.title || 'Группа')}»</b>\n\n` +
+            `Поскольку вы отказались от подписки на канал <i>${escapeHtml(targetChannel)}</i>, вам выдан <b>мут на 24 часа</b>.\n\n` +
+            `⏰ Мут снимется автоматически ровно через 24 часа. До этого времени отправка сообщений ограничена.`;
+
+          await ctx.editMessageText(refuseResultText, { parse_mode: 'HTML' });
+
+          await addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'MUTE',
+            user: userObj?.first_name || userObj?.firstName || String(userId),
+            chat: chat?.title || chatId,
+            details: 'Принят в чат с мутом на 24ч из-за отказа от подписки на канал.'
+          });
+        } catch (apprErr: any) {
+          console.error(`[SubRefuse] Failed to approve user ${userId}:`, apprErr);
+          await ctx.editMessageText('❌ Ошибка при одобрении заявки. Попробуйте подать заявку снова.').catch(() => {});
+        }
+        return;
+      }
 
       if (data.startsWith('vote_')) {
         const voteId = data.replace('vote_', '');

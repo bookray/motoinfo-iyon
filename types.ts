@@ -8,6 +8,7 @@ export interface Chat {
   muteMessage?: string;
   autoApprove?: boolean;
   captchaEnabled?: boolean;
+  captchaType?: 'math' | 'emoji' | 'button' | 'custom' | 'random';
   captchaQuestion?: string;
   captchaAnswer?: string;
   blockLinks?: boolean;
@@ -101,6 +102,7 @@ export interface FilterSettings {
   forbiddenWords: string[];
   autoApprove: boolean;
   captchaEnabled: boolean;
+  captchaType?: 'math' | 'emoji' | 'button' | 'custom' | 'random';
   captchaQuestion: string;
   captchaAnswer: string;
   muteNewcomers: boolean;
@@ -124,6 +126,18 @@ export interface FilterSettings {
   channelSubscriptionMessage?: string;
   tagAdminsEnabled?: boolean;
   tagAdminsMessage?: string;
+}
+
+export interface ActiveMuteEntry {
+  id: string; // `${chatId}_${userId}`
+  userId: string;
+  chatId: string;
+  userMention?: string;
+  userName?: string;
+  mutedAt: string;
+  unmuteAt: number; // Unix timestamp in ms
+  durationHours: number;
+  reason: 'newcomer' | 'channel_subscription_refusal' | 'channel_subscription_required' | 'command' | 'voting';
 }
 
 export interface ReputationHistoryItem {

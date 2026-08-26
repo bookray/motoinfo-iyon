@@ -1,6 +1,10 @@
-import React, { useState } from 'react';
-import { FilterSettings } from '../types';
-import { ShieldAlert, Plus, X, Radio, Bell, Layers, RefreshCw, CheckCircle2, AlertCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { FilterSettings, ActiveMuteEntry } from '../types';
+import { 
+  ShieldAlert, Plus, X, Radio, Bell, Layers, RefreshCw, 
+  CheckCircle2, AlertCircle, VolumeX, Volume2, Tv, AtSign, 
+  Clock, UserX, Search, Sparkles
+} from 'lucide-react';
 
 interface ModerationProps {
   filters: FilterSettings;
@@ -17,9 +21,57 @@ export const Moderation: React.FC<ModerationProps> = ({
   const [isApplyingBulk, setIsApplyingBulk] = useState(false);
   const [statusNotice, setStatusNotice] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
+  // Active Mutes state
+  const [activeMutes, setActiveMutes] = useState<ActiveMuteEntry[]>([]);
+  const [isLoadingMutes, setIsLoadingMutes] = useState(false);
+  const [muteSearchQuery, setMuteSearchQuery] = useState('');
+  const [unmutingId, setUnmutingId] = useState<string | null>(null);
+
   const showStatus = (message: string, type: 'success' | 'error' = 'success') => {
     setStatusNotice({ message, type });
     setTimeout(() => setStatusNotice(null), 4000);
+  };
+
+  const fetchActiveMutes = async () => {
+    setIsLoadingMutes(true);
+    try {
+      const res = await authenticatedFetch('/api/active-mutes');
+      if (res.ok) {
+        const data = await res.json();
+        setActiveMutes(data);
+      }
+    } catch (err) {
+      console.error('Failed to load active mutes:', err);
+    } finally {
+      setIsLoadingMutes(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchActiveMutes();
+    const interval = setInterval(fetchActiveMutes, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleUnmute = async (chatId: string, userId: string) => {
+    setUnmutingId(`${chatId}_${userId}`);
+    try {
+      const res = await authenticatedFetch('/api/active-mutes/unmute', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, userId })
+      });
+      if (res.ok) {
+        showStatus('Мут успешно снят с пользователя');
+        await fetchActiveMutes();
+      } else {
+        showStatus('Не удалось снять мут', 'error');
+      }
+    } catch (e: any) {
+      showStatus(e.message || 'Ошибка сети', 'error');
+    } finally {
+      setUnmutingId(null);
+    }
   };
 
   const handleAddWord = (e: React.FormEvent) => {
@@ -83,6 +135,44 @@ export const Moderation: React.FC<ModerationProps> = ({
     }
   };
 
+  const filteredMutes = activeMutes.filter(m => {
+    if (!muteSearchQuery.trim()) return true;
+    const q = muteSearchQuery.toLowerCase();
+    return (
+      (m.userName && m.userName.toLowerCase().includes(q)) ||
+      m.userId.includes(q) ||
+      (m.chatTitle && m.chatTitle.toLowerCase().includes(q)) ||
+      m.chatId.includes(q) ||
+      m.reason.toLowerCase().includes(q)
+    );
+  });
+
+  const formatRemainingTime = (unmuteAt: number) => {
+    const diff = unmuteAt - Date.now();
+    if (diff <= 0) return 'Истекает...';
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    if (hours > 0) return `${hours} ч ${mins} мин`;
+    return `${mins} мин`;
+  };
+
+  const getReasonLabel = (reason: string) => {
+    switch (reason) {
+      case 'channel_subscription_refusal':
+        return { text: 'Отказ от подписки (24ч)', color: 'bg-rose-500/10 text-rose-400 border-rose-500/20' };
+      case 'channel_subscription_required':
+        return { text: 'Требуется подписка', color: 'bg-amber-500/10 text-amber-400 border-amber-500/20' };
+      case 'newcomer':
+        return { text: 'Мут новичка', color: 'bg-blue-500/10 text-blue-400 border-blue-500/20' };
+      case 'command':
+        return { text: 'Команда админа', color: 'bg-purple-500/10 text-purple-400 border-purple-500/20' };
+      case 'voting':
+        return { text: 'Голосование чата', color: 'bg-orange-500/10 text-orange-400 border-orange-500/20' };
+      default:
+        return { text: reason, color: 'bg-slate-800 text-slate-300 border-slate-700' };
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto animate-in fade-in duration-500 space-y-6">
       
@@ -97,6 +187,101 @@ export const Moderation: React.FC<ModerationProps> = ({
           <span className="text-sm font-medium">{statusNotice.message}</span>
         </div>
       )}
+
+      {/* Active Mutes List Card */}
+      <div className="bg-slate-900 p-6 md:p-8 rounded-2xl border border-slate-800 shadow-xl">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div className="flex items-center gap-3">
+            <div className="p-3 bg-amber-500/20 rounded-xl shadow-lg shadow-amber-900/10">
+              <VolumeX className="w-6 h-6 text-amber-400" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h3 className="text-xl font-bold text-white tracking-tight">Активные муты и таймеры</h3>
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  {activeMutes.length}
+                </span>
+              </div>
+              <p className="text-xs text-slate-400">Участники с временными ограничениями и автоматическим размутом</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchActiveMutes}
+              disabled={isLoadingMutes}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition-all cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingMutes ? 'animate-spin' : ''}`} />
+              <span>Обновить</span>
+            </button>
+          </div>
+        </div>
+
+        {activeMutes.length > 0 && (
+          <div className="mb-4">
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Поиск по имени, ID пользователя, чату или причине..."
+                value={muteSearchQuery}
+                onChange={e => setMuteSearchQuery(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-10 pr-4 py-2.5 text-xs text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50"
+              />
+            </div>
+          </div>
+        )}
+
+        {filteredMutes.length === 0 ? (
+          <div className="text-center py-8 bg-slate-950/50 rounded-xl border border-slate-800/60">
+            <Volume2 className="w-8 h-8 text-slate-600 mx-auto mb-2 opacity-60" />
+            <p className="text-slate-400 text-sm font-medium">
+              {activeMutes.length === 0 ? 'Нет активных мутов' : 'Ничего не найдено по запросу'}
+            </p>
+            <p className="text-slate-600 text-xs mt-0.5">
+              {activeMutes.length === 0 ? 'Все участники имеют полные права на отправку сообщений' : 'Попробуйте изменить поисковый запрос'}
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-800/80 max-h-80 overflow-y-auto pr-1">
+            {filteredMutes.map(mute => {
+              const reasonBadge = getReasonLabel(mute.reason);
+              const isUnmuting = unmutingId === mute.id;
+              return (
+                <div key={mute.id} className="py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-800/20 px-2 rounded-lg transition-colors">
+                  <div className="flex flex-col space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-white text-sm font-semibold">{mute.userName || `ID: ${mute.userId}`}</span>
+                      <span className="text-slate-500 text-xs font-mono">({mute.userId})</span>
+                      <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${reasonBadge.color}`}>
+                        {reasonBadge.text}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-x-3 text-xs text-slate-400">
+                      <span>Чат: <strong className="text-slate-300">{mute.chatTitle || mute.chatId}</strong></span>
+                      <span>•</span>
+                      <span className="flex items-center gap-1 text-amber-400 font-medium">
+                        <Clock className="w-3 h-3" />
+                        Осталось: {formatRemainingTime(mute.unmuteAt)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() => handleUnmute(mute.chatId, mute.userId)}
+                    disabled={isUnmuting}
+                    className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer self-start sm:self-center disabled:opacity-50"
+                  >
+                    {isUnmuting ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Volume2 className="w-3.5 h-3.5" />}
+                    <span>Снять мут</span>
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Auto-Moderation Filters */}
       <div className="space-y-6">
@@ -148,8 +333,8 @@ export const Moderation: React.FC<ModerationProps> = ({
 
             <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
               <div className="flex flex-col">
-                <span className="text-slate-200 font-medium">Telegram-ссылки</span>
-                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mt-1">t.me, @mentions</span>
+                <span className="text-slate-200 font-medium">Блокировать ссылки Telegram</span>
+                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mt-1">T.ME / TELEGRAM.ME</span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" className="sr-only peer" checked={filters.blockTelegramLinks} onChange={() => onUpdateFilters({...filters, blockTelegramLinks: !filters.blockTelegramLinks})} />
@@ -158,7 +343,10 @@ export const Moderation: React.FC<ModerationProps> = ({
             </div>
 
             <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
-              <span className="text-slate-200 font-medium">Блокировать медиа</span>
+              <div className="flex flex-col">
+                <span className="text-slate-200 font-medium">Блокировать медиафайлы</span>
+                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mt-1">PHOTOS, VIDEOS, DOCS</span>
+              </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" className="sr-only peer" checked={filters.blockMedia} onChange={() => onUpdateFilters({...filters, blockMedia: !filters.blockMedia})} />
                 <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
@@ -166,7 +354,10 @@ export const Moderation: React.FC<ModerationProps> = ({
             </div>
 
             <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
-              <span className="text-slate-200 font-medium">Пересланные сообщения</span>
+              <div className="flex flex-col">
+                <span className="text-slate-200 font-medium">Блокировать пересылки</span>
+                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mt-1">FORWARDED MESSAGES</span>
+              </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" className="sr-only peer" checked={filters.blockForwards} onChange={() => onUpdateFilters({...filters, blockForwards: !filters.blockForwards})} />
                 <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
@@ -174,7 +365,10 @@ export const Moderation: React.FC<ModerationProps> = ({
             </div>
 
             <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
-              <span className="text-slate-200 font-medium">Системные сообщения</span>
+              <div className="flex flex-col">
+                <span className="text-slate-200 font-medium">Удалять сервисные сообщения</span>
+                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mt-1">JOIN / LEAVE NOTIFICATIONS</span>
+              </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" className="sr-only peer" checked={filters.deleteSystemMessages} onChange={() => onUpdateFilters({...filters, deleteSystemMessages: !filters.deleteSystemMessages})} />
                 <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
@@ -182,7 +376,10 @@ export const Moderation: React.FC<ModerationProps> = ({
             </div>
 
             <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
-              <span className="text-slate-200 font-medium">Удалять команды</span>
+              <div className="flex flex-col">
+                <span className="text-slate-200 font-medium">Удалять команды пользователей</span>
+                <span className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mt-1">HIDE BOT COMMANDS IN CHAT</span>
+              </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" className="sr-only peer" checked={filters.deleteCommands} onChange={() => onUpdateFilters({...filters, deleteCommands: !filters.deleteCommands})} />
                 <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
@@ -190,27 +387,22 @@ export const Moderation: React.FC<ModerationProps> = ({
             </div>
           </div>
 
-          {/* Mandatory Channel Subscription (Mute 24h) */}
-          <div className="mt-8 pt-8 border-t border-slate-800 space-y-4">
-            <div className="flex items-center justify-between">
+          {/* Channel Subscription Gate */}
+          <div className="mt-8 pt-8 border-t border-slate-800">
+            <div className="flex items-center justify-between mb-6">
               <div className="flex flex-col">
-                <div className="flex items-center gap-2">
-                  <Radio className="w-5 h-5 text-indigo-400" />
-                  <span className="text-lg font-bold text-white">Обязательная подписка на канал (Мут на 24 часа)</span>
-                </div>
-                <span className="text-xs text-slate-400 mt-1">
-                  Глобальный переключатель: участники без подписки на канал автоматически получают мут на 24ч при отправке сообщения
+                <span className="text-lg font-bold text-white flex items-center gap-2">
+                  <Tv className="w-5 h-5 text-indigo-400" />
+                  Обязательная подписка на канал (OP-подписка)
                 </span>
+                <span className="text-xs text-slate-400">Требовать подписку на ваш Telegram-канал перед общением в группах</span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input 
                   type="checkbox" 
                   className="sr-only peer" 
                   checked={!!filters.requireChannelSubscription} 
-                  onChange={() => onUpdateFilters({
-                    ...filters, 
-                    requireChannelSubscription: !filters.requireChannelSubscription
-                  })} 
+                  onChange={() => onUpdateFilters({...filters, requireChannelSubscription: !filters.requireChannelSubscription})} 
                 />
                 <div className="w-14 h-7 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-indigo-600"></div>
               </label>
@@ -218,9 +410,9 @@ export const Moderation: React.FC<ModerationProps> = ({
 
             {filters.requireChannelSubscription && (
               <div className="grid grid-cols-1 gap-5 animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-indigo-900/30 shadow-inner">
-                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between pb-3 border-b border-slate-800/80">
+                <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between pb-3 border-b border-slate-800/80">
                   <span className="text-xs text-slate-400">
-                    Действует для всех чатов по умолчанию, если в чате не отключено индивидуально.
+                    Бот отправляет кнопки «Подписаться» и «Я подписался» (а также «Отказаться» с мутом на 24ч).
                   </span>
                   <button
                     onClick={() => handleBulkApply(['requireChannelSubscription', 'channelSubscriptionTarget', 'channelSubscriptionMessage'])}
@@ -228,158 +420,85 @@ export const Moderation: React.FC<ModerationProps> = ({
                     className="px-3 py-1.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
                   >
                     <Layers className="w-3.5 h-3.5" />
-                    <span>Применить подписку ко всем чатам</span>
+                    <span>Применить к чатам</span>
                   </button>
                 </div>
 
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">
-                    Канал для обязательной подписки (@username или ссылка)
+                    Канал для проверки подписки (@username или ссылка)
                   </label>
                   <input 
                     type="text" 
                     value={filters.channelSubscriptionTarget || ''}
                     onChange={(e) => onUpdateFilters({...filters, channelSubscriptionTarget: e.target.value})}
+                    placeholder="Например: @MotoBlackList или https://t.me/my_channel"
                     className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-mono"
-                    placeholder="@MotoBlackList или https://t.me/MotoBlackList"
                   />
                   <span className="text-[11px] text-slate-500 mt-1 block">
-                    Бот должен быть администратором этого канала для проверки участников.
+                    Убедитесь, что бот добавлен в этот канал как администратор (для проверки подписок).
                   </span>
                 </div>
 
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">
-                    Шаблон сообщения при муте за отсутствие подписки
+                    Свой текст приветствия и требования подписки (опционально)
                   </label>
                   <textarea 
                     value={filters.channelSubscriptionMessage || ''}
                     onChange={(e) => onUpdateFilters({...filters, channelSubscriptionMessage: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all min-h-[90px]"
-                    placeholder="Оставьте пустым для стандартного уведомления. Доступны: {user} — имя пользователя, {channel} — ссылка на канал."
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all min-h-[80px]"
+                    placeholder="Оставьте пустым для стандартного стильного текста с кнопками"
                   />
                 </div>
               </div>
             )}
           </div>
 
-          {/* Admin Tagger (@admin) */}
-          <div className="mt-8 pt-8 border-t border-slate-800 space-y-4">
-            <div className="flex items-center justify-between">
+          {/* Admin Tagger */}
+          <div className="mt-8 pt-8 border-t border-slate-800">
+            <div className="flex items-center justify-between mb-6">
               <div className="flex flex-col">
-                <div className="flex items-center gap-2">
-                  <Bell className="w-5 h-5 text-amber-400" />
-                  <span className="text-lg font-bold text-white">Вызов администрации через @admin (Тегер администраторов)</span>
-                </div>
-                <span className="text-xs text-slate-400 mt-1">
-                  Глобальный переключатель: при упоминании @admin, @admins или /admin бот тегает всех открытых админов чата
+                <span className="text-lg font-bold text-white flex items-center gap-2">
+                  <AtSign className="w-5 h-5 text-sky-400" />
+                  Вызов администрации (@admin / @админ / !admin)
                 </span>
+                <span className="text-xs text-slate-400">Уведомление администраторов чата при обращении участников</span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input 
                   type="checkbox" 
                   className="sr-only peer" 
-                  checked={filters.tagAdminsEnabled !== false} 
-                  onChange={() => onUpdateFilters({
-                    ...filters, 
-                    tagAdminsEnabled: filters.tagAdminsEnabled === false ? true : false
-                  })} 
+                  checked={!!filters.tagAdminsEnabled} 
+                  onChange={() => onUpdateFilters({...filters, tagAdminsEnabled: !filters.tagAdminsEnabled})} 
                 />
-                <div className="w-14 h-7 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-amber-500"></div>
+                <div className="w-14 h-7 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-sky-600"></div>
               </label>
             </div>
 
-            {filters.tagAdminsEnabled !== false && (
-              <div className="grid grid-cols-1 gap-5 animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-amber-900/30 shadow-inner">
-                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between pb-3 border-b border-slate-800/80">
-                  <span className="text-xs text-slate-400">
-                    Включено по умолчанию для всех групп. Скрытые администраторы и боты исключаются автоматически.
-                  </span>
-                  <button
-                    onClick={() => handleBulkApply(['tagAdminsEnabled', 'tagAdminsMessage'])}
-                    disabled={isApplyingBulk}
-                    className="px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
-                  >
-                    <Layers className="w-3.5 h-3.5" />
-                    <span>Применить тегер ко всем чатам</span>
-                  </button>
-                </div>
-
+            {filters.tagAdminsEnabled && (
+              <div className="grid grid-cols-1 gap-5 animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-sky-900/30 shadow-inner">
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">
-                    Текст заголовка при вызове администраторов
+                    Свой текст уведомления (опционально)
                   </label>
-                  <input 
-                    type="text" 
+                  <textarea 
                     value={filters.tagAdminsMessage || ''}
                     onChange={(e) => onUpdateFilters({...filters, tagAdminsMessage: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all"
-                    placeholder="🚨 Вызов администрации чата! Поступил запрос от пользователя."
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500/50 transition-all min-h-[70px]"
+                    placeholder="Например: 🚨 Внимание администрация! Требуется ваша помощь."
                   />
                 </div>
               </div>
             )}
           </div>
 
-          <div className="mt-8 pt-8 border-t border-slate-800">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex flex-col">
-                <span className="text-lg font-bold text-white">Голосование за бан/мут</span>
-                <span className="text-xs text-slate-500">Позволяет участникам чата инициировать бан/мут через /userban и /usermute</span>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input type="checkbox" className="sr-only peer" checked={filters.userVoteEnabled} onChange={() => onUpdateFilters({...filters, userVoteEnabled: !filters.userVoteEnabled})} />
-                <div className="w-14 h-7 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-6 after:w-6 after:transition-all peer-checked:bg-orange-500"></div>
-              </label>
-            </div>
-
-            {filters.userVoteEnabled && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-slate-800 shadow-inner">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Процент голосов (%)</label>
-                  <input 
-                    type="number" 
-                    value={filters.userVotePercentage}
-                    onChange={(e) => onUpdateFilters({...filters, userVotePercentage: parseInt(e.target.value) || 0})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Мин. голосов</label>
-                  <input 
-                    type="number" 
-                    value={filters.userVoteMin}
-                    onChange={(e) => onUpdateFilters({...filters, userVoteMin: parseInt(e.target.value) || 0})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Макс. голосов</label>
-                  <input 
-                    type="number" 
-                    value={filters.userVoteMax}
-                    onChange={(e) => onUpdateFilters({...filters, userVoteMax: parseInt(e.target.value) || 0})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Время (мин)</label>
-                  <input 
-                    type="number" 
-                    value={filters.userVoteDuration}
-                    onChange={(e) => onUpdateFilters({...filters, userVoteDuration: parseInt(e.target.value) || 0})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
+          {/* Newcomers Mute */}
           <div className="mt-8 pt-8 border-t border-slate-800">
             <div className="flex items-center justify-between mb-6">
               <div className="flex flex-col">
                 <span className="text-lg font-bold text-white">Мут новичков</span>
-                <span className="text-xs text-slate-500">Ограничение на отправку сообщений для новых участников</span>
+                <span className="text-xs text-slate-400">Ограничение на отправку сообщений для новых участников с автоматическим удалением и снятием</span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input type="checkbox" className="sr-only peer" checked={filters.muteNewcomers} onChange={() => onUpdateFilters({...filters, muteNewcomers: !filters.muteNewcomers})} />
@@ -389,30 +508,63 @@ export const Moderation: React.FC<ModerationProps> = ({
 
             {filters.muteNewcomers && (
               <div className="grid grid-cols-1 gap-6 animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-slate-800 shadow-inner">
+                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between pb-3 border-b border-slate-800/80">
+                  <span className="text-xs text-slate-400">
+                    При попытке отправки сообщения новичком оно немедленно удаляется ботом, а участнику высылается временное уведомление.
+                  </span>
+                  <button
+                    onClick={() => handleBulkApply(['muteNewcomers', 'muteDurationHours', 'muteMessage'])}
+                    disabled={isApplyingBulk}
+                    className="px-3 py-1.5 bg-orange-600/30 hover:bg-orange-600/50 text-orange-300 border border-orange-500/30 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                  >
+                    <Layers className="w-3.5 h-3.5" />
+                    <span>Применить мут ко всем чатам</span>
+                  </button>
+                </div>
+
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Длительность мута (часы)</label>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Длительность мута (часы)</label>
                   <input 
                     type="number" 
-                    value={filters.muteDurationHours}
-                    onChange={(e) => onUpdateFilters({...filters, muteDurationHours: parseInt(e.target.value) || 0})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
+                    value={filters.muteDurationHours || 1}
+                    onChange={(e) => onUpdateFilters({...filters, muteDurationHours: Math.max(0.1, parseFloat(e.target.value) || 1)})}
+                    step="0.5"
+                    min="0.1"
+                    className="w-full md:w-48 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
                   />
+                  <span className="text-[11px] text-slate-500 mt-1 block">
+                    По истечении этого времени бот автоматически вернет полные права на отправку сообщений.
+                  </span>
                 </div>
+
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Сообщение при муте</label>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Сообщение при муте</label>
                   <textarea 
                     value={filters.muteMessage}
                     onChange={(e) => onUpdateFilters({...filters, muteMessage: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all min-h-[100px]"
-                    placeholder="Используйте {hours} для подстановки времени"
+                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all min-h-[90px]"
+                    placeholder="Используйте {hours} для подстановки времени мута"
                   />
                 </div>
               </div>
             )}
           </div>
 
+          {/* Captcha Settings */}
           <div className="mt-8 pt-8 border-t border-slate-800 space-y-6">
-            <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Вступление в чат</h4>
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest">Вступление в чат и Каптча</h4>
+              {filters.captchaEnabled && (
+                <button
+                  onClick={() => handleBulkApply(['captchaEnabled', 'captchaType', 'captchaQuestion', 'captchaAnswer', 'autoApprove'])}
+                  disabled={isApplyingBulk}
+                  className="px-3 py-1.5 bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
+                >
+                  <Layers className="w-3.5 h-3.5" />
+                  <span>Применить каптчу ко всем чатам</span>
+                </button>
+              )}
+            </div>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
@@ -437,6 +589,70 @@ export const Moderation: React.FC<ModerationProps> = ({
                 </label>
               </div>
             </div>
+
+            {filters.captchaEnabled && (
+              <div className="animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-blue-900/30 shadow-inner space-y-5">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2.5 ml-1">
+                    Тип каптчи для защиты от ботов
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {[
+                      { id: 'random', title: '🎲 Случайный тип', desc: 'Автоматически чередует примеры и эмодзи' },
+                      { id: 'math', title: '🧮 Математическая', desc: 'Примеры (14+19, 45-18) с кнопками вариантов' },
+                      { id: 'emoji', title: '🎯 Эмодзи-загадка', desc: 'Выбор нужного предмета среди кнопок' },
+                      { id: 'button', title: '🔘 Подтверждение', desc: 'Кнопка "Я человек" с антибот-ловушками' },
+                      { id: 'custom', title: '✍️ Свой вопрос', desc: 'Ваш собственный вопрос и правильный ответ' },
+                    ].map(t => {
+                      const isSelected = (filters.captchaType || 'random') === t.id;
+                      return (
+                        <button
+                          key={t.id}
+                          type="button"
+                          onClick={() => onUpdateFilters({ ...filters, captchaType: t.id as any })}
+                          className={`p-3.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                            isSelected 
+                              ? 'bg-blue-950/60 border-blue-500 text-white shadow-md shadow-blue-950/50' 
+                              : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700 hover:bg-slate-900'
+                          }`}
+                        >
+                          <div className="font-bold text-xs flex items-center justify-between mb-1">
+                            <span>{t.title}</span>
+                            {isSelected && <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>}
+                          </div>
+                          <p className="text-[11px] text-slate-400 leading-tight">{t.desc}</p>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {filters.captchaType === 'custom' && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-3 border-t border-slate-800/80 animate-in fade-in">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Вопрос каптчи</label>
+                      <input 
+                        type="text" 
+                        value={filters.captchaQuestion}
+                        onChange={(e) => onUpdateFilters({...filters, captchaQuestion: e.target.value})}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                        placeholder="Напр: Сколько колес у мотоцикла?"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">Ответ каптчи</label>
+                      <input 
+                        type="text" 
+                        value={filters.captchaAnswer}
+                        onChange={(e) => onUpdateFilters({...filters, captchaAnswer: e.target.value})}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
+                        placeholder="Напр: 2"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
 
             <div className="p-6 bg-slate-950 rounded-2xl border border-slate-800 shadow-inner space-y-6">
               <div className="flex items-center justify-between">
@@ -463,31 +679,6 @@ export const Moderation: React.FC<ModerationProps> = ({
                 </div>
               )}
             </div>
-
-            {filters.captchaEnabled && (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-in slide-in-from-top-4 duration-500 bg-slate-950 p-6 rounded-2xl border border-slate-800 shadow-inner">
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Вопрос каптчи</label>
-                  <input 
-                    type="text" 
-                    value={filters.captchaQuestion}
-                    onChange={(e) => onUpdateFilters({...filters, captchaQuestion: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                    placeholder="Напр: Сколько будет 2+2?"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Ответ каптчи</label>
-                  <input 
-                    type="text" 
-                    value={filters.captchaAnswer}
-                    onChange={(e) => onUpdateFilters({...filters, captchaAnswer: e.target.value})}
-                    className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all"
-                    placeholder="Напр: 4"
-                  />
-                </div>
-              </div>
-            )}
           </div>
 
           <div className="mt-8 pt-8 border-t border-slate-800 space-y-6">
