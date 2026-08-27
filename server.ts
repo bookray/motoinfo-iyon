@@ -268,12 +268,14 @@ app.use(express.json({ limit: '20mb' }));
 app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 let detectedAppUrl: string | null = null;
-let isPollingMode = false;
+let isPollingMode = true;
 
 app.use((req: any, res: any, next: any) => {
   const xForwardedHost = req.headers['x-forwarded-host'];
   const xForwardedProto = req.headers['x-forwarded-proto'] || 'https';
-  if ((xForwardedHost || process.env.APP_URL) && !isPollingMode) {
+  const useWebhooks = process.env.USE_WEBHOOKS === 'true';
+
+  if ((xForwardedHost || process.env.APP_URL) && useWebhooks) {
     let currentUrl = '';
     if (process.env.APP_URL) {
       currentUrl = process.env.APP_URL;
@@ -290,36 +292,19 @@ app.use((req: any, res: any, next: any) => {
         ? null 
         : ((typeof settings !== 'undefined' && settings.cfWorkerUrl) || process.env.CF_WORKER_URL);
 
-      if (bot) {
+      if (bot && cfWorkerUrl) {
         // Run webhook registration asynchronously in the background so it doesn't block the HTTP request
         (async () => {
-          if (cfWorkerUrl) {
-            try {
-              const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
-              const targetWebhookUrl = `${cleanWorkerUrl}/webhook?target=${encodeURIComponent(currentUrl + "/telegram")}`;
-              console.log(`Re-registering Telegram Webhook with target (background): ${targetWebhookUrl}`);
-              await bot.telegram.setWebhook(targetWebhookUrl, {
-                allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
-              });
-              console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
-            } catch (err: any) {
-              console.error(`Failed to auto-update webhook with target URL:`, err.message || err);
-            }
-          } else if (currentUrl.startsWith('https')) {
-            // If Cloudflare is disabled but we have a secure public URL, we can set up direct webhooks
-            try {
-              const token = settings.botToken || process.env.TELEGRAM_BOT_TOKEN || '';
-              if (token) {
-                const secretPath = `/telegraf-webhook/${token.split(':')[1]}`;
-                console.log(`Re-registering direct Telegram Webhook at (background): ${currentUrl}${secretPath}`);
-                await bot.telegram.setWebhook(`${currentUrl}${secretPath}`, {
-                  allowed_updates: ['message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request']
-                });
-                console.log(`Telegram bot webhook directly configured at: ${currentUrl}${secretPath}`);
-              }
-            } catch (err: any) {
-              console.error(`Failed to auto-update direct webhook URL:`, err.message || err);
-            }
+          try {
+            const cleanWorkerUrl = cfWorkerUrl.replace(/\/$/, "");
+            const targetWebhookUrl = `${cleanWorkerUrl}/webhook?target=${encodeURIComponent(currentUrl + "/telegram")}`;
+            console.log(`Re-registering Telegram Webhook with target (background): ${targetWebhookUrl}`);
+            await bot.telegram.setWebhook(targetWebhookUrl, {
+              allowed_updates: ['message', 'edited_message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
+            });
+            console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
+          } catch (err: any) {
+            console.error(`Failed to auto-update webhook with target URL:`, err.message || err);
           }
         })();
       }
@@ -4879,12 +4864,120 @@ async function initBot(token: string) {
       console.error(`Unhandled error while processing ${ctx.updateType}:`, err);
     });
     
-    bot.start((ctx) => {
-      console.log('Start command received');
-      ctx.reply('TeleGuard Admin Bot is active!');
+    bot.start(async (ctx) => {
+      try {
+        const userId = ctx.from?.id.toString();
+        const username = ctx.from?.username;
+        const chatType = ctx.chat?.type;
+        const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
+        const isCurrentAdmin = username && username.toLowerCase() === adminUsername;
+
+        console.log(`[Bot] /start received from user ${userId} (@${username || 'none'}) in ${chatType} chat ${ctx.chat?.id}`);
+
+        if (chatType === 'private') {
+          if (isCurrentAdmin) {
+            process.env.BOOKRAY_CHAT_ID = ctx.chat.id.toString();
+            const activeChatsCount = chats.filter(c => c.active).length;
+            const todayDate = new Date().toISOString().split('T')[0];
+            const todayStat = statsHistory.find(s => s.date === todayDate);
+            const todayMsgs = todayStat?.msgs || 0;
+
+            const text = `👋 <b>Здравствуйте, Администратор (@${username})!</b>\n\n` +
+              `🤖 <b>TeleGuard Bot</b> активен и работает в штатном режиме.\n\n` +
+              `📊 <b>Текущее состояние:</b>\n` +
+              `• Активных чатов под защитой: <b>${activeChatsCount}</b>\n` +
+              `• Сообщений сегодня: <b>${todayMsgs}</b>\n` +
+              `• Режим связи: <b>${isPollingMode ? 'Long Polling (активен)' : 'Webhook (активен)'}</b>\n` +
+              `• Ваш Telegram ID: <code>${userId}</code>\n\n` +
+              `⚙️ <b>Команды:</b>\n` +
+              `• /status — подробная статистика и статус бота\n` +
+              `• /id — узнать ID текущего чата и пользователя\n` +
+              `• /setinfo — назначить этот чат для логов входов/выходов\n` +
+              `• /digest — ручной запуск ИИ-суммаризации\n` +
+              `• /help — справка`;
+
+            await ctx.reply(text, { parse_mode: 'HTML' });
+          } else {
+            const session = captchaSessions.get(userId);
+            if (session) {
+              await ctx.reply(`🛡 <b>Проверка Captcha:</b>\n\nПожалуйста, отправьте правильный ответ на капчу в ответном сообщении, чтобы подтвердить заявку на вступление в группу.`, { parse_mode: 'HTML' });
+            } else {
+              await ctx.reply(`👋 <b>Привет! Я TeleGuard Bot.</b>\n\nЯ защищаю группы и чаты от спама, нежелательных ссылок, мата и собираю аналитику активности.\n\n🆔 Ваш Telegram ID: <code>${userId}</code>`, { parse_mode: 'HTML' });
+            }
+          }
+        } else {
+          await ctx.reply(`🛡 <b>TeleGuard Bot активен в этом чате!</b>\n\nМодерация, фильтры безопасности и сбор аналитики работают в реальном времени.`, { parse_mode: 'HTML' });
+        }
+      } catch (err) {
+        console.error('Error in /start handler:', err);
+        ctx.reply('TeleGuard Bot активен!').catch(() => {});
+      }
     });
-    
-    bot.help((ctx) => ctx.reply('Send me a message to see how I can help you manage your chats.'));
+
+    bot.command('help', async (ctx) => {
+      try {
+        const text = `📖 <b>Справка по командам TeleGuard:</b>\n\n` +
+          `• /start — Запуск и главное меню бота\n` +
+          `• /status — Проверка статуса, аптайма и сегодняшней статистики\n` +
+          `• /id — Показать ID чата и ваш ID\n` +
+          `• /ping — Проверка отклика бота\n` +
+          `• /setinfo — Назначить чат для уведомлений (только для администратора)\n` +
+          `• /digest или /summary — Сформировать ИИ-сводку за 24 часа\n\n` +
+          `Управление фильтрами, списками и расписанием доступно в веб-панели.`;
+        await ctx.reply(text, { parse_mode: 'HTML' });
+      } catch (e) {
+        ctx.reply('TeleGuard Bot: справка доступна в панели управления.').catch(() => {});
+      }
+    });
+
+    bot.command('status', async (ctx) => {
+      try {
+        const activeChats = chats.filter(c => c.active);
+        const totalMembers = activeChats.reduce((acc, c) => acc + (c.members || 0), 0);
+        const todayDate = new Date().toISOString().split('T')[0];
+        const todayStat = statsHistory.find(s => s.date === todayDate);
+        const todayMsgs = todayStat?.msgs || 0;
+        const todayJoins = todayStat?.joins || 0;
+        const todayLeaves = todayStat?.leaves || 0;
+
+        const text = `📊 <b>Статус системы TeleGuard:</b>\n\n` +
+          `• Состояние бота: 🟢 <b>Онлайн</b>\n` +
+          `• Режим подключения: <b>${isPollingMode ? 'Long Polling (надёжный)' : 'Webhook'}</b>\n` +
+          `• Подключенных чатов: <b>${activeChats.length}</b> (активных)\n` +
+          `• Всего участников в базе: <b>${totalMembers}</b>\n` +
+          `• Сообщений сегодня: <b>${todayMsgs}</b>\n` +
+          `• Входов в группы сегодня: <b>${todayJoins}</b>\n` +
+          `• Выходов сегодня: <b>${todayLeaves}</b>\n` +
+          `• ID текущего чата: <code>${ctx.chat.id}</code>`;
+
+        await ctx.reply(text, { parse_mode: 'HTML' });
+      } catch (e: any) {
+        ctx.reply('Ошибка получения статуса: ' + (e?.message || e)).catch(() => {});
+      }
+    });
+
+    bot.command('id', async (ctx) => {
+      try {
+        const chatId = ctx.chat.id;
+        const userId = ctx.from?.id;
+        const chatType = ctx.chat.type;
+        const title = 'title' in ctx.chat ? (ctx.chat as any).title : 'Личный диалог';
+        await ctx.reply(`🆔 <b>Информация об ID:</b>\n\n• Ваш User ID: <code>${userId}</code>\n• Chat ID: <code>${chatId}</code>\n• Название чата: <b>${escapeHtml(title)}</b>\n• Тип: <code>${chatType}</code>`, { parse_mode: 'HTML' });
+      } catch (e: any) {
+        ctx.reply(`ID: ${ctx.chat.id}`).catch(() => {});
+      }
+    });
+
+    bot.command('ping', async (ctx) => {
+      try {
+        const now = Date.now();
+        const msg = await ctx.reply('🏓 Понг...');
+        const latency = Date.now() - now;
+        await ctx.telegram.editMessageText(ctx.chat.id, msg.message_id, undefined, `🏓 <b>Понг!</b> Бот онлайн.\n⚡ Задержка: <code>${latency}ms</code>`, { parse_mode: 'HTML' });
+      } catch (e) {
+        ctx.reply('🏓 Понг! Бот онлайн.').catch(() => {});
+      }
+    });
     
     // Track pinned messages directly via pinned_message event
     bot.on('pinned_message', async (ctx) => {
@@ -4954,9 +5047,10 @@ async function initBot(token: string) {
       if (chatType === 'private' && !isCurrentAdmin) {
         // If they are in a captcha session, we must allow it
         const session = captchaSessions.get(userId);
-        if (!session) {
+        const isCommand = ctx.message && 'text' in ctx.message && ctx.message.text.startsWith('/');
+        if (!session && !isCommand) {
           console.log(`Unauthorized private interaction from @${username || 'No Username'} (${userId})`);
-          await ctx.reply(`❌ Доступ запрещен.\nВаш Telegram-логин: @${username || '(не установлен)'}\n\nЭтот бот может управляться только администратором, указанным в настройках панели (текущий: @${settings.adminTelegramUsername || 'bookray'}). Если вы являетесь владельцем бота, укажите ваш точный никнейм в настройках панели управления (раздел Настройки).`).catch(e => console.error('Failed to send auth warning:', e));
+          await ctx.reply(`ℹ️ <b>TeleGuard Bot</b>\n\nВаш Telegram-логин: @${username || '(не установлен)'}\nВаш ID: <code>${userId}</code>\n\nБот управляется администратором панели (@${settings.adminTelegramUsername || 'bookray'}).\n\nДоступные команды: /id, /status, /help`, { parse_mode: 'HTML' }).catch(e => console.error('Failed to send auth warning:', e));
           return; 
         }
       }
@@ -6949,7 +7043,7 @@ async function initBot(token: string) {
 
     const appUrl = process.env.APP_URL || process.env.VITE_APP_URL;
     const isDevelopmentPreview = process.env.NODE_ENV !== 'production' || !!process.env.APPLET_ID;
-    const useWebhooks = process.env.USE_WEBHOOKS === 'true';
+    const useWebhooks = process.env.USE_WEBHOOKS === 'true' && !!cfWorkerUrl && !settings.disableCloudflare;
 
     if (useWebhooks && cfWorkerUrl) {
       try {
@@ -6963,19 +7057,10 @@ async function initBot(token: string) {
         await bot.telegram.setWebhook(targetWebhookUrl, {
           allowed_updates: ['message', 'edited_message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         });
+        isPollingMode = false;
         console.log(`Telegram bot webhook successfully configured via Cloudflare Worker at: ${cleanWorkerUrl}`);
       } catch (err: any) {
         console.error('Failed to set webhook on Telegram:', err?.message || err);
-      }
-    } else if (useWebhooks && appUrl && appUrl.startsWith('https')) {
-      const secretPath = `/telegraf-webhook/${token.split(':')[1]}`;
-      try {
-        await bot.telegram.setWebhook(`${appUrl}${secretPath}`, {
-          allowed_updates: ['message', 'edited_message', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
-        });
-        console.log(`Telegram bot initialized with direct webhook at ${appUrl}${secretPath}`);
-      } catch (err: any) {
-        console.error('Failed to register webhook directly:', err?.message || err);
       }
     } else {
       try {

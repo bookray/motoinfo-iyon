@@ -466,13 +466,18 @@ const App: React.FC = () => {
     : chats.filter(c => c && currentUser.assignedChatIds?.includes(c.id));
 
   return (
-    <div className="min-h-screen bg-slate-950 flex text-slate-200 font-sans">
-      {sidebarOpen && <div className="fixed inset-0 bg-black/60 z-20 md:hidden backdrop-blur-sm" onClick={() => setSidebarOpen(false)} />}
+    <div className="h-full min-h-[100dvh] bg-slate-950 flex text-slate-200 font-sans overflow-hidden">
+      {sidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/70 z-40 md:hidden backdrop-blur-sm transition-opacity" 
+          onClick={() => setSidebarOpen(false)} 
+        />
+      )}
 
-      <aside className={`fixed md:sticky top-0 h-screen w-72 bg-slate-900 border-r border-slate-800 z-30 transform transition-transform duration-300 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0`}>
-        <div className="p-6 flex items-center justify-between">
+      <aside className={`fixed md:sticky top-0 h-full h-[100dvh] max-h-[100dvh] w-72 bg-slate-900 border-r border-slate-800 z-50 transform transition-transform duration-300 ease-in-out flex flex-col ${sidebarOpen ? 'translate-x-0 shadow-2xl shadow-black/80' : '-translate-x-full'} md:translate-x-0`}>
+        <div className="p-5 sm:p-6 flex items-center justify-between border-b border-slate-800/60">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl flex items-center justify-center shadow-lg shadow-blue-900/20">
+            <div className="w-10 h-10 bg-gradient-to-br from-blue-600 to-indigo-700 rounded-xl flex items-center justify-center shadow-lg shadow-blue-900/20 shrink-0">
               <Shield className="w-6 h-6 text-white" />
             </div>
             <div>
@@ -480,9 +485,16 @@ const App: React.FC = () => {
               <p className="text-xs text-slate-500 font-medium">Админ-панель</p>
             </div>
           </div>
+          <button
+            onClick={() => setSidebarOpen(false)}
+            className="md:hidden p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800 transition-colors"
+            aria-label="Закрыть меню"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
 
-        <nav className="px-4 space-y-2 mt-4 flex-1">
+        <nav className="px-4 py-4 space-y-1.5 flex-1 overflow-y-auto custom-scrollbar">
           <NavItem tab={Tab.STATISTICS} icon={LayoutDashboard} label="Статистика" />
           {currentUser.role !== UserRole.ADVERTISER && (
             <>
@@ -507,16 +519,22 @@ const App: React.FC = () => {
         </nav>
       </aside>
 
-      <main className="flex-1 min-w-0 h-screen overflow-y-auto">
-        <header className="sticky top-0 bg-slate-950/80 backdrop-blur-md border-b border-slate-800 px-6 py-4 flex items-center justify-between z-10">
-          <div className="flex items-center gap-4">
-            <button onClick={() => setSidebarOpen(true)} className="md:hidden text-slate-400"><Menu className="w-6 h-6" /></button>
-            <h2 className="text-xl font-semibold text-white">
+      <main className="flex-1 min-w-0 h-full h-[100dvh] max-h-[100dvh] overflow-y-auto overflow-x-hidden flex flex-col">
+        <header className="sticky top-0 bg-slate-950/95 backdrop-blur-md border-b border-slate-800 px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between z-30 shrink-0 pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <div className="flex items-center gap-3 sm:gap-4 min-w-0">
+            <button 
+              onClick={() => setSidebarOpen(true)} 
+              className="md:hidden p-2 text-slate-300 hover:text-white bg-slate-900/90 active:bg-slate-800 border border-slate-800 rounded-xl transition-all shadow-sm active:scale-95 touch-manipulation cursor-pointer shrink-0"
+              aria-label="Открыть меню"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
+            <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight truncate">
               {activeTab.replace('_', ' ')}
             </h2>
           </div>
           
-          <div className="flex items-center gap-6">
+          <div className="flex items-center gap-3 sm:gap-6 shrink-0">
             {isLoading && <div className="text-xs text-blue-400 animate-pulse hidden sm:block">Подключение...</div>}
             
             {currentUser.role !== UserRole.ADVERTISER && (
@@ -575,10 +593,10 @@ const App: React.FC = () => {
               </div>
             )}
 
-            <div className="flex items-center gap-3 border-l border-slate-800 pl-6">
+            <div className="flex items-center gap-3 border-l border-slate-800 pl-4 sm:pl-6">
               <button 
                 onClick={handleLogout}
-                className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-rose-400 rounded-lg border border-slate-800 transition-all"
+                className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-rose-400 rounded-lg border border-slate-800 transition-all cursor-pointer"
                 title="Выйти"
               >
                 <LogOut className="w-4 h-4" />
@@ -587,7 +605,7 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <div className="p-6 md:p-8 max-w-7xl mx-auto">
+        <div className="p-4 sm:p-6 md:p-8 max-w-7xl mx-auto w-full flex-1">
           {!isLoading && dbStatus === 'offline' && (
             <div className="mb-6 bg-rose-500/10 border border-rose-500/50 p-4 rounded-xl flex items-center gap-4 text-rose-200">
               <div className="p-2 bg-rose-500/20 rounded-lg"><X className="w-5 h-5" /></div>
