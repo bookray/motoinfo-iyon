@@ -27,7 +27,8 @@ import {
   Flame,
   Laugh,
   Heart,
-  Sun
+  Sun,
+  ShieldCheck
 } from 'lucide-react';
 import { Chat, ChatDigestConfig, ChatDigestEntry, DigestToneStyle, TONE_STYLES, TONE_STYLE_LIST } from '../types';
 
@@ -155,6 +156,12 @@ export const TelegramFormattedDigest: React.FC<{ text: string }> = ({ text }) =>
     </div>
   );
 };
+
+const TIME_SLOTS_5MIN = Array.from({ length: 288 }, (_, i) => {
+  const h = Math.floor((i * 5) / 60);
+  const m = (i * 5) % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+});
 
 export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   const [configs, setConfigs] = useState<ChatDigestConfig[]>([]);
@@ -325,6 +332,25 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
     }
   };
 
+  const handleAutoDistribute = async (startTime = '21:00') => {
+    try {
+      const res = await authFetch('/api/digests/distribute-schedules', {
+        method: 'POST',
+        body: JSON.stringify({ startTime, intervalMinutes: 5 })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setConfigs(data.configs);
+        showNotification('Время отправки успешно распределено по чатам с шагом 5 минут без пересечений!');
+      } else {
+        const err = await res.json();
+        showNotification(err.error || 'Не удалось распределить время', 'error');
+      }
+    } catch (e: any) {
+      showNotification(e.message || 'Ошибка сети', 'error');
+    }
+  };
+
   const handleUpdateConfig = async (chatId: string, updates: Partial<ChatDigestConfig>) => {
     const chatIdStr = String(chatId);
     const existing = configs.find(c => String(c.chatId) === chatIdStr) || {
@@ -336,8 +362,25 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
       includeTopics: true,
       includeStats: true,
       autoSendTelegram: true,
-      toneStyle: 'default'
+      toneStyle: 'default',
+      minMessageThreshold: 10
     };
+
+    const willBeEnabled = updates.enabled !== undefined ? updates.enabled : existing.enabled;
+    const targetTime = updates.scheduleTime || existing.scheduleTime || '21:00';
+
+    // Conflict check: ensure no two active chats share the exact same posting time
+    if (willBeEnabled) {
+      const conflict = configs.find(c => String(c.chatId) !== chatIdStr && c.enabled && c.scheduleTime === targetTime);
+      if (conflict && (updates.enabled === true || (updates.scheduleTime && updates.scheduleTime !== existing.scheduleTime))) {
+        showNotification(
+          `Время ${targetTime} уже закреплено за чатом «${conflict.chatTitle || conflict.chatId}». Выберите другое свободное время.`,
+          'error',
+          'Используйте «⚡ Распределить с шагом 5 мин», чтобы автоматически разнести время всех чатов.'
+        );
+        return;
+      }
+    }
 
     const updated = { ...existing, ...updates };
 
@@ -382,7 +425,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
           }
           return prev;
         });
-        showNotification(err.error || 'Ошибка при сохранении настроек', 'error');
+        showNotification(err.error || 'Ошибка при сохранении настроек', 'error', err.suggestedTime ? `Предлагаемое свободное время: ${err.suggestedTime}` : undefined);
       }
     } catch (e: any) {
       // Rollback on network error
@@ -737,12 +780,20 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
       {/* TAB 1: SCHEDULE & CHATS */}
       {activeSubTab === 'schedule' && (
         <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-bold text-white">Автоматическая отправка по расписанию</h3>
-              <p className="text-sm text-slate-400">Настройте ежедневное время генерации и отправки дайджеста для каждого чата</p>
+              <p className="text-sm text-slate-400">Настройте уникальное ежедневное время генерации и отправки дайджеста для каждого чата</p>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => handleAutoDistribute('21:00')}
+                className="px-3.5 py-1.5 bg-gradient-to-r from-amber-500/20 to-orange-500/20 hover:from-amber-500/30 hover:to-orange-500/30 text-amber-300 border border-amber-500/40 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm shadow-amber-950/20"
+                title="Автоматически распределить время постинга активных чатов с интервалом 5 минут начиная с 21:00"
+              >
+                <Zap className="w-3.5 h-3.5 text-amber-400" />
+                <span>⚡ Распределить время (шаг 5 мин)</span>
+              </button>
               <button
                 onClick={() => handleBulkToggleAll(true)}
                 className="px-3 py-1.5 bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 rounded-lg text-xs font-semibold transition-all"
@@ -757,9 +808,44 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
               >
                 Отключить для всех
               </button>
-              <div className="text-xs text-slate-400 font-mono bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-lg flex items-center gap-2">
-                <Calendar className="w-3.5 h-3.5 text-blue-400" />
-                <span>Период: 24 часа</span>
+            </div>
+          </div>
+
+          {/* Key System Rules Banner */}
+          <div className="p-4 bg-slate-900/90 border border-slate-800 rounded-2xl grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+            <div className="flex items-start gap-2.5">
+              <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 shrink-0">
+                <Clock className="w-4 h-4" />
+              </div>
+              <div className="space-y-0.5">
+                <span className="font-bold text-slate-200">Разбег 5 минут (Защита 429)</span>
+                <p className="text-slate-400 leading-relaxed">
+                  Каждый чат занимает отдельный слот. Одно и то же время нельзя выбрать двум чатам одновременно.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2.5">
+              <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                <ShieldCheck className="w-4 h-4" />
+              </div>
+              <div className="space-y-0.5">
+                <span className="font-bold text-slate-200">100% Обезличенность</span>
+                <p className="text-slate-400 leading-relaxed">
+                  В дайджесте полностью исключены имена, ники и теги участников. Описывается только суть и факты.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2.5">
+              <div className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 shrink-0">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div className="space-y-0.5">
+                <span className="font-bold text-slate-200">Умный порог активности (&gt;10)</span>
+                <p className="text-slate-400 leading-relaxed">
+                  Пустой дайджест не спамит каждый день. Публикуется 1 раз после дня с &gt;10 сообщ. и ждет новой волны.
+                </p>
               </div>
             </div>
           </div>
@@ -784,7 +870,8 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                   includeTopics: true,
                   includeStats: true,
                   autoSendTelegram: true,
-                  toneStyle: 'default'
+                  toneStyle: 'default',
+                  minMessageThreshold: 10
                 };
 
                 const isGeneratingThis = isGenerating && generatingChatId === chat.id;
@@ -805,7 +892,14 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                         </div>
                         <div className="min-w-0">
                           <h4 className="font-bold text-white text-base truncate">{chat.title}</h4>
-                          <span className="text-xs text-slate-400 font-mono">ID: {chat.id}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-slate-400 font-mono">ID: {chat.id}</span>
+                            {config.enabled && (
+                              <span className="px-2 py-0.5 rounded-full bg-blue-500/15 text-blue-400 font-mono text-[11px] font-bold border border-blue-500/20">
+                                ⏱️ {config.scheduleTime || '21:00'}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -823,17 +917,30 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                     <div className="grid grid-cols-2 gap-3 pt-2">
                       <div className="bg-slate-950 border border-slate-800 rounded-xl p-3">
                         <label className="text-[11px] font-bold text-slate-500 uppercase block mb-1">
-                          Время отправки
+                          Время отправки (интервал 5 мин)
                         </label>
                         <div className="flex items-center gap-2">
-                          <Clock className="w-4 h-4 text-blue-400" />
-                          <input
-                            type="time"
+                          <Clock className="w-4 h-4 text-blue-400 shrink-0" />
+                          <select
                             value={config.scheduleTime || '21:00'}
                             disabled={!config.enabled}
                             onChange={(e) => handleUpdateConfig(chat.id, { scheduleTime: e.target.value })}
-                            className="bg-transparent text-white font-mono text-sm focus:outline-none disabled:opacity-40"
-                          />
+                            className="bg-transparent text-white font-mono text-xs focus:outline-none w-full disabled:opacity-40"
+                          >
+                            {TIME_SLOTS_5MIN.map(slot => {
+                              const occupiedBy = configs.find(c => String(c.chatId) !== String(chat.id) && c.enabled && c.scheduleTime === slot);
+                              return (
+                                <option 
+                                  key={slot} 
+                                  value={slot} 
+                                  disabled={!!occupiedBy}
+                                  className={occupiedBy ? 'text-slate-600 bg-slate-950' : 'text-slate-100 bg-slate-900'}
+                                >
+                                  {slot} {occupiedBy ? `(Занято: ${occupiedBy.chatTitle.slice(0, 16)}...)` : ''}
+                                </option>
+                              );
+                            })}
+                          </select>
                         </div>
                       </div>
 
@@ -874,6 +981,21 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                           </option>
                         ))}
                       </select>
+                    </div>
+
+                    {/* Activity wave and threshold status */}
+                    <div className="bg-slate-950/60 border border-slate-800/80 rounded-xl px-3 py-2 text-[11px] text-slate-400 flex items-center justify-between">
+                      <span className="flex items-center gap-1.5">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                        <span>Порог отправки: <strong>&ge; 10 сообщений</strong></span>
+                      </span>
+                      {config.lastWaveSummarizedAt ? (
+                        <span className="text-slate-500 text-[10px]">
+                          Волна от: {new Date(config.lastWaveSummarizedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                        </span>
+                      ) : (
+                        <span className="text-slate-500 text-[10px]">Ожидает первой волны</span>
+                      )}
                     </div>
 
                     <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-xs">

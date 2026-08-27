@@ -402,7 +402,7 @@ export interface ChatDigestConfig {
   chatId: string;
   chatTitle?: string;
   enabled: boolean;
-  scheduleTime: string; // "HH:mm" e.g. "21:00"
+  scheduleTime: string; // "HH:mm" e.g. "21:00" (5-minute step)
   targetChatId?: string;
   hoursBack?: number;
   includeTopics?: boolean;
@@ -410,8 +410,10 @@ export interface ChatDigestConfig {
   customPrompt?: string;
   toneStyle?: DigestToneStyle;
   autoSendTelegram?: boolean;
+  minMessageThreshold?: number; // Minimum messages required to trigger digest (default 10)
   lastGeneratedAt?: string;
   lastSentAt?: string;
+  lastWaveSummarizedAt?: string;
   status?: 'idle' | 'generating' | 'success' | 'error';
   lastError?: string;
 }

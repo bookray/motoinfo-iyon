@@ -2617,6 +2617,41 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
   }
 });
 
+function snapTo5MinuteSlot(timeStr: string): string {
+  if (!timeStr || typeof timeStr !== 'string') return '21:00';
+  const [hStr, mStr] = timeStr.split(':');
+  let h = parseInt(hStr, 10);
+  let m = parseInt(mStr, 10);
+  if (isNaN(h) || h < 0 || h > 23) h = 21;
+  if (isNaN(m) || m < 0 || m > 59) m = 0;
+  m = Math.round(m / 5) * 5;
+  if (m >= 60) {
+    m = 0;
+    h = (h + 1) % 24;
+  }
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+function findNextAvailable5MinSlot(preferredTime: string, chatId: string, configs: any[]): string {
+  let slot = snapTo5MinuteSlot(preferredTime);
+  let attempts = 0;
+  while (attempts < 288) {
+    const isTaken = configs.some(c => String(c.chatId) !== String(chatId) && c.enabled && c.scheduleTime === slot);
+    if (!isTaken) return slot;
+    
+    const [hStr, mStr] = slot.split(':');
+    let h = parseInt(hStr, 10);
+    let m = parseInt(mStr, 10) + 5;
+    if (m >= 60) {
+      m = 0;
+      h = (h + 1) % 24;
+    }
+    slot = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    attempts++;
+  }
+  return slot;
+}
+
 // Digest Configurations API
 app.get('/api/digests/configs', authenticateToken, (req, res) => {
   res.json(digestConfigs);
@@ -2632,19 +2667,41 @@ app.post('/api/digests/configs', authenticateToken, async (req, res) => {
     const chatIdStr = String(configData.chatId).trim();
     const chat = chats.find(c => String(c.id) === chatIdStr);
     const configIndex = digestConfigs.findIndex(c => String(c.chatId) === chatIdStr);
+    const existingConfig = configIndex >= 0 ? digestConfigs[configIndex] : null;
+
+    let targetTime = snapTo5MinuteSlot(configData.scheduleTime || existingConfig?.scheduleTime || '21:00');
+    const isEnabled = configData.enabled !== undefined ? !!configData.enabled : (existingConfig?.enabled || false);
+
+    // Strict exclusive time slot validation for enabled chats:
+    if (isEnabled) {
+      const conflict = digestConfigs.find(c => String(c.chatId) !== chatIdStr && c.enabled && c.scheduleTime === targetTime);
+      if (conflict) {
+        if (req.query.autoSlot === 'true' || configData.autoAssignSlot) {
+          targetTime = findNextAvailable5MinSlot(targetTime, chatIdStr, digestConfigs);
+        } else {
+          return res.status(409).json({
+            error: `Время ${targetTime} уже занято чатом «${conflict.chatTitle || conflict.chatId}». Выберите другое свободное время с интервалом 5 минут.`,
+            conflictingChat: conflict.chatTitle || conflict.chatId,
+            suggestedTime: findNextAvailable5MinSlot(targetTime, chatIdStr, digestConfigs)
+          });
+        }
+      }
+    }
 
     const updatedConfig = {
       chatId: chatIdStr,
-      chatTitle: chat?.title || configData.chatTitle || `Чат ${chatIdStr}`,
-      enabled: !!configData.enabled,
-      scheduleTime: configData.scheduleTime || '21:00',
-      hoursBack: Number(configData.hoursBack) || 24,
-      targetChatId: configData.targetChatId || chatIdStr,
-      customPrompt: configData.customPrompt || '',
-      toneStyle: configData.toneStyle || 'default',
-      autoSendTelegram: configData.autoSendTelegram !== undefined ? !!configData.autoSendTelegram : true,
-      lastGeneratedAt: configData.lastGeneratedAt || null,
-      lastSentAt: configData.lastSentAt || null
+      chatTitle: chat?.title || configData.chatTitle || existingConfig?.chatTitle || `Чат ${chatIdStr}`,
+      enabled: isEnabled,
+      scheduleTime: targetTime,
+      hoursBack: Number(configData.hoursBack) || existingConfig?.hoursBack || 24,
+      targetChatId: configData.targetChatId || existingConfig?.targetChatId || chatIdStr,
+      customPrompt: configData.customPrompt !== undefined ? configData.customPrompt : (existingConfig?.customPrompt || ''),
+      toneStyle: configData.toneStyle || existingConfig?.toneStyle || 'default',
+      autoSendTelegram: configData.autoSendTelegram !== undefined ? !!configData.autoSendTelegram : (existingConfig?.autoSendTelegram !== undefined ? existingConfig.autoSendTelegram : true),
+      minMessageThreshold: Number(configData.minMessageThreshold) || existingConfig?.minMessageThreshold || 10,
+      lastGeneratedAt: configData.lastGeneratedAt !== undefined ? configData.lastGeneratedAt : (existingConfig?.lastGeneratedAt || null),
+      lastSentAt: configData.lastSentAt !== undefined ? configData.lastSentAt : (existingConfig?.lastSentAt || null),
+      lastWaveSummarizedAt: configData.lastWaveSummarizedAt !== undefined ? configData.lastWaveSummarizedAt : (existingConfig?.lastWaveSummarizedAt || null)
     };
 
     if (configIndex >= 0) {
@@ -2667,23 +2724,46 @@ app.post('/api/digests/configs/bulk', authenticateToken, async (req, res) => {
   try {
     const { configs: newConfigs } = req.body;
     if (Array.isArray(newConfigs)) {
+      const assignedTimes = new Set<string>();
+
       for (const item of newConfigs) {
         if (!item.chatId) continue;
         const chatIdStr = String(item.chatId).trim();
         const chat = chats.find(c => String(c.id) === chatIdStr);
         const idx = digestConfigs.findIndex(c => String(c.chatId) === chatIdStr);
+        const existing = idx >= 0 ? digestConfigs[idx] : null;
+
+        let slot = snapTo5MinuteSlot(item.scheduleTime || existing?.scheduleTime || '21:00');
+        const isEnabled = item.enabled !== undefined ? !!item.enabled : (existing?.enabled || false);
+
+        if (isEnabled) {
+          while (assignedTimes.has(slot)) {
+            const [hStr, mStr] = slot.split(':');
+            let h = parseInt(hStr, 10);
+            let m = parseInt(mStr, 10) + 5;
+            if (m >= 60) {
+              m = 0;
+              h = (h + 1) % 24;
+            }
+            slot = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+          }
+          assignedTimes.add(slot);
+        }
+
         const updated = {
           chatId: chatIdStr,
-          chatTitle: chat?.title || item.chatTitle || `Чат ${chatIdStr}`,
-          enabled: !!item.enabled,
-          scheduleTime: item.scheduleTime || '21:00',
-          hoursBack: Number(item.hoursBack) || 24,
-          targetChatId: item.targetChatId || chatIdStr,
-          customPrompt: item.customPrompt || '',
-          toneStyle: item.toneStyle || 'default',
-          autoSendTelegram: item.autoSendTelegram !== undefined ? !!item.autoSendTelegram : true,
-          lastGeneratedAt: item.lastGeneratedAt || null,
-          lastSentAt: item.lastSentAt || null
+          chatTitle: chat?.title || item.chatTitle || existing?.chatTitle || `Чат ${chatIdStr}`,
+          enabled: isEnabled,
+          scheduleTime: slot,
+          hoursBack: Number(item.hoursBack) || existing?.hoursBack || 24,
+          targetChatId: item.targetChatId || existing?.targetChatId || chatIdStr,
+          customPrompt: item.customPrompt !== undefined ? item.customPrompt : (existing?.customPrompt || ''),
+          toneStyle: item.toneStyle || existing?.toneStyle || 'default',
+          autoSendTelegram: item.autoSendTelegram !== undefined ? !!item.autoSendTelegram : (existing?.autoSendTelegram !== undefined ? existing.autoSendTelegram : true),
+          minMessageThreshold: Number(item.minMessageThreshold) || existing?.minMessageThreshold || 10,
+          lastGeneratedAt: item.lastGeneratedAt !== undefined ? item.lastGeneratedAt : (existing?.lastGeneratedAt || null),
+          lastSentAt: item.lastSentAt !== undefined ? item.lastSentAt : (existing?.lastSentAt || null),
+          lastWaveSummarizedAt: item.lastWaveSummarizedAt !== undefined ? item.lastWaveSummarizedAt : (existing?.lastWaveSummarizedAt || null)
         };
         if (idx >= 0) {
           digestConfigs[idx] = { ...digestConfigs[idx], ...updated };
@@ -2693,12 +2773,44 @@ app.post('/api/digests/configs/bulk', authenticateToken, async (req, res) => {
       }
       const cleanedPayload = cleanData({ configs: digestConfigs });
       await db.collection('config').doc('digest_configs').set(cleanedPayload);
-      console.log(`[DigestConfigs] Bulk saved ${newConfigs.length} digest configurations.`);
+      console.log(`[DigestConfigs] Bulk saved ${newConfigs.length} digest configurations with 5-minute spacing.`);
     }
     res.json({ success: true, configs: digestConfigs });
   } catch (err) {
     console.error('[DigestConfigs] Bulk save failed:', err);
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.post('/api/digests/distribute-schedules', authenticateToken, async (req, res) => {
+  try {
+    const { startTime = '21:00', intervalMinutes = 5 } = req.body || {};
+    let [startH, startM] = (startTime || '21:00').split(':').map(Number);
+    if (isNaN(startH) || startH < 0 || startH > 23) startH = 21;
+    if (isNaN(startM) || startM < 0 || startM > 59) startM = 0;
+    startM = Math.round(startM / 5) * 5;
+
+    let curH = startH;
+    let curM = startM;
+    const step = Number(intervalMinutes) || 5;
+
+    const enabledConfigs = digestConfigs.filter(c => c.enabled);
+    for (const cfg of enabledConfigs) {
+      cfg.scheduleTime = `${String(curH).padStart(2, '0')}:${String(curM).padStart(2, '0')}`;
+      curM += step;
+      if (curM >= 60) {
+        curH = (curH + Math.floor(curM / 60)) % 24;
+        curM = curM % 60;
+      }
+    }
+
+    const cleanedPayload = cleanData({ configs: digestConfigs });
+    await db.collection('config').doc('digest_configs').set(cleanedPayload);
+    console.log(`[DigestConfigs] Auto-distributed ${enabledConfigs.length} chat digest times starting from ${startTime} with ${step}min step.`);
+    res.json({ success: true, configs: digestConfigs });
+  } catch (err: any) {
+    console.error('[DigestConfigs] Auto-distribute failed:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -3691,6 +3803,7 @@ interface DigestQueueTask {
   sendImmediately: boolean;
   targetChatId?: string;
   toneStyle?: string;
+  isScheduled?: boolean;
   resolve?: (digest: any) => void;
   reject?: (err: any) => void;
 }
@@ -3703,7 +3816,7 @@ function enqueueDigest(task: DigestQueueTask): Promise<any> {
     task.resolve = resolve;
     task.reject = reject;
     digestQueue.push(task);
-    console.log(`[DigestQueue] Enqueued task for chat ${task.chatId}. Queue size: ${digestQueue.length}`);
+    console.log(`[DigestQueue] Enqueued task for chat ${task.chatId} (scheduled: ${!!task.isScheduled}). Queue size: ${digestQueue.length}`);
     processNextDigestInQueue();
   });
 }
@@ -3722,12 +3835,13 @@ async function processNextDigestInQueue() {
       currentTask.customPrompt,
       currentTask.sendImmediately,
       currentTask.targetChatId,
-      currentTask.toneStyle || 'default'
+      currentTask.toneStyle || 'default',
+      currentTask.isScheduled || false
     );
     if (currentTask.resolve) currentTask.resolve(digest);
     console.log(`[DigestQueue] ✅ Finished digest for chat ${currentTask.chatId}`);
   } catch (err: any) {
-    console.error(`[DigestQueue] ❌ Task failed for chat ${currentTask.chatId}:`, err);
+    console.error(`[DigestQueue] ❌ Task failed/skipped for chat ${currentTask.chatId}:`, err?.message || err);
     if (currentTask.reject) currentTask.reject(err);
   } finally {
     // 2.5s pacing delay between AI generation requests to avoid quota spikes and rate limits
@@ -3743,19 +3857,23 @@ async function generateChatSummary(
   customPrompt?: string,
   sendImmediately = false,
   targetChatId?: string,
-  toneStyle: string = 'default'
+  toneStyle: string = 'default',
+  isScheduled = false
 ) {
-  const chat = chats.find(c => String(c.id) === String(chatId));
-  const chatTitle = chat ? chat.title : `Чат ${chatId}`;
+  const chatIdStr = String(chatId);
+  const chat = chats.find(c => String(c.id) === chatIdStr);
+  const chatTitle = chat ? chat.title : `Чат ${chatIdStr}`;
+  const config = digestConfigs.find(c => String(c.chatId) === chatIdStr);
+  const minThreshold = config?.minMessageThreshold || 10;
   const cutoffTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
 
-  let msgs = chatMessages.filter(m => String(m.chatId) === String(chatId) && m.timestamp >= cutoffTime);
+  let msgs = chatMessages.filter(m => String(m.chatId) === chatIdStr && m.timestamp >= cutoffTime);
 
   if (msgs.length === 0) {
     try {
       const snap = await db.collection('chat_messages').get();
       const allDbMsgs = snap.docs.map(d => d.data());
-      msgs = allDbMsgs.filter(m => String(m.chatId) === String(chatId) && m.timestamp >= cutoffTime);
+      msgs = allDbMsgs.filter(m => String(m.chatId) === chatIdStr && m.timestamp >= cutoffTime);
     } catch (e) {
       console.warn('Could not load chat messages from db:', e);
     }
@@ -3766,6 +3884,20 @@ async function generateChatSummary(
   const uniqueUsers = new Set(msgs.map(m => m.userId || m.username || m.firstName));
   const userCount = uniqueUsers.size;
   const messageCount = msgs.length;
+
+  // THRESHOLD CHECK: If less than 10 messages, do not generate/post
+  if (messageCount < minThreshold) {
+    throw new Error(`В чате за последние ${hoursBack}ч зафиксировано только ${messageCount} сообщений (требуется минимум ${minThreshold}). Дайджест не формируется, чтобы не беспокоить участников чата.`);
+  }
+
+  // WAVE CHECK FOR SCHEDULED POSTING:
+  // Post only ONCE after a day with > 10 messages, then stop until next wave of >= 10 messages
+  if (isScheduled && config?.lastWaveSummarizedAt) {
+    const newMsgsSinceLastWave = msgs.filter(m => m.timestamp > config.lastWaveSummarizedAt!).length;
+    if (newMsgsSinceLastWave < minThreshold) {
+      throw new Error(`В чате нет новой волны сообщений с момента предыдущего дайджеста (${newMsgsSinceLastWave} новых сообщ. < ${minThreshold}). Пропуск генерации до следующей волны активности.`);
+    }
+  }
 
   // RULE 3: Fetch recent MotoBlackList posts for the period
   const blackListPosts = await getRecentMotoBlackListPosts(hoursBack);
@@ -3780,15 +3912,15 @@ async function generateChatSummary(
 `;
   }
 
+  // 100% ANONYMIZED CHAT LOG: Never pass user names, firstNames, or usernames to LLM!
   let formattedChatLog = '';
   if (msgs.length > 0) {
     formattedChatLog = msgs.map(m => {
       const timeStr = new Date(m.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-      const author = m.firstName ? `${m.firstName}` : (m.username ? `${m.username}` : `Участник`);
-      return `[${timeStr}] ${author}: ${m.text}`;
+      return `[${timeStr}] Участник: ${m.text}`;
     }).join('\n');
   } else {
-    formattedChatLog = 'За указанный период в чате новых сообщений от участников не зафиксировано (активность спокойная/тишина в эфире).';
+    formattedChatLog = 'За указанный период в чате новых сообщений от участников не зафиксировано.';
   }
 
   const todayStr = new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -3807,12 +3939,11 @@ ${blackListContext}
 ${formattedChatLog.slice(0, 30000)}
 ---
 
-${messageCount < 5 ? 'Примечание: сообщений за период немного. Опиши кратко то, что было упомянуто, либо отметь, что день прошел тихо и спокойно в ожидании новых событий.' : ''}
-
 ПРАВИЛА И СТРУКТУРА ОФОРМЛЕНИЯ (СТРОГО TELEGRAM HTML):
-1. СТРОЖАЙШИЙ ЗАПРЕТ НА ТЕГИ УЧАСТНИКОВ (@username):
-   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать теги пользователей через знак @ (например, @username, @vasya), чтобы людям в Telegram не приходили навязчивые пуш-уведомления и спам!
-   - Если нужно упомянуть участника или автора реплики, называй его просто по обычному имени/нику БЕЗ символа @ (например: «Иван», «Павел», «байкер Fox» вместо «@ivan»).
+1. СТРОЖАЙШИЙ ПРИНЦИП ПОЛНОЙ ОБЕЗЛИЧЕННОСТИ (АНОНИМНОСТЬ):
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО называть или упоминать какие-либо имена участников, фамилии, никнеймы, теги (@username) или обращения к конкретным людям (никаких «Иван», «Павел», «Алексей», «байкер Fox» и т.д.).
+   - Текст дайджеста должен быть ПОЛНОСТЬЮ ОБЕЗЛИЧЕННЫМ. Описывай только суть: темы, события, технические вопросы, советы, мнения, споры, локации и решения от лица сообщества или в безличной форме (например: «Участники обсудили выбор масла...», «Было высказано мнение о...», «Поступило предложение организовать выезд...», «Один из мотоциклистов поделился опытом...», «В ходе дискуссии пришли к выводу...»).
+   - Ни одного имени человека в тексте дайджеста быть НЕ ДОЛЖНО!
 2. ЕДИНЫЙ ФОРМАТ: ЗАГОЛОВОК + ВЕСЬ ОСНОВНОЙ ТЕКСТ ПОД СВОРАЧИВАЮЩИЙСЯ ПОДКАТ (<blockquote expandable>):
    - В дайджесте в открытом виде (снаружи) выводятся только приветствие/шапка с датой и краткие однострочные заголовки тем/разделов.
    - ВСЁ основное содержимое каждой темы, все детали обсуждений, споры, советы, анонсы, цитаты и описание атмосферы дня ОБЯЗАТЕЛЬНО помещай под сворачивающийся блок:
@@ -3833,7 +3964,7 @@ ${messageCount < 5 ? 'Примечание: сообщений за период
 📅 <i>${todayStr}</i>
 
 🔥 <b>[Тема 1: Краткий однострочный заголовок]</b>
-<blockquote expandable>Развернутое описание темы 1: кто что предлагал, к чему пришли, аргументы и подробности без тегов @.</blockquote>
+<blockquote expandable>Развернутое обезличенное описание темы 1: что обсуждалось, какие варианты предлагались, аргументы и подробности без имен.</blockquote>
 
 🔥 <b>[Тема 2: Краткий однострочный заголовок]</b>
 <blockquote expandable>Развернутое описание темы 2: подробности, ключевые мысли и выводы.</blockquote>
@@ -3845,12 +3976,12 @@ ${messageCount < 5 ? 'Примечание: сообщений за период
 <blockquote expandable>Информация о запланированных сборах, маршрутах и важных объявлениях.</blockquote>
 
 👥 <b>Атмосфера и итоги дня</b>
-<blockquote expandable>Краткая характеристика настроения в чате и общие выводы дня в выбранном стиле.</blockquote>
+<blockquote expandable>Краткая характеристика настроения в чате и общие выводы дня в выбранном стиле без упоминания конкретных персоналий.</blockquote>
 ${blackListPosts.length > 0 ? `
 🚨 <b>Сводка MotoBlackList</b>
 <blockquote expandable>⚠️ На канале <a href="${blackListPosts[blackListPosts.length - 1].url}">@MotoBlackList вышел новый пост</a>: «${blackListPosts[blackListPosts.length - 1].text}». Будьте бдительны при сделках!</blockquote>` : ''}
 
-Сформируй дайджест на русском языке, согласно выбранному стилю повествования, строго соблюдая правило "заголовок + весь текст под <blockquote expandable>" и без тегов @username.`;
+Сформируй дайджест на русском языке, согласно выбранному стилю повествования, строго соблюдая правило "заголовок + весь текст под <blockquote expandable>", ПОЛНУЮ ОБЕЗЛИЧЕННОСТЬ без каких-либо имён и без тегов @username.`;
 
   let rawSummaryText = '';
   try {
@@ -3887,6 +4018,16 @@ ${blackListPosts.length > 0 ? `
     } catch (sendErr) {
       console.error(`Failed to send digest to Telegram chat ${destinationChatId}:`, sendErr);
     }
+  }
+
+  // Update last wave timestamp on config so we don't repeat until next wave of >= 10 messages
+  if (config) {
+    config.lastWaveSummarizedAt = msgs[msgs.length - 1]?.timestamp || new Date().toISOString();
+    config.lastGeneratedAt = new Date().toISOString();
+    if (digestEntry.sentToTelegram) {
+      config.lastSentAt = new Date().toISOString();
+    }
+    db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs })).catch(e => console.warn('Failed to update config wave timestamp:', e));
   }
 
   chatDigests.unshift(digestEntry);
@@ -7321,14 +7462,15 @@ async function startServer() {
           customPrompt: config.customPrompt,
           sendImmediately: config.autoSendTelegram !== false,
           targetChatId: config.targetChatId,
-          toneStyle: config.toneStyle || 'default'
+          toneStyle: config.toneStyle || 'default',
+          isScheduled: true
         }).then(async () => {
           config.lastGeneratedAt = new Date().toISOString();
           config.lastSentAt = new Date().toISOString();
           await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs }));
           console.log(`[AI Digest] ✅ Sequential queue completed scheduled digest for chat ${config.chatId}`);
         }).catch(async (digestErr: any) => {
-          if (digestErr?.message?.includes('минимум 10')) {
+          if (digestErr?.message?.includes('минимум 10') || digestErr?.message?.includes('волны')) {
             console.log(`[AI Digest] ℹ️ Skipped chat ${config.chatId} (${config.chatTitle || 'chat'}): ${digestErr.message}`);
           } else {
             console.error(`[AI Digest] ❌ Failed scheduled digest in queue for chat ${config.chatId}:`, digestErr);
