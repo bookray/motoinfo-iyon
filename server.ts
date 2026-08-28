@@ -10,6 +10,8 @@ import bcrypt from 'bcryptjs';
 import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
 import { FilterSettings, Chat, BotSettings, ActiveMuteEntry } from './types';
+import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary } from './chatsCatalog';
+import { generateAllStaticPages, renderChatHtmlPage } from './generateSitePages';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -4019,6 +4021,36 @@ ${blackListPosts.length > 0 ? `
   if (chatDigests.length > 200) chatDigests.pop();
   queueWrite('chat_digests', digestEntry.id, cleanData(digestEntry));
 
+  // Sync to 30-day website catalog summaries archive
+  try {
+    const catalogMatch = findChatInCatalog(chatTitle) || findChatInCatalog(chatIdStr) || findChatInCatalog(chat?.username || '');
+    const targetSlug = catalogMatch ? catalogMatch.slug : chatIdStr;
+    const todayDateStr = new Date().toISOString().split('T')[0];
+    const dayLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(new Date());
+
+    const catalogDailySummary: ChatDailySummary = {
+      id: `sum_${targetSlug}_${todayDateStr}_${digestEntry.id}`,
+      chatSlug: targetSlug,
+      date: todayDateStr,
+      dayLabel: dayLabel,
+      title: `Дайджест за ${dayLabel}`,
+      messageCount: messageCount,
+      activeUsersCount: userCount,
+      topics: [
+        { emoji: '🔥', title: 'Обсуждения дня и ключевые вопросы', description: 'Основные темы, разобранные участниками в ходе дискуссий.' },
+        { emoji: '💡', title: 'Советы, ремонт и рекомендации', description: 'Полезные технические решения и ссылки, упомянутые в чате.' }
+      ],
+      rawSummaryHtml: summaryText,
+      createdAt: new Date().toISOString()
+    };
+
+    addChatSummary(targetSlug, catalogDailySummary);
+    // Regenerate static pages to reflect latest summary
+    generateAllStaticPages(path.join(process.cwd(), 'site'));
+  } catch (syncErr) {
+    console.warn('[ChatCatalog] Не удалось синхронизировать дайджест с каталогом:', syncErr);
+  }
+
   await addLog({
     id: Math.random().toString(36).substr(2, 9),
     timestamp: new Date().toISOString(),
@@ -7458,6 +7490,232 @@ app.post('/api/broadcast/delete', authenticateToken, async (req, res) => {
   res.json({ success: true, results });
 });
 
+// ==========================================
+// PUBLIC CHATS STATS API FOR MOTOTG.RU
+// ==========================================
+let publicStatsCache: {
+  timestamp: number;
+  data: any;
+} | null = null;
+
+async function generatePublicChatsStats(forceRefresh = false) {
+  const now = Date.now();
+  const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+  
+  // Return cached result if fresh and not forced (cache valid for 24 hours)
+  if (!forceRefresh && publicStatsCache && (now - publicStatsCache.timestamp < ONE_DAY_MS)) {
+    return publicStatsCache.data;
+  }
+
+  const twentyFourHoursAgo = now - ONE_DAY_MS;
+  const todayDateStr = new Date().toISOString().split('T')[0];
+  const yesterdayDate = new Date(now - ONE_DAY_MS).toISOString().split('T')[0];
+
+  const todayStats = statsHistory.find(s => s.date === todayDateStr);
+  const yesterdayStats = statsHistory.find(s => s.date === yesterdayDate);
+
+  const results: any[] = [];
+  let totalMembers = 0;
+  let totalMessages24h = 0;
+
+  // Track all managed active chats
+  const chatList = chats.length > 0 ? chats : [];
+
+  for (const chat of chatList) {
+    if (!chat) continue;
+    const chatIdStr = String(chat.id);
+    
+    // 1. Calculate messages in last 24h
+    let messages24h = 0;
+    
+    // Check in-memory chat messages first
+    const recentMsgs = chatMessages.filter(m => String(m.chatId) === chatIdStr && m.timestamp >= twentyFourHoursAgo);
+    if (recentMsgs.length > 0) {
+      messages24h = recentMsgs.length;
+    } else {
+      // Fallback to statsHistory chatStats
+      const todayCount = todayStats?.chatStats?.[chatIdStr]?.msgs || 0;
+      const yesterdayCount = yesterdayStats?.chatStats?.[chatIdStr]?.msgs || 0;
+      messages24h = todayCount + Math.round(yesterdayCount * 0.5);
+    }
+
+    // 2. Members count
+    let members = chat.members || 0;
+    if ((!members || forceRefresh) && bot && chat.active) {
+      try {
+        const count = await bot.telegram.getChatMembersCount(chat.id);
+        if (typeof count === 'number') {
+          members = count;
+          chat.members = count;
+        }
+      } catch (e) {
+        // Ignore API limits/permissions errors
+      }
+    }
+
+    totalMembers += members;
+    totalMessages24h += messages24h;
+
+    // Requirement: if messages < 10, display "Нет данных"
+    const messagesText = messages24h >= 10 ? `${messages24h}` : 'Нет данных';
+
+    const username = chat.username ? chat.username.replace('@', '') : '';
+    const link = chat.link || (username ? `https://t.me/${username}` : '');
+
+    results.push({
+      id: chat.id,
+      title: chat.title,
+      username: username,
+      link: link,
+      members: members,
+      messages24h: messages24h,
+      messagesText: messagesText,
+      active: chat.active !== false
+    });
+  }
+
+  const payload = {
+    success: true,
+    updatedAt: new Date().toISOString(),
+    nextUpdateAt: new Date(now + ONE_DAY_MS).toISOString(),
+    totalChats: results.length,
+    totalMembers: totalMembers,
+    totalMessages24h: totalMessages24h,
+    chats: results
+  };
+
+  publicStatsCache = {
+    timestamp: now,
+    data: payload
+  };
+
+  // Save snapshot to firestore
+  try {
+    await db.collection('config').doc('public_chats_stats').set({
+      timestamp: now,
+      data: payload
+    });
+  } catch (e) {
+    console.warn('[PublicStats] Не удалось сохранить кэш в Firestore:', e);
+  }
+
+  return payload;
+}
+
+// Public API endpoints for website
+app.get(['/api/public/chats-stats', '/api/public/chat-stats'], async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Cache-Control', 'public, max-age=3600'); // 1 hour browser caching
+
+  try {
+    const forceRefresh = req.query.refresh === 'true' || req.query.force === 'true';
+    const stats = await generatePublicChatsStats(forceRefresh);
+    res.json(stats);
+  } catch (error: any) {
+    console.error('Public stats error:', error);
+    res.status(500).json({ success: false, error: 'Ошибка получения статистики чатов' });
+  }
+});
+
+// Full Catalog with Metadata and Summaries Status
+app.get('/api/public/chats-catalog', async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  try {
+    const stats = await generatePublicChatsStats();
+    const statsMap = new Map((stats.chats || []).map((c: any) => [c.username?.toLowerCase() || '', c]));
+
+    const catalogWithLiveStats = CHATS_CATALOG.map(chat => {
+      const live = statsMap.get(chat.username.toLowerCase()) || {};
+      const summaries = getChatSummaries(chat.slug);
+      return {
+        ...chat,
+        liveMembers: (live as any).members || chat.estimatedMembers,
+        liveMessages24h: (live as any).messages24h || 0,
+        liveMessagesText: (live as any).messagesText || 'Нет данных',
+        totalSummariesCount: summaries.length,
+        latestSummaryDate: summaries[0]?.date || null,
+        pageUrl: `/chats/${chat.slug}.html`
+      };
+    });
+
+    res.json({
+      success: true,
+      totalChats: catalogWithLiveStats.length,
+      chats: catalogWithLiveStats
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Single Chat Details & Last 30 Daily Summaries
+app.get(['/api/public/chat/:slugOrUsername', '/api/public/chat-details'], async (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  try {
+    const rawTarget = req.params.slugOrUsername || (req.query.slug as string) || (req.query.username as string) || (req.query.id as string);
+    const target = Array.isArray(rawTarget) ? rawTarget[0] : String(rawTarget || '');
+    if (!target) {
+      return res.status(400).json({ success: false, error: 'Не указан slug или username чата' });
+    }
+
+    const chat = findChatInCatalog(target);
+    if (!chat) {
+      return res.status(404).json({ success: false, error: 'Чат не найден в каталоге' });
+    }
+
+    const stats = await generatePublicChatsStats();
+    const live = (stats.chats || []).find((c: any) => c.username?.toLowerCase() === chat.username.toLowerCase()) || {};
+    const summaries = getChatSummaries(chat.slug);
+
+    res.json({
+      success: true,
+      chat: {
+        ...chat,
+        liveMembers: (live as any).members || chat.estimatedMembers,
+        liveMessages24h: (live as any).messages24h || 0,
+        liveMessagesText: (live as any).messagesText || 'Нет данных',
+      },
+      summariesCount: summaries.length,
+      maxRetentionDays: 30,
+      summaries: summaries // Exactly up to 30 items
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Static files for mototg site & individual chat pages
+const sitePath = path.join(process.cwd(), 'site');
+app.use('/mototg', express.static(sitePath));
+app.use('/site', express.static(sitePath));
+app.use('/chats', express.static(path.join(sitePath, 'chats')));
+
+// Chat page direct route: /chats/:slug or /chat/:slug
+app.get(['/chats/:slug', '/chat/:slug'], (req, res, next) => {
+  const rawSlug = req.params.slug;
+  const slugParam = (Array.isArray(rawSlug) ? rawSlug[0] : String(rawSlug || '')).replace('.html', '');
+  const chat = findChatInCatalog(slugParam);
+  if (chat) {
+    const filePath = path.join(sitePath, 'chats', `${chat.slug}.html`);
+    if (fs.existsSync(filePath)) {
+      return res.sendFile(filePath);
+    } else {
+      const summaries = getChatSummaries(chat.slug);
+      const html = renderChatHtmlPage(chat, summaries, '/site/');
+      return res.send(html);
+    }
+  }
+  next();
+});
+
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
@@ -7476,6 +7734,11 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
+    try {
+      generateAllStaticPages(sitePath);
+    } catch (genErr) {
+      console.warn('[SiteGen] Error generating static pages:', genErr);
+    }
   });
 
   // Scheduler background job
@@ -7637,6 +7900,16 @@ async function startServer() {
         }
         task.lastRun = now.toISOString();
         await db.collection('tasks').doc(task.id).set(task);
+      }
+    }
+
+    // Daily public stats snapshot update (runs at midnight 00:00 UTC or if cache is missing)
+    if (currentHHmm === '00:00' || !publicStatsCache) {
+      try {
+        await generatePublicChatsStats(true);
+        console.log('[PublicStats] ✅ Суточная статистика чатов успешно обновлена');
+      } catch (e) {
+        console.warn('[PublicStats] Ошибка автообновления статистики:', e);
       }
     }
   }, 60000); // Check every minute

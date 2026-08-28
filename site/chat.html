@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Загрузка чата... | MOTOTG</title>
+  <meta name="robots" content="noindex,follow">
+  <link rel="icon" href="assets/img/c23f0286-8e57-4dd1-8e07-7b56b5b93810-5550045.jpeg" type="image/jpeg">
+  <script>
+    // Universal router for chat.html?slug=... or ?id=... or ?username=...
+    const urlParams = new URLSearchParams(window.location.search);
+    const slug = urlParams.get('slug') || urlParams.get('id') || urlParams.get('username') || urlParams.get('chat');
+    if (slug) {
+      const cleanSlug = slug.toLowerCase().replace('@', '');
+      window.location.replace('chats/' + cleanSlug + '.html');
+    } else {
+      window.location.replace('index.html');
+    }
+  </script>
+</head>
+<body style="background:#0f1117;color:#fff;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;">
+  <p>Загрузка страницы чата...</p>
+</body>
+</html>
