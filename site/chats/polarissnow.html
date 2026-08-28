@@ -17,6 +17,9 @@
   <!-- Favicon -->
   <link rel="icon" href="../assets/img/c23f0286-8e57-4dd1-8e07-7b56b5b93810-5550045.jpeg" type="image/jpeg">
 
+  <!-- Remote Admin API Config (Connects to http://155.212.162.1:3000) -->
+  <script src="../config.js"></script>
+
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -785,7 +788,7 @@
               </div>
               <div class="stat-box">
                 <span class="stat-label">За 24 часа</span>
-                <span class="stat-value highlight-blue" id="live-24h-count">15 сообщ.</span>
+                <span class="stat-value highlight-blue" id="live-24h-count">25 сообщ.</span>
               </div>
               <div class="stat-box">
                 <span class="stat-label">Архив дайджестов</span>
@@ -835,18 +838,18 @@
           <div class="summary-meta-left">
             <span class="summary-date-badge">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-              28 августа 2026 г.
+              Обзор обсуждений за последние 24 часа
             </span>
             <span class="latest-tag">Свежий выпуск</span>
           </div>
           <div class="summary-stats-badges">
-            <span class="stat-badge" title="Сообщений за сутки">💬 15 сообщ.</span>
-            <span class="stat-badge" title="Активных участников">👥 8 чел.</span>
+            <span class="stat-badge" title="Сообщений за сутки">💬 25 сообщ.</span>
+            <span class="stat-badge" title="Активных участников">👥 5 чел.</span>
           </div>
         </div>
 
         <div class="summary-topics-preview">
-          <span class="topic-pill">🔧 Техобслуживание, замена расходников и подготовка</span> <span class="topic-pill">🏍️ Выбор резины, давление в шинах и держак на асфальте/грунте</span> <span class="topic-pill">🛡️ Защитные дуги, клетки и экипировка для безопасности</span>
+          <span class="topic-pill">� Модернизация системы охлаждения: радиаторы STS, брызговики и термостаты</span> <span class="topic-pill">� Надежность моторов Liberty: геометрия поршневой, R/S и переделка 600 в 800</span> <span class="topic-pill">� Полезные советы и технические решения</span> <span class="topic-pill">� Атмосфера и итоги дня</span>
         </div>
 
         <details class="summary-details-block" open>
@@ -861,31 +864,52 @@
               
       <div class="summary-topic-item">
         <div class="summary-topic-header">
-          <span class="topic-emoji">🔧</span>
-          <span class="topic-title">Техобслуживание, замена расходников и подготовка</span>
+          <span class="topic-emoji">�</span>
+          <span class="topic-title">Модернизация системы охлаждения: радиаторы STS, брызговики и термостаты</span>
         </div>
         <div class="summary-topic-body">
-          <p>Участники детально обсудили подбор моторного масла по вязкости и допускам для Polaris PRO-RMK Khaos 850 / 9R / Boost (Matryx), интервалы замены тормозной жидкости и прокачку контуров. Также был разобран вопрос ресурса свечей зажигания и своевременной чистки воздушного фильтра перед активным сезоном.</p>
+          <p>В чате развернулась подробная дискуссия о борьбе с перегревом снегоходов при езде по укатанным трассам и льду:
+
+• Увеличенные радиаторы: Обсудили заказ кастомного радиатора 3-го поколения от STS увеличенного размера (до 120 см). Такое решение увеличивает площадь теплоотдачи примерно на 30% и объём антифриза, что позволяет дольше удерживать рабочую температуру и быстрее остывать.
+• Влияние брызговика: Отметили, что подрезание брызговика (например, на 11 см) снижает эффективность охлаждения, так как он помогает закидывать снег на тоннель.
+• Кофр на тоннеле: Установка кофра на специальный подиум помогает улучшить охлаждение, так как плотно прилегающий к тоннелю кофр мешает рассеиванию тепла.
+• Доработка термостата: Затронули опыт установки выносного термостата от BRP вместо штатного. Однако подчеркнули, что излишне занижать температуру не стоит — мотору нужен правильный тепловой режим при открытии и закрытии термостата. На 850-х моторах термостат уже перенесен в расширительный бачок.</p>
         </div>
       </div>
     
       <div class="summary-topic-item">
         <div class="summary-topic-header">
-          <span class="topic-emoji">🏍️</span>
-          <span class="topic-title">Выбор резины, давление в шинах и держак на асфальте/грунте</span>
+          <span class="topic-emoji">�</span>
+          <span class="topic-title">Надежность моторов Liberty: геометрия поршневой, R/S и переделка 600 в 800</span>
         </div>
         <div class="summary-topic-body">
-          <p>В чате развернулась оживленная дискуссия о выборе покрышек для города и дальних поездок. Сравнивались модели Michelin, Pirelli, Metzeler и Mitas. Пришли к общему выводу о необходимости строго контролировать давление на холодную для предотвращения неравномерного износа протектора.</p>
+          <p>Участники погрузились в технические нюансы двигателей Polaris и причины разного ресурса 600-х и 800-х блоков:
+
+• Разница в «горячих» и «холодных» моторах: Отметили, что конструктивно моторы во многом одинаковы, а разница рабочих температур обусловлена формой головки и настройками термостата.
+• Геометрия и ресурс: Обсудили соотношение длины шатуна к ходу поршня (R/S). Старый Liberty M800 с раздельными цилиндрами (высота поршня 78 мм, R/S 1.94) и 600-е моторы (R/S 2.00) демонстрируют высокий ресурс и спокойно выхаживают по 5000+ км. На обычных 800-ках (поршень 73.3 мм, R/S 1.88) из-за короткого поршня и шатуна износ существенно выше.
+• Тюнинг и расточка: Поделились опытом доработки двигателей: 600-е моторы растачивают до 660 кубов, а также практикуется сборка 800-кубовых моторов на базе 600-го картера с доработкой блока, заменой коленвала и поршневой.</p>
         </div>
       </div>
     
       <div class="summary-topic-item">
         <div class="summary-topic-header">
-          <span class="topic-emoji">🛡️</span>
-          <span class="topic-title">Защитные дуги, клетки и экипировка для безопасности</span>
+          <span class="topic-emoji">�</span>
+          <span class="topic-title">Полезные советы и технические решения</span>
         </div>
         <div class="summary-topic-body">
-          <p>Обсуждались краш-тесты дуг от отечественных и зарубежных производителей. Участники сошлись во мнении, что наличие правильных слайдеров и надежных дуг многократно снижает риск повреждения крышек картера и радиатора даже при легких падениях на околонулевой скорости.</p>
+          <p>• Защита от перегрева: Приподнимайте кофр над тоннелем с помощью подиума — это освобождает площадь для рассеивания тепла.
+• Охлаждение на укатанке: Сохраняйте штатную длину брызговика для эффективного заброса снега на тоннель при езде по ратрачке или льду.
+• Доработка ДВС: При сборке надежного мотора стоит брать за основу геометрию 600-х блоков и учитывать опыт конверсий картеров.</p>
+        </div>
+      </div>
+    
+      <div class="summary-topic-item">
+        <div class="summary-topic-header">
+          <span class="topic-emoji">�</span>
+          <span class="topic-title">Атмосфера и итоги дня</span>
+        </div>
+        <div class="summary-topic-body">
+          <p>День прошел в продуктивных инженерных дискуссиях. Участники активно делились расчетами площади радиаторов, замерами деталей и техническим опытом по настройке охлаждения и доработке моторов.</p>
         </div>
       </div>
     
@@ -3028,35 +3052,110 @@
     </div>
   </footer>
 
-  <!-- Live Stats Auto-Updater Script -->
+  <!-- Live Stats & Real Digests Auto-Updater Script (Connects to Remote Admin API) -->
   <script>
-    // Live update stats from public API
     (async function() {
       try {
-        const response = await fetch('/api/public/chats-stats');
+        const getApiUrl = function(endpoint) {
+          if (typeof window.getMotoTgApiUrl === 'function') {
+            return window.getMotoTgApiUrl(endpoint);
+          }
+          const base = window.MOTOTG_API_BASE || (window.MOTOTG_CONFIG && window.MOTOTG_CONFIG.apiBase) || 'http://155.212.162.1:3000';
+          return base + endpoint;
+        };
+
+        const targetSlug = 'polarissnow';
+        const apiUrl = getApiUrl('/api/public/chat/' + encodeURIComponent(targetSlug));
+        
+        const response = await fetch(apiUrl, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          mode: 'cors'
+        });
+
         if (response.ok) {
           const data = await response.json();
-          if (data && data.chats) {
-            const currentChat = data.chats.find(c => 
-              (c.username && c.username.toLowerCase() === 'PolarisSnow'.toLowerCase()) ||
-              (c.id && String(c.id).includes('PolarisSnow'))
-            );
-            if (currentChat) {
-              if (currentChat.members) {
-                const memEl = document.getElementById('live-members-count');
-                if (memEl) memEl.textContent = currentChat.members.toLocaleString('ru-RU');
+          if (data && data.success && data.chat) {
+            // 1. Update live member counters
+            const liveChat = data.chat;
+            const memberCount = liveChat.liveMembers || liveChat.members;
+            if (memberCount) {
+              const memEl = document.getElementById('live-members-count');
+              if (memEl) memEl.textContent = Number(memberCount).toLocaleString('ru-RU');
+            }
+
+            const msgText = liveChat.liveMessagesText || liveChat.messagesText;
+            if (msgText) {
+              const msgEl = document.getElementById('live-24h-count');
+              if (msgEl) {
+                msgEl.textContent = msgText === 'Нет данных' ? 'Нет данных' : (msgText.includes('сообщ') ? msgText : msgText + ' сообщ.');
               }
-              if (currentChat.messagesText) {
-                const msgEl = document.getElementById('live-24h-count');
-                if (msgEl) {
-                  msgEl.textContent = currentChat.messagesText === 'Нет данных' ? 'Нет данных' : currentChat.messagesText + ' сообщ.';
+            }
+
+            // 2. If real digests are loaded from database, update the archive dynamically
+            if (Array.isArray(data.summaries) && data.summaries.length > 0) {
+              const hasReal = data.summaries.some(function(s) { return s.isReal === true; });
+              if (hasReal) {
+                const archiveContainer = document.getElementById('summaries-archive');
+                if (archiveContainer) {
+                  const freshCardsHtml = data.summaries.map(function(s, idx) {
+                    const isFirst = idx === 0;
+                    const isRealTag = s.isReal ? '<span style="background: #10b981; color: #000; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; margin-left: 6px; display: inline-flex; align-items: center; gap: 4px;">✓ ИИ Дайджест</span>' : '';
+                    
+                    const topicsPills = (s.topics || []).map(function(t) {
+                      const title = typeof t === 'string' ? t : (t.title || '');
+                      return '<span class="topic-pill">' + title + '</span>';
+                    }).join('');
+
+                    const topicsDetailed = (s.topics || []).map(function(t) {
+                      const title = typeof t === 'string' ? t : (t.title || '');
+                      const summary = typeof t === 'string' ? '' : (t.summary || '');
+                      const icon = (typeof t === 'object' && t.icon) ? t.icon : '📌';
+                      return '<div class="topic-detail-card">' +
+                        '<h4><span class="topic-icon">' + icon + '</span> ' + title + '</h4>' +
+                        (summary ? '<p class="topic-summary-text">' + summary + '</p>' : '') +
+                      '</div>';
+                    }).join('');
+
+                    return '<article class="summary-card ' + (isFirst ? 'is-latest' : '') + '" id="day-' + s.date + '">' +
+                      '<div class="summary-header">' +
+                        '<div class="summary-meta-left">' +
+                          '<span class="summary-date-badge">' +
+                            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>' +
+                            (s.dayLabel || s.date) +
+                          '</span>' +
+                          (isFirst ? '<span class="latest-tag">Свежий выпуск</span>' : '') +
+                          isRealTag +
+                        '</div>' +
+                        '<div class="summary-stats-badges">' +
+                          '<span class="stat-badge" title="Сообщений за сутки">💬 ' + (s.messageCount || 0) + ' сообщ.</span>' +
+                          '<span class="stat-badge" title="Активных участников">👥 ' + (s.activeUsersCount || 0) + ' чел.</span>' +
+                        '</div>' +
+                      '</div>' +
+                      '<div class="summary-topics-preview">' + topicsPills + '</div>' +
+                      '<details class="summary-details-block" ' + (isFirst ? 'open' : '') + '>' +
+                        '<summary class="summary-toggle-btn">' +
+                          '<span class="toggle-text-closed">Показать полный дайджест дня</span>' +
+                          '<span class="toggle-text-open">Свернуть дайджест</span>' +
+                          '<svg class="toggle-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>' +
+                        '</summary>' +
+                        '<div class="summary-content-body">' +
+                          '<div class="summary-topics-list">' + topicsDetailed + '</div>' +
+                          (s.summary ? '<div class="summary-atmosphere-box"><strong>👥 Итоги и выжимка:</strong><p>' + s.summary + '</p></div>' : '') +
+                        '</div>' +
+                      '</details>' +
+                    '</article>';
+                  }).join('
+');
+
+                  archiveContainer.innerHTML = freshCardsHtml;
                 }
               }
             }
           }
         }
       } catch (e) {
-        console.log('Stats loaded from static bundle');
+        console.log('[MOTOTG] Данные загружены из встроенного статического кэша');
       }
     })();
   </script>

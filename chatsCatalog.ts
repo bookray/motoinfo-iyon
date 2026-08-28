@@ -1,4 +1,5 @@
-// Motorcycle & Snowmobile Chat Catalog Definition with Descriptions & 30-Day Summaries Engine
+// Motorcycle & Snowmobile Chat Catalog Definition with Real Database Sync & AI-Digests Engine
+import { db } from './database';
 
 export interface ChatCatalogItem {
   slug: string;
@@ -31,7 +32,53 @@ export interface ChatDailySummary {
   }[];
   rawSummaryHtml: string;
   createdAt: string;
+  isReal?: boolean;
 }
+
+// Explicit Mapping between Catalog Slugs and Database Chat IDs / Titles
+export const CHAT_TO_DB_MAPPING: Record<string, { id?: string; altTitles?: string[]; altUsernames?: string[] }> = {
+  "motoblacklist": { id: "-2072373857896", altTitles: ["мото продавцы - чёрный список", "чёрный список", "черный список", "motoblacklist"], altUsernames: ["motoblacklist"] },
+  "bikersrus": { id: "-1001871635723", altTitles: ["гараж байкера", "моточат россия", "байкеры", "bikersrus"], altUsernames: ["bikersrus"] },
+  "motokostroma": { id: "-1001782738751", altTitles: ["мото 76rus", "мото кострома", "кострома"], altUsernames: ["motokostroma"] },
+  "motoivanovo": { id: "-1001782738751", altTitles: ["мото 76rus", "мото иваново", "иваново"], altUsernames: ["motoivanovo"] },
+  "motonnchat": { id: "-1001782738751", altTitles: ["мото 76rus", "мото нижний новгород", "нижний новгород"], altUsernames: ["motonnchat"] },
+  "motoyar": { id: "-1001782738751", altTitles: ["мото 76rus", "моточат ярославль", "ярославль"], altUsernames: ["motoyar"] },
+  "bmwgsclub": { id: "-1001733452018", altTitles: ["bmw gs россия", "bmw gs", "bmwgsclub"], altUsernames: ["bmwgsclub"] },
+  "bmwtourclub": { id: "-1001955618289", altTitles: ["bmw lt / rt / gt / st club", "bmw tour", "bmwtourclub"], altUsernames: ["bmwtourclub"] },
+  "bserus": { id: "-1001826966736", altTitles: ["bse чат", "bse", "bserus"], altUsernames: ["bserus"] },
+  "cfmotorus": { id: "-1001810298562", altTitles: ["cfmoto club", "cfmoto", "cfmotorus"], altUsernames: ["cfmotorus"] },
+  "hondacbrus": { id: "-1002464039058", altTitles: ["honda cb клуб", "honda cb", "hondacbrus"], altUsernames: ["hondacbrus"] },
+  "hondacbrrus": { id: "-1001799948311", altTitles: ["honda cbr россия", "honda cbr", "hondacbrrus"], altUsernames: ["hondacbrrus"] },
+  "hondaglrus": { id: "-1002300458331", altTitles: ["honda gold wing", "gold wing", "hondaglrus"], altUsernames: ["hondaglrus"] },
+  "steedrus": { id: "-1001734806989", altTitles: ["honda steed россия", "honda steed", "steedrus"], altUsernames: ["steedrus"] },
+  "hondarebel": { id: "-1002158355542", altTitles: ["honda vtx / vt чат", "honda rebel", "hondarebel"], altUsernames: ["hondarebel"] },
+  "varaderorus": { id: "-1001887901789", altTitles: ["honda varadero россия", "honda varadero", "transalp", "varaderorus"], altUsernames: ["varaderorus"] },
+  "hondavfrclub": { id: "-1002367446968", altTitles: ["honda vfr клуб", "honda vfr", "hondavfrclub"], altUsernames: ["hondavfrclub"] },
+  "hondavtx": { id: "-1002158355542", altTitles: ["honda vtx / vt чат", "honda vtx", "hondavtx"], altUsernames: ["hondavtx"] },
+  "er6club": { id: "-1001836683851", altTitles: ["kawasaki er6", "er6", "ninja 650", "er6club"], altUsernames: ["er6club"] },
+  "kleclub": { id: "-1001683056322", altTitles: ["kawasaki kl/kle россия", "kawasaki kl", "kle", "kleclub"], altUsernames: ["kleclub"] },
+  "zzrrus": { id: "-1001867583967", altTitles: ["kawasaki zzr / ninja россия", "kawasaki zzr", "zzr", "zzrrus"], altUsernames: ["zzrrus"] },
+  "ridersvulcan": { id: "-1002274275430", altTitles: ["kawasaki vulcan клуб", "kawasaki vulcan", "vulcan", "ridersvulcan"], altUsernames: ["ridersvulcan"] },
+  "dukerus": { id: "-1001849805773", altTitles: ["ktm duke чат", "ktm duke", "ktm", "dukerus"], altUsernames: ["dukerus"] },
+  "kayoclub": { id: "-1001741000843", altTitles: ["kayo россия", "kayo", "kayoclub"], altUsernames: ["kayoclub"] },
+  "gsfclub": { id: "-1001818008642", altTitles: ["suzuki bandit россия", "suzuki bandit", "bandit", "gsfclub"], altUsernames: ["gsfclub"] },
+  "djebelrus": { id: "-1001833524716", altTitles: ["suzuki djebel россия", "suzuki djebel", "djebel", "djebelrus"], altUsernames: ["djebelrus"] },
+  "gsxrclub": { id: "-1001837149695", altTitles: ["suzuki gsx-r россия", "suzuki gsx-r", "gsxr", "gsxrclub"], altUsernames: ["gsxrclub"] },
+  "boulevardrus": { id: "-1001545058497", altTitles: ["suzuki intruder / boulevard россия", "intruder", "boulevard", "boulevardrus"], altUsernames: ["boulevardrus"] },
+  "skywaveclub": { id: "-1001927190564", altTitles: ["suzuki skywave / burgman", "skywave", "burgman", "skywaveclub"], altUsernames: ["skywaveclub"] },
+  "vstromrus": { id: "-1001545836795", altTitles: ["v-strom россия чат", "v-strom", "vstromrus"], altUsernames: ["vstromrus"] },
+  "yamahastarrus": { id: "-1001735277068", altTitles: ["yamaha star россия", "yamaha star", "dragstar", "royal star", "yamahastarrus"], altUsernames: ["yamahastarrus"] },
+  "yamahafazerclub": { id: "-1001870018229", altTitles: ["yamaha fazer россия", "yamaha fazer", "fazer", "yamahafazerclub"], altUsernames: ["yamahafazerclub"] },
+  "r1r6club": { id: "-1001896456088", altTitles: ["yamaha r1 & r6", "yamaha r1", "r6", "r1r6club"], altUsernames: ["r1r6club"] },
+  "tenereclub": { id: "-1001894505954", altTitles: ["yamaha tenere & super tenere россия", "tenere", "super tenere", "tenereclub"], altUsernames: ["tenereclub"] },
+  "yamahatdmrus": { id: "-1001663751066", altTitles: ["yamaha tdm россия", "yamaha tdm", "tdm", "yamahatdmrus"], altUsernames: ["yamahatdmrus"] },
+  "vmaxrus": { id: "-1001528582393", altTitles: ["yamaha v-max россия", "yamaha v-max", "vmax", "vmaxrus"], altUsernames: ["vmaxrus"] },
+  "clubxjr": { id: "-1002080989246", altTitles: ["yamaha xjr и fj клуб", "yamaha xjr", "xjr", "clubxjr"], altUsernames: ["clubxjr"] },
+  "diversionclub": { id: "-1002398256015", altTitles: ["yamaha diversion клуб", "yamaha diversion", "diversion", "diversionclub"], altUsernames: ["diversionclub"] },
+  "brpsnow": { id: "-1002292994867", altTitles: ["снегоходы brp", "brp", "brpsnow"], altUsernames: ["brpsnow"] },
+  "polarissnow": { id: "-1002397139703", altTitles: ["снегоходы polaris", "polaris", "polarissnow"], altUsernames: ["polarissnow"] },
+  "stelscaptain": { id: "-1002049704707", altTitles: ["stels капитан", "капитан", "stelscaptain"], altUsernames: ["stelscaptain"] }
+};
 
 export const CHATS_CATALOG: ChatCatalogItem[] = [
   // --- Главные и регионы ---
@@ -58,72 +105,72 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     category: 'Регионы',
     image: 'assets/img/c23f0286-8e57-4dd1-8e07-7b56b5b93810-5550045.jpeg',
     shortDesc: 'Главное мотосообщество страны. Общение байкеров всех направлений.',
-    fullDesc: 'Центральный всероссийский моточат, объединяющий владельцев всех классов мотоциклов — от спортбайков и чопперов до хард-эндуро и турэндуро. Здесь обсуждаются мотопутешествия по всей России, законодательные инициативы, выбор первой техники, межсезонье и организация всероссийских мотофестивалей.',
-    modelsCovered: ['Все классы и бренды мотоциклов', 'Скутеры и трициклы', 'Кастомы и ретро'],
-    keyTopics: ['Мотопутешествия и дальняки по РФ', 'Выбор первого мотоцикла и экипа', 'ПДД и юридические вопросы для мотоциклистов', 'Взаимовыручка на дорогах'],
-    rules: ['Взаимное уважение к пилотам любых классов техники', 'Запрещена политика и коммерческий спам', 'Позитивная атмосфера и взаимопомощь'],
+    fullDesc: 'Единая площадка для мотоциклистов со всей России. Обсуждение дальних путешествий, мотофестивалей, юридических аспектов владения байком, взаимопомощь на дорогах в случае поломок и ДТП, поиск попутчиков для мотопрохватов и вечернее неформальное общение.',
+    modelsCovered: ['Туреры', 'Круизеры', 'Спортбайки', 'Эндуро / Турэндуро', 'Классики'],
+    keyTopics: ['Взаимопомощь на дорогах (Хелп-лист)', 'Мотопутешествия по России и миру', 'Новости мотоиндустрии и изменения в ПДД', 'Организация слетов и открытие/закрытие сезона'],
+    rules: ['Уважительное общение без перехода на личности', 'Запрещена несогласованная коммерческая реклама', 'Помощь попавшим в беду в приоритете'],
     telegramLink: 'https://t.me/BikersRus',
-    estimatedMembers: 22800
+    estimatedMembers: 18200
   },
   {
     slug: 'motokostroma',
-    username: 'MotoKostroma',
+    username: 'motokostroma',
     title: 'Моточат Кострома',
     brand: 'Кострома',
     category: 'Регионы',
-    image: 'assets/img/bedd0f9a-2766-4ff8-b0d4-ecafa738aefe-10671316.png',
-    shortDesc: 'Общение, совместные выезды и взаимопомощь мотоциклистов Костромы.',
-    fullDesc: 'Региональное сообщество мотоциклистов Костромской области. Организация вечерних прохватов по городу, поездок по живописным местам Поволжья, координация помощи при поломках и обсуждение местных мотосервисов.',
-    modelsCovered: ['Городские дорожники', 'Круизеры и чопперы', 'Эндуро и кросс'],
-    keyTopics: ['Сборы на вечерние прохваты в Костроме', 'Состояние дорог области', 'Локальные сервисы и шиномонтажи', 'Покатушки выходного дня'],
-    rules: ['Уважение к участникам', 'Запрещена несанкционированная реклама', 'Соблюдение ПДД при групповых выездах'],
-    telegramLink: 'https://t.me/MotoKostroma',
-    estimatedMembers: 1850
+    image: 'assets/img/f829ec0b-fe22-4876-bce7-74274c43920c-5431475.jpeg',
+    shortDesc: 'Сообщество мотоциклистов Костромы и Костромской области.',
+    fullDesc: 'Региональный чат мотоциклистов Костромской области: совместные покатушки выходного дня, информация о состоянии дорожного покрытия, проверенные мотосервисы и шиномонтажи города, оперативная помощь при поломках и дружеские встречи.',
+    modelsCovered: ['Все классы мототехники Костромы и области'],
+    keyTopics: ['Маршруты вокруг Волги и по области', 'Состояние асфальта и ямы на дорогах', 'Локальные сервисы и заказ запчастей', 'Городские мотопрохваты и сборы на набережной'],
+    rules: ['Уважение к местным мотобратьям', 'Без коммерческого спама', 'Координация покатушек'],
+    telegramLink: 'https://t.me/motokostroma',
+    estimatedMembers: 2400
   },
   {
     slug: 'motoivanovo',
-    username: 'MotoIvanovo',
+    username: 'motoivanovo',
     title: 'Моточат Иваново',
     brand: 'Иваново',
     category: 'Регионы',
-    image: 'assets/img/582e8902-82ce-410d-9c10-0b8706b0ff45-10671313.png',
-    shortDesc: 'Чат мотоциклистов Ивановской области: встречи, маршруты и помощь.',
-    fullDesc: 'Активный чат байкеров Иваново, Шуи, Кинешмы и всей области. Обсуждение мотокультуры, открытие и закрытие сезона, совместные поездки на треки и в соседние города Золотого кольца.',
-    modelsCovered: ['Стриты', 'Спортбайки', 'Турэндуро', 'Питбайки'],
-    keyTopics: ['Локальные мото-события и фестивали', 'Поиск попутчиков на дальние выезды', 'Обмен запчастями и экипировкой', 'Места для эндуро-тренировок'],
-    rules: ['Доброжелательное общение', 'Без оффтопа и спама', 'Помощь новичкам'],
-    telegramLink: 'https://t.me/MotoIvanovo',
-    estimatedMembers: 2100
+    image: 'assets/img/b8221b2d-1ea3-4cf1-97ba-2caeb4bf58ec-5431476.jpeg',
+    shortDesc: 'Мотосообщество Иваново и Ивановской области (Шуя, Кинешма, Тейково).',
+    fullDesc: 'Объединение байкеров Иваново и близлежащих городов. Координация выездов на треки и кроссовые трассы, обмен опытом владения дорожными и эндуро мотоциклами, обсуждение городских событий и взаимовыручка.',
+    modelsCovered: ['Дорожные мотоциклы', 'Эндуро и питбайки', 'Чопперы и круизеры'],
+    keyTopics: ['Эндуро-маршруты по лесам Ивановской области', 'Где обслужить вилку и карбюраторы в Иваново', 'Сборы мотоциклистов в центре города', 'Купля-продажа экипа из рук в руки'],
+    rules: ['Дружелюбие и взаимопомощь', 'Без мата и токсичности', 'Соблюдение безопасности'],
+    telegramLink: 'https://t.me/motoivanovo',
+    estimatedMembers: 3100
   },
   {
     slug: 'motonnchat',
-    username: 'MotoNNchat',
+    username: 'motonnchat',
     title: 'Моточат Нижний Новгород',
     brand: 'Нижний Новгород',
     category: 'Регионы',
-    image: 'assets/img/9b950146-49bf-45f3-b137-8abfa7f2c420-10671314.png',
-    shortDesc: 'Крупнейшее сообщество байкеров Нижегородской области.',
-    fullDesc: 'Главная точка сбора мотоциклистов Нижнего Новгорода. Сборы на Нижне-Волжской набережной и Стрелке, выезды на трек NRing (Нижегородское кольцо), обсуждение дорожной обстановки и оперативная помощь на дорогах.',
-    modelsCovered: ['Все типы мотоциклов', 'Трековые болиды', 'Туреры'],
-    keyTopics: ['Трек-дни на Нижегородском кольце (NRing)', 'Сборы на набережной и прохваты', 'Дорожная обстановка и камеры', 'Сервисы и мотоэвакуатор в НН'],
-    rules: ['Без мата и оскорблений', 'Реклама только с разрешения админов', 'Культура на дорогах'],
-    telegramLink: 'https://t.me/MotoNNchat',
-    estimatedMembers: 4200
+    image: 'assets/img/320bb269-83bc-42b7-a36c-2f98e578eb04-5431477.jpeg',
+    shortDesc: 'Мотосообщество Нижнего Новгорода, Дзержинска и Нижегородской области.',
+    fullDesc: 'Большой активный моточат Нижегородской области. Обсуждение покатушек по живописным набережным Оки и Волги, трек-дни на трассе «Нижегородское Кольцо» (NRing), проверенные специалисты по электрике и настройке карбюраторов/инжекторов.',
+    modelsCovered: ['Спортбайки', 'Турэндуро', 'Круизеры', 'Стриты и классики'],
+    keyTopics: ['Трек-дни и тренировки на NRing', 'Мотомаршруты: Городец, Арзамас, Дивеево', 'Местные мотомастерские и подбор масла', 'Взаимопомощь при поломках на трассах М7 и Р158'],
+    rules: ['Без спама и ссылок на сомнительные каналы', 'Уважение к участникам', 'Конструктивный диалог'],
+    telegramLink: 'https://t.me/motonnchat',
+    estimatedMembers: 5200
   },
   {
     slug: 'motoyar',
-    username: 'MotoYar',
+    username: 'motoyar',
     title: 'Моточат Ярославль',
     brand: 'Ярославль',
     category: 'Регионы',
-    image: 'assets/img/37b61f41-5105-406f-aa01-aad2a1493506-6415904.jpeg',
-    shortDesc: 'Мото-сообщество Ярославля, Рыбинска и области.',
-    fullDesc: 'Чат ярославских мотоциклистов: прохваты по набережным Волги и Которосли, выезды на Рыбинское водохранилище, обмен опытом по обслуживанию техники и поддержка мотодвижения региона.',
-    modelsCovered: ['Классики', 'Круизеры', 'Спорт-туристы', 'Эндуро'],
-    keyTopics: ['Поездки на Рыбинку и по области', 'Обслуживание и зимнее хранение мотоциклов', 'Сходки на Стрелке', 'Помощь на трассе М8'],
-    rules: ['Взаимовыручка', 'Чистота чата от спама', 'Позитив'],
-    telegramLink: 'https://t.me/MotoYar',
-    estimatedMembers: 3100
+    image: 'assets/img/31969ec6-89bf-4509-96cb-bb4df0894562-5431478.jpeg',
+    shortDesc: 'Мотосообщество Ярославля, Рыбинска, Переславля и Углича.',
+    fullDesc: 'Центральный чат мотоциклистов Золотого Кольца. Совместные поездки вокруг Рыбинского водохранилища, обмен опытом по подготовке мотоциклов к сезону, заказ качественных запчастей и расходников, встречи на Стрелке.',
+    modelsCovered: ['Все классы мотоциклов', 'Квадроциклы и снегоходы'],
+    keyTopics: ['Маршруты выходного дня по Золотому Кольцу', 'Эндуро вокруг Рыбинского водохранилища', 'Местные моторазборки и проверенные мастера', 'Оповещения о ДТП и поиск свидетелей'],
+    rules: ['Взаимоуважение', 'Запрещена политика и спам', 'Помощь на дороге — закон'],
+    telegramLink: 'https://t.me/motoyar',
+    estimatedMembers: 4100
   },
 
   // --- BMW ---
@@ -133,46 +180,46 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'BMW GS Club Russia',
     brand: 'BMW',
     category: 'Брендовые',
-    image: 'assets/img/7851f8e1-29ce-41e6-bdb5-78501f93b624-5431058.jpeg',
-    shortDesc: 'Легендарные турэндуро BMW: R1200GS, R1250GS, F850GS, F800GS и др.',
-    fullDesc: 'Крупнейшее сообщество владельцев легендарной серии «Гусей» BMW GS. Технические тонкости оппозитных и рядных моторов, карданный привод, подвеска Telelever/Paralever, выбор резины для асфальта и бездорожья, подготовка к кругосветным экспедициям и путешествиям на Памир, Алтай и Кольский.',
-    modelsCovered: ['R 1250 GS / Adventure', 'R 1200 GS (LC / воздушники)', 'R 1150 GS / R 1100 GS', 'F 850 GS / F 800 GS', 'F 750 GS / F 700 GS', 'G 310 GS'],
-    keyTopics: ['Обслуживание кардана и редуктора', 'Выбор дуг, кофров и ветрозащиты', 'Резина 50/50 и 80/20 для дальняков', 'Диагностика через GS-911 и MotoScan', 'Маршруты для тяжелых турэндуро'],
-    rules: ['Обсуждение техники по существу', 'Делимся проверенными артикулами запчастей', 'Уважение к владельцам любых объемов GS'],
+    image: 'assets/img/560f7ff1-ff16-43a9-8395-6593a201217e-5431479.jpeg',
+    shortDesc: 'Клуб легендарных турэндуро BMW серии GS: R1200GS, R1250GS, R1300GS, F800GS, F850GS, F900GS.',
+    fullDesc: 'Крупнейшее сообщество владельцев BMW GS («Гусей») в России. Обсуждение дальних экспедиций (Памир, Алтай, Кольский полуостров, Байкал), тонкости работы оппозитных моторов Boxer и электроники ESA/ShiftCam, выбор резины двойного назначения, доработка подвески и установка оригинального тюнинга Touratech и Wunderlich.',
+    modelsCovered: ['BMW R 1300 GS / Adventure', 'BMW R 1250 GS / ADV', 'BMW R 1200 GS (LC / Air-Cooled)', 'BMW F 850 GS / F 900 GS', 'BMW F 800 GS / F 700 GS', 'BMW G 310 GS'],
+    keyTopics: ['Обслуживание кардана и редуктора', 'Компьютерная диагностика GS-911 и ISTA', 'Выбор резины для тяжелых грунтов (Mitas E-07, Anakee Wild, Karoo)', 'Подготовка к автономным путешествиям'],
+    rules: ['Техническая грамотность и уважение', 'Делимся проверенными треками и точками GPS', 'Запрещен флуд не по теме'],
     telegramLink: 'https://t.me/bmwgsclub',
     estimatedMembers: 9800
   },
   {
     slug: 'bmwtourclub',
-    username: 'BMWtourclub',
+    username: 'bmwtourclub',
     title: 'BMW Tour Club (RT / LT / GT / GTL / ST)',
     brand: 'BMW',
     category: 'Брендовые',
-    image: 'assets/img/c7fcd2c0-d324-4565-8003-bbfbed873df3-5636102.jpeg',
-    shortDesc: 'Люксовые туреры BMW: R1200RT, R1250RT, K1600GT/GTL, K1200LT.',
-    fullDesc: 'Чат любителей комфортабельных путешествий первого класса на мотоциклах BMW серий RT, LT, GT и 6-цилиндровых K1600. Обсуждение аудиосистем, ветрозащиты, пневмоподвески ESA, круиз-контроля, сервиса оппозитов и рядных шестерок.',
-    modelsCovered: ['K 1600 GT / GTL / Bagger', 'R 1250 RT / R 1200 RT', 'K 1200 LT / K 1300 GT', 'F 800 GT / F 800 ST'],
-    keyTopics: ['Комфорт в дальних поездках', 'Электроника и блоки управления', 'Установка акустики и интеркомов', 'Замена сцепления и жидкостей', 'Кожаная экипировка и туринговые шлемы'],
-    rules: ['Конструктивные дискуссии', 'Без флуда в профильных темах', 'Уважение к одноклубникам'],
-    telegramLink: 'https://t.me/BMWtourclub',
-    estimatedMembers: 4700
+    image: 'assets/img/c5bf0ba1-c30f-48d6-9a2c-fdbafc9f8016-5431480.jpeg',
+    shortDesc: 'Люксовые туреры BMW: R1200RT, R1250RT, K1600GT / GTL / Bagger, K1200LT, R1200ST.',
+    fullDesc: 'Элитное сообщество владельцев туристических мотоциклов BMW. Тонкости 6-цилиндровых моторов K1600, оппозитников RT, обслуживание аудиосистем, электронных подвесок Dynamic ESA, ветрозащиты и комфортных сидений для поездок на 1500+ км в сутки («Жертва Нордкапа», «Iron Butt»).',
+    modelsCovered: ['BMW R 1250 RT / R 1200 RT (LC)', 'BMW K 1600 GT / GTL / Grand America / Bagger', 'BMW K 1200 LT / K 1100 LT', 'BMW R 1200 ST / R 1150 RT'],
+    keyTopics: ['Комфорт в сверхдальних путешествиях', 'Обслуживание 6-цилиндровых двигателей K1600', 'Интеграция гарнитур Sena/Cardo и навигации ConnectedRide', 'Регламент замены жидкостей и уход за пластиком'],
+    rules: ['Культура общения', 'Обмен опытом дальних поездок', 'Без коммерческого спама'],
+    telegramLink: 'https://t.me/bmwtourclub',
+    estimatedMembers: 6400
   },
 
-  // --- BSE & CFMOTO ---
+  // --- Китай и Питбайки ---
   {
     slug: 'bserus',
     username: 'BSErus',
     title: 'BSE Клуб Россия',
     brand: 'BSE',
     category: 'Брендовые',
-    image: 'assets/img/22d8f5c1-efda-473e-95cd-1b693460e6d3-5431479.jpeg',
-    shortDesc: 'Питбайки, кросс и эндуро мотоциклы BSE Racing.',
-    fullDesc: 'Клуб владельцев китайских мотоциклов и питбайков BSE (Bosuer). Настройка подвесок Fastace/MNT, регулировка карбюраторов Nibbi, подбор звезд и цепей, доработка прогрессии, выбор масел и преодоление хард-эндуро препятствий.',
-    modelsCovered: ['BSE Z1 / Z2 / Z3 / Z5 / Z7 / Z11', 'BSE M2 / M4 / M8', 'BSE RTC 300 / MX 250', 'Питбайки BSE PH10 / EX125 / EVO'],
-    keyTopics: ['Регулировка клапанов на моторах Zongshen 172FMM/174MN/177MM', 'Усиление рамы и защита картера', 'Смазка прогрессии и рулевой колонки', 'Эндуро-прохваты по лесам и карьерам'],
-    rules: ['Делимся опытом ремонта своими руками', 'Без токсичности', 'Помощь новичкам в выборе питбайка'],
+    image: 'assets/img/496f8b9e-64d6-4e55-87d2-7c98cf85d95e-5431481.jpeg',
+    shortDesc: 'Питбайки и эндуро мотоциклы BSE: Z1, Z2, Z3, Z5, Z7, Z8, RTC 300, EX 125.',
+    fullDesc: 'Клуб фанатов китайской мототехники BSE. Доработка и форсирование моторов Zongshen (172FMM, 174MN, 177MM, 182MN), регулировка клапанов, замена стоковой подвески, настройка карбюраторов Nibbi Racing и выбор надежных цепей.',
+    modelsCovered: ['BSE Z1 / Z2 / Z3 / Z4 / Z5 / Z6 / Z7 / Z8', 'BSE RTC 300 / RTC 250', 'BSE M2 / M4 / M8', 'BSE EX 125 / PH 125 / MX 125'],
+    keyTopics: ['Настройка карбюраторов Nibbi Racing PE/PWK', 'Усиление рамы и замена подшипников прогрессии', 'Подбор кроссовой резины и буксаторов', 'Регулировка клапанных зазоров 172/174/177 моторов'],
+    rules: ['Помощь новичкам без снобизма', 'Делимся проверенными продавцами с AliExpress/Ozon', 'Без мата'],
     telegramLink: 'https://t.me/BSErus',
-    estimatedMembers: 5600
+    estimatedMembers: 7600
   },
   {
     slug: 'cfmotorus',
@@ -180,61 +227,76 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'CFMOTO Клуб Россия',
     brand: 'CFMOTO',
     category: 'Брендовые',
-    image: 'assets/img/de102a7d-386f-47a0-b324-62bbc51ee49a-5636103.jpeg',
-    shortDesc: 'Мотоциклы и квадроциклы CFMOTO: 800MT, 700CL-X, 650MT, 450SR.',
-    fullDesc: 'Официальное комьюнити владельцев современной мототехники CFMOTO. Новейшие турэндуро 800MT и 450MT с моторами KTM, нео-ретро 700CL-X, спортбайки 450SR и квадроциклы CFORCE. Гарантийное обслуживание, прошивки блоков, тюнинг и путешествия.',
-    modelsCovered: ['CFMOTO 800MT / 450MT Touring', 'CFMOTO 700CL-X (Heritage / Sport / Adventure)', 'CFMOTO 450SR / 300SR', 'CFMOTO 650MT / 650GT', 'Квадроциклы CFORCE 600 / 800 / 1000'],
-    keyTopics: ['Обслуживание двигателей и электроники Bosch', 'Расходники и взаимозаменяемость с европейцами', 'Опыт дальних поездок на 800MT', 'Отзывы о дилерах и ТО'],
-    rules: ['Конструктивный диалог', 'Запрещены провокации', 'Делимся реальным опытом эксплуатации'],
+    image: 'assets/img/678a15a0-07bf-4632-9dfc-59eb4f4c45b8-5431482.jpeg',
+    shortDesc: 'Мотоциклы CFMOTO: 800MT, 700CL-X, 650MT, 450MT, 450SR, 300NK, 250NK.',
+    fullDesc: 'Официальное и независимое сообщество владельцев флагманских мотоциклов CFMOTO. Реальный опыт эксплуатации моторов KTM (LC8c в 800MT), прошивка блоков управления, подбор масел, установка кофров и решение детских болячек.',
+    modelsCovered: ['CFMOTO 800MT (Sport / Touring / Explore)', 'CFMOTO 450MT / 450SR / 450NK', 'CFMOTO 700CL-X (Heritage / Sport / Adventure)', 'CFMOTO 650MT / 650GT / 650NK', 'CFMOTO 800NK'],
+    keyTopics: ['Опыт гарантийного обслуживания у дилеров', 'Прошивки ЭБУ и отключение задушек', 'Сравнение 800MT с европейскими и японскими одноклассниками', 'Дооснащение для туризма (защита, кофры, свет)'],
+    rules: ['Конструктивные отзывы', 'Уважение к выбору техники', 'Без спама'],
     telegramLink: 'https://t.me/CFMOTOrus',
-    estimatedMembers: 7200
+    estimatedMembers: 8900
+  },
+  {
+    slug: 'kayoclub',
+    username: 'kayoclub',
+    title: 'KAYO Клуб Россия',
+    brand: 'KAYO',
+    category: 'Брендовые',
+    image: 'assets/img/d618d363-d34e-48a5-9b2f-da541bc8782a-5431483.jpeg',
+    shortDesc: 'Питбайки, кросс и эндуро KAYO: T2, T4, K1, K4, K6, KT250, Basic, TT125, TT140.',
+    fullDesc: 'Одно из самых массовых эндуро-сообществ России. Обслуживание народных мотоциклов KAYO T2 Enduro, K1, K4, переборка вилок FastAce, замена масла в амортизаторах, тюнинг карбюраторов и покатушки по хард-эндуро трассам.',
+    modelsCovered: ['KAYO T2 250 Enduro / T4 / T6', 'KAYO K1 250 MX / K2 / K4 / K6-R', 'KAYO KT 250 (2-тактный)', 'KAYO Basic YX125 / TT125 / TT140 / Evolution'],
+    keyTopics: ['Протяжка спиц и правильная затяжка соединений', 'Замена стоковой цепи на сальниковую 520 (DID, SFR)', 'Ремонт электростартера и обгонной муфты', 'Настройка жесткости подвески под вес райдера'],
+    rules: ['Делись фото покатушек и техническими решениями', 'Без оскорблений', 'Помогай начинающим эндуристам'],
+    telegramLink: 'https://t.me/kayoclub',
+    estimatedMembers: 11400
   },
 
   // --- Honda ---
   {
     slug: 'hondacbrus',
-    username: 'HondaCBrus',
+    username: 'hondacbrus',
     title: 'Honda CB Клуб Россия',
     brand: 'Honda',
     category: 'Брендовые',
-    image: 'assets/img/f1f3e132-c4b4-4e5e-aba1-4c9e85c633f1-12066188.jpeg',
-    shortDesc: 'Классические дорожники Honda: CB400 Super Four, CB600 Hornet, CB1000R, CB1300.',
-    fullDesc: 'Всероссийский клуб легендарных классиков и нейкедов Honda CB. Неубиваемые моторы, синхронизация карбюраторов на CB400/CB1300, тюнинг подвесок, ветровые стекла для трассы, подбор резины и надежность для города.',
-    modelsCovered: ['CB 400 SF (NC31 / NC39 / NC42 Revo)', 'CB 600 F Hornet / CB 650 R', 'CB 1000 R Neo Sports Cafe', 'CB 1300 Super Four / Super Bol d’Or', 'CB 750 / CB 1100'],
-    keyTopics: ['Чистка и синхронизация карбюраторов', 'Замена цепи ГРМ и натяжителя', 'Выбор дуг Crazy Iron и защитных клеток', 'Свечи, фильтры и оригинальные расходники'],
-    rules: ['Уважение к классике Honda', 'Советы по ремонту от опытных механиков', 'Без спама'],
-    telegramLink: 'https://t.me/HondaCBrus',
-    estimatedMembers: 11400
+    image: 'assets/img/32d03fa6-b1cb-4df6-8ff4-dd5d2630a9ce-5431484.jpeg',
+    shortDesc: 'Легендарные классики Honda CB: CB400 Super Four, CB600 Hornet, CB750, CB1000R, CB1100, CB1300.',
+    fullDesc: 'Клуб почитателей вечной классики японского мотопрома. Тонкости синхронизации 4 карбюраторов Keihin на CB400SF, настройка системы VTEC, подбор мембран, выбор расходников и продление ресурса двигателей-миллионников Honda CB.',
+    modelsCovered: ['Honda CB 400 SF (Super Four / Hyper VTEC I-III, Revo)', 'Honda CB 600 F Hornet / CB 650 R', 'Honda CB 1300 Super Four / Super Boldor', 'Honda CB 750 (Seven Fifty)', 'Honda CB 1000 R / CB 1100'],
+    keyTopics: ['Синхронизация карбюраторов и замена манифолдов (впускных патрубков)', 'Работа системы Hyper VTEC и регулировка клапанов', 'Замена цепи ГРМ и натяжителя', 'Выбор масляных фильтров и мотомасел'],
+    rules: ['Бережное отношение к классической технике', 'Без флуда и токсичности', 'Опыт ремонта приветствуется'],
+    telegramLink: 'https://t.me/hondacbrus',
+    estimatedMembers: 12800
   },
   {
     slug: 'hondacbrrus',
-    username: 'HondaCBRrus',
+    username: 'hondacbrrus',
     title: 'Honda CBR Клуб Россия',
     brand: 'Honda',
     category: 'Брендовые',
-    image: 'assets/img/9fd111e4-d6ca-4aa6-8a9c-32c8c64081e0-5431469.jpeg',
-    shortDesc: 'Спортбайки Honda: CBR600RR, CBR1000RR Fireblade, CBR1100XX Дрозд, CBR600F4i.',
-    fullDesc: 'Чат пилотов спортивной линейки CBR. От легендарного спорт-туриста «Дрозд» CBR1100XX и практичного CBR600F4i до бескомпромиссных трековых Fireblade CBR1000RR-R. Тренировки на картодромах, настройка квикшифтеров, правильная спортивная посадка и безопасность на высоких скоростях.',
-    modelsCovered: ['CBR 1000 RR Fireblade', 'CBR 600 RR', 'CBR 1100 XX Super Blackbird («Дрозд»)', 'CBR 600 F4 / F4i', 'CBR 650 R / F', 'CBR 250 / 300 / 500 R'],
-    keyTopics: ['Трековые тренировки и экипировка (комбинезоны, мотоботы)', 'Тормозные колодки и армированные шланги', 'Регулировка подвески под вес пилота', 'Замена звезд и цепей 520/525/530'],
-    rules: ['Призыв к соблюдению безопасности и экипу', 'Без взаимных оскорблений', 'Качественный технический контент'],
-    telegramLink: 'https://t.me/HondaCBRrus',
-    estimatedMembers: 8900
+    image: 'assets/img/bb7cb560-6712-42fe-adba-57fd5c3fa5c0-5431485.jpeg',
+    shortDesc: 'Спортбайки Honda CBR: CBR600RR, CBR1000RR Fireblade, CBR600F4i, CBR900RR, CBR1100XX Blackbird.',
+    fullDesc: 'Сообщество пилотов спортивной линейки CBR и легендарного гипертурера Blackbird («Дрозд»). Подготовка байков к треку, настройка спортивных подвесок Showa/Öhlins, демпферы HESD, замена натяжителя ГРМ и подбор трековых колодок.',
+    modelsCovered: ['Honda CBR 1000 RR Fireblade / SP', 'Honda CBR 600 RR (PC37, PC40)', 'Honda CBR 600 F4i / F4 / F3', 'Honda CBR 1100 XX Super Blackbird', 'Honda CBR 929 RR / 954 RR'],
+    keyTopics: ['ГРМ и замена автоматического натяжителя', 'Спортивная посадка и демпфер руля HESD', 'Подготовка к трек-дням: тормоза, армированные шланги, прогрев резины', 'Электрика и реле-регулятор генератора'],
+    rules: ['Безопасность на дорогах и треке', 'Без троллинга', 'Только проверенные технические советы'],
+    telegramLink: 'https://t.me/hondacbrrus',
+    estimatedMembers: 10900
   },
   {
     slug: 'hondaglrus',
-    username: 'HondaGLrus',
+    username: 'hondaglrus',
     title: 'Honda Gold Wing Клуб Россия',
     brand: 'Honda',
     category: 'Брендовые',
-    image: 'assets/img/e3ba830a-0412-4213-9f07-794a671e07d4-10670839.jpeg',
-    shortDesc: 'Круизные лайнеры Honda Gold Wing GL1500, GL1800, F6B, Valkyrie.',
-    fullDesc: 'Элитное сообщество владельцев флагманских люкс-туреров Honda Gold Wing. Оппозитные 6-цилиндровые двигатели, подушки безопасности, роботизированные коробки DCT, тюнинг света, пневма и тысячи километров комфорта без усталости.',
-    modelsCovered: ['GL 1800 Gold Wing (2001–2017 и 2018+ DCT)', 'GL 1500 Gold Wing', 'Gold Wing F6B Bagger', 'Valkyrie Rune / F6C'],
-    keyTopics: ['Установка дополнительного света и музыки', 'Обслуживание подвески и антиклевка', 'Особенности коробки DCT на новых поколениях', 'Организация всероссийских Голдвинг-слетов'],
-    rules: ['Братская атмосфера взаимопомощи', 'Культура общения', 'Обмен туринговым опытом'],
-    telegramLink: 'https://t.me/HondaGLrus',
-    estimatedMembers: 6300
+    image: 'assets/img/5b55e88a-df5c-4a37-b452-f67e584f09a5-5431486.jpeg',
+    shortDesc: 'Королевские туреры Honda Gold Wing: GL1800 (2001-2017), New GL1800 (2018+ DCT), GL1500, F6B.',
+    fullDesc: 'Крупнейший клуб владельцев «Голды». 6-цилиндровые оппозиты, коробка передач с двойным сцеплением DCT, установка кастомной акустики, навигация, пневмоподвеска, прицепы и подготовка к трансконтинентальным мотопутешествиям.',
+    modelsCovered: ['Honda GL 1800 Gold Wing (2018+ DCT / Tour)', 'Honda GL 1800 Gold Wing (2001–2017)', 'Honda GL 1500 (1988–2000)', 'Honda F6B Bagger / F6C Valkyrie'],
+    keyTopics: ['Особенности работы и обслуживания коробки DCT', 'Тюнинг автозвука и дополнительной светотехники', 'Обслуживание передней рычажной подвески (2018+)', 'Организация всероссийских Голдослетов'],
+    rules: ['Высокая культура общения', 'Помощь одноклубникам в путешествиях', 'Без коммерческого спама'],
+    telegramLink: 'https://t.me/hondaglrus',
+    estimatedMembers: 8400
   },
   {
     slug: 'steedrus',
@@ -242,29 +304,29 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Honda Steed Клуб Россия',
     brand: 'Honda',
     category: 'Брендовые',
-    image: 'assets/img/3caa0603-5a77-406c-8684-f4814fcba418-5431476.jpeg',
-    shortDesc: 'Культовые японские чопперы Honda Steed 400 / 600 (VLX, VSE, VLS).',
-    fullDesc: 'Олдскульное сообщество фанатов Honda Steed (NV400 / NV600). Неприхотливые V-твины, боббер- и чоппер-кастомизация, переделка выхлопа, спрингер-вилки, регулировка карбюраторов и душевная атмосфера железных коней.',
-    modelsCovered: ['Honda Steed 400 (VLX / VCL / VSE / VLS)', 'Honda Steed 600'],
-    keyTopics: ['Боббер-строение и кастом своими руками', 'Мембраны карбюраторов и прямоточный выхлоп', 'Обслуживание спицованных колес', 'Поиск редких японских запчастей'],
-    rules: ['Уважение к кастом-культуре', 'Делимся чертежами и советами', 'Без флуда'],
+    image: 'assets/img/282ad76a-c215-46b0-9515-b541334c22fe-5431487.jpeg',
+    shortDesc: 'Неубиваемые чопперы Honda Steed (VLX 400 / 600, VSE, VLS, Shadow 400).',
+    fullDesc: 'Культовый клуб владельцев Honda Steed. Простейшие надежные V-образные моторы, кастомизация в стиле боббер/чоппер, изготовление прямотоков, замена мембран карбюраторов, поиск редких запчастей и переспицовка колес.',
+    modelsCovered: ['Honda Steed 400 (VLX / VCL / VSE / VLS)', 'Honda Steed 600 (VT600C Shadow VLX)', 'Honda Shadow 400 / 750 (VT400 / VT750)'],
+    keyTopics: ['Кастомизация в боббер (спрингер, соло-седло, кастомные крылья)', 'Очистка и настройка двух карбюраторов Keihin', 'Замена цепи и звезд: подбор передаточного числа для трассы', 'Регулировка клапанов винтами (без шайб)'],
+    rules: ['Уважение к олдскулу и кастом-культуре', 'Делимся чертежами и мануалами', 'Без спама'],
     telegramLink: 'https://t.me/SteedRus',
-    estimatedMembers: 4100
+    estimatedMembers: 9200
   },
   {
     slug: 'hondarebel',
-    username: 'hondarebelcmx1100',
+    username: 'HondaRebel',
     title: 'Honda Rebel Club (CMX 300 / 500 / 1100)',
     brand: 'Honda',
     category: 'Брендовые',
-    image: 'assets/img/7866340f-402c-4d36-ba83-6a4e932c1976-11786754.jpeg',
-    shortDesc: 'Современные бобберы Honda Rebel CMX300, CMX500 и литровый CMX1100 DCT.',
-    fullDesc: 'Клуб современных городских бобберов Honda Rebel. Низкая посадка по седлу, маневренность, двигатели от Африки Твин на CMX1100, режимы езды, кофры, сиденья и тюнинг для идеального стиля в городе.',
-    modelsCovered: ['CMX 1100 Rebel (Manual & DCT)', 'CMX 500 Rebel', 'CMX 300 Rebel', 'Rebel 1100T Touring'],
-    keyTopics: ['Выбор удобного кастомного сиденья', 'Установка дуг и багажных систем', 'Работа коробки DCT на Rebel 1100', 'Выхлопные системы Vance & Hines / Akrapovic'],
-    rules: ['Дружелюбное общение', 'Помощь новичкам и девушкам-райдерам', 'Без спама'],
-    telegramLink: 'https://t.me/hondarebelcmx1100',
-    estimatedMembers: 2900
+    image: 'assets/img/842e4ec3-d5d1-4ba2-bfce-43ca2fa9db81-5431488.jpeg',
+    shortDesc: 'Современные нео-круизеры Honda Rebel: CMX 300, CMX 500, CMX 1100 DCT.',
+    fullDesc: 'Сообщество владельцев стильных круизеров новой волны Honda Rebel. Моторы от Africa Twin на Rebel 1100, режимы езды, автоматические коробки DCT, доработка сидений для комфорта и установка выхлопов Vance & Hines / Miller.',
+    modelsCovered: ['Honda CMX 1100 Rebel (MT / DCT)', 'Honda CMX 500 Rebel (Special Edition)', 'Honda CMX 300 / Rebel 250'],
+    keyTopics: ['Замена штатного жесткого седла на комфортное', 'Обслуживание коробки передач DCT', 'Установка ветровиков и боковых сумок (Hepco&Becker, SW-Motech)', 'Выбор прямоточных выхлопных систем'],
+    rules: ['Дружелюбная атмосфера', 'Без оффтопа', 'Помощь новичкам'],
+    telegramLink: 'https://t.me/HondaRebel',
+    estimatedMembers: 5900
   },
   {
     slug: 'varaderorus',
@@ -272,44 +334,44 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Honda Varadero & Transalp Club',
     brand: 'Honda',
     category: 'Брендовые',
-    image: 'assets/img/e206b19c-7798-4df7-9256-8c573e9fd7d5-5431478.jpeg',
-    shortDesc: 'Турэндуро Honda XL1000V Varadero, Transalp XL600/650/700/750.',
-    fullDesc: 'Сообщество путешественников на надежнейших турэндуро Honda Varadero 1000 с могучим V-twin и линейке Transalp. Комбинированные тормоза CBS, настройка подвески, преодоление серпантинов и грунтовок.',
-    modelsCovered: ['XL1000V Varadero (Карб / Инжектор)', 'Transalp XL600V / XL650V / XL700V', 'Новый Transalp XL750'],
-    keyTopics: ['Бензонасос и реле-регулятор', 'Высокое стекло и ветрозащита', 'Усиленные пружины прогрессии', 'Маршруты по Кавказу и Карелии'],
-    rules: ['Делимся координатами стоянок и треками', 'Техническая взаимопомощь', 'Позитив'],
+    image: 'assets/img/14352eb9-4aa8-4447-aa1c-0c151fb78926-5431489.jpeg',
+    shortDesc: 'Турэндуро Honda: XL1000V Varadero, Transalp (XL600V, XL650V, XL700V, XL750).',
+    fullDesc: 'Клуб покорителей любых дорог на турерах Honda с моторами V-Twin. Обслуживание топливного насоса и реле-регулятора на Варадеро, замена шлицов вторичного вала на Трансальпе, выбор усиленных защитных дуг и подготовка к Памирскому тракту.',
+    modelsCovered: ['Honda XL1000V Varadero (Карбюратор / Инжектор)', 'Honda XL 750 Transalp (2023+)', 'Honda XL 700 V Transalp', 'Honda XL 650 V / XL 600 V Transalp', 'Honda XRV 750 Africa Twin'],
+    keyTopics: ['Ресурс бензонасоса и замена на вакуумный / диодный контактор', 'Защита вторичного вала от износа (звезды KK-Bike / SuperSprox)', 'Настройка подвески и прогрессии для двоих с багажом', 'Маршруты по Кавказу и Средней Азии'],
+    rules: ['Туристическое братство', 'Обмен картами и треками', 'Без спама'],
     telegramLink: 'https://t.me/VaraderoRus',
-    estimatedMembers: 3800
+    estimatedMembers: 7300
   },
   {
     slug: 'hondavfrclub',
-    username: 'HondaVFRclub',
+    username: 'hondavfrclub',
     title: 'Honda VFR Клуб (V4 Interceptor)',
     brand: 'Honda',
     category: 'Брендовые',
-    image: 'assets/img/ad5975ad-6759-4c4c-aa33-c7443e4398fb-12066017.jpeg',
-    shortDesc: 'Технологичные спорт-туристы с мотором V4: VFR800 VTEC, VFR1200, VFR400/750.',
-    fullDesc: 'Чат преданных ценителей уникальной архитектуры двигателей V4 от Honda. Шестеренчатый привод ГРМ на старых поколениях, подключение клапанов VTEC на VFR800, консольный маятник, кардан и мощь 1200-кубового флагмана.',
-    modelsCovered: ['VFR 800 Fi / VTEC / Crossrunner', 'VFR 1200 F / Crosstourer (DCT)', 'VFR 750 F (RC36)', 'VFR 400 R (NC30) / RVF 400 (NC35)'],
-    keyTopics: ['Регулировка клапанов на системе VTEC', 'Реле-регулятор и генератор', 'Консольный маятник и подшипники ступицы', 'Идеальный баланс спорта и туризма'],
-    rules: ['Грамотные технические советы', 'Без оффтопа в профильных ветках', 'Уважение'],
-    telegramLink: 'https://t.me/HondaVFRclub',
-    estimatedMembers: 5200
+    image: 'assets/img/4ea0f666-8968-45dc-a2c6-3ea66a3d9052-5431490.jpeg',
+    shortDesc: 'Легендарные спорт-туристы с мотором V4: VFR800 (Fi / VTEC / Crossrunner), VFR1200F / Crosstourer, VFR750.',
+    fullDesc: 'Сообщество ценителей уникальных двигателей V4 и консольного маятника Honda. Шестеренчатый привод ГРМ на VFR800 Fi (RC46-1), регулировка зазоров клапанов на системе VTEC, обслуживание консоли и кардана на VFR1200.',
+    modelsCovered: ['Honda VFR 800 Fi (RC46-I, шестерни ГРМ)', 'Honda VFR 800 VTEC (RC46-II, Crossrunner)', 'Honda VFR 1200 F / Crosstourer (DCT / MT)', 'Honda VFR 750 F (RC36-I / RC36-II)'],
+    keyTopics: ['Особенности регулировки клапанов VTEC', 'Реле-регулятор и термостойкая проводка генератора', 'Обслуживание консольного маятника и ступичного узла', 'Комбинированная тормозная система Dual-CBS'],
+    rules: ['Глубокие технические знания', 'Уважение к соклубникам', 'Без флуда'],
+    telegramLink: 'https://t.me/hondavfrclub',
+    estimatedMembers: 6800
   },
   {
     slug: 'hondavtx',
-    username: 'Honda_VTX',
+    username: 'hondavtx',
     title: 'Honda VTX & VT Shadow Club',
     brand: 'Honda',
     category: 'Брендовые',
-    image: 'assets/img/045786dd-ba1e-42d9-952d-e6fb6dc6e4b1-9236262.jpeg',
-    shortDesc: 'Монументальные круизеры Honda VTX1800, VTX1300 и линейка VT750/1100 Shadow.',
-    fullDesc: 'Крупнейшее сообщество владельцев тяжелых пауэр-круизеров Honda VTX с колоссальным крутящим моментом и нестареющей классики Shadow. Тюнинг звука выхлопа, хром, кофры, выносы подножек и дальние круизы по хайвеям.',
-    modelsCovered: ['VTX 1800 (C / R / S / N / F)', 'VTX 1300 (C / R / S / T)', 'VT 750 Shadow (Phantom / Spirit / Aero)', 'VT 1100 Shadow / Sabre'],
-    keyTopics: ['Расход топлива и настройка топливных карт (Power Commander)', 'Устранение «воблинга» и подшипники рулевой колонки All Balls', 'Сцепление Barnett и усиленные пружины', 'Полировка хрома и уход за кожей'],
-    rules: ['Уважение к традициям чопперостроения', 'Делимся проверенными мастерами', 'Без спама'],
-    telegramLink: 'https://t.me/Honda_VTX',
-    estimatedMembers: 7600
+    image: 'assets/img/a04a6011-ddcc-4089-a299-1a48698ee09f-5431491.jpeg',
+    shortDesc: 'Могучие пауэр-круизеры Honda VTX 1800, VTX 1300, Shadow 750 / 1100, Fury.',
+    fullDesc: 'Клуб любителей монументальных V-образных двигателей объемом до 1.8 литра. Обсуждение паровозного крутящего момента VTX 1800, обслуживание кардана, демпферов сцепления, клапана холостого хода, выбор тюнинга и шин шириной 200–240 мм.',
+    modelsCovered: ['Honda VTX 1800 (C / R / S / N / F / T)', 'Honda VTX 1300 (Custom / Retro)', 'Honda VT 1300 CX Fury / Stateline / Sabre', 'Honda Shadow VT 1100 / VT 750'],
+    keyTopics: ['Свечи зажигания и катушки на VTX1800', 'Замена сайлентблоков амортизаторов и втулок маятника', 'Обслуживание карданной передачи и крестовины', 'Установка широкого заднего колеса и кастомных выхлопов (Cobra, Vance & Hines)'],
+    rules: ['Спокойное и уважительное общение', 'Байкерские традиции', 'Без спама'],
+    telegramLink: 'https://t.me/hondavtx',
+    estimatedMembers: 8700
   },
 
   // --- Kawasaki ---
@@ -319,44 +381,44 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Kawasaki ER-6 & Ninja 650 Club',
     brand: 'Kawasaki',
     category: 'Брендовые',
-    image: 'assets/img/e3058abe-a224-4134-b5b9-743731af2acc-5431480.jpeg',
-    shortDesc: 'Популярные городские универсалы Kawasaki ER-6n, ER-6f, Ninja 650, Versys 650, Z650.',
-    fullDesc: 'Клуб владельцев динамичных 2-цилиндровых рядников Kawasaki 650cc. Идеальный мотоцикл для города и поездок выходного дня. Особенности клапанного механизма, подбор подвески, слайдеров и ветровых стекол.',
-    modelsCovered: ['ER-6n (Naked) 2006–2016', 'ER-6f / Ninja 650 (Fairing)', 'Versys 650 (Турэндуро)', 'Z 650 (2017+)'],
-    keyTopics: ['Регулировка зазоров клапанов и замена шайб', 'Слайдеры и дуги для защиты двигателя при падениях', 'Выбор передних тормозных дисков и колодок', 'Опыт новичков в первый сезон'],
-    rules: ['Поддержка начинающих водителей', 'Без грубости', 'Техническая грамотность'],
+    image: 'assets/img/264b38d3-0599-4c57-a1dc-27485098b671-5431492.jpeg',
+    shortDesc: 'Городские стритфайтеры и спорт-туристы: ER-6n, ER-6f, Ninja 650, Versys 650, Z650.',
+    fullDesc: 'Самый популярный чат по 2-цилиндровым рядным шестисоткам Kawasaki. Регулировка клапанов, замена натяжителя ГРМ, особенности крепления правого бокового моноамортизатора, установка слайдеров и решение проблемы с обрывом выпускных клапанов на старых ревизиях.',
+    modelsCovered: ['Kawasaki ER-6n / ER-6f (2006–2016)', 'Kawasaki Ninja 650 / Z650 (2017+)', 'Kawasaki Versys 650 (KLE650)', 'Kawasaki Vulcan S 650 (EN650)'],
+    keyTopics: ['Проверка зазоров клапанов каждые 24 000 км', 'Установка клеток Crazy Iron / Armor Bike для джимаханы', 'Замена тормозных дисков и прокачка ABS', 'Подбор масла для 2-цилиндрового мотора'],
+    rules: ['Дружеская атмосфера', 'Помощь новичкам в джимхане и городе', 'Без рекламы'],
     telegramLink: 'https://t.me/er6club',
-    estimatedMembers: 8400
+    estimatedMembers: 8100
   },
   {
     slug: 'kleclub',
-    username: 'KLEclub',
+    username: 'kleclub',
     title: 'Kawasaki KL / KLE / KLR / KLX Club',
     brand: 'Kawasaki',
     category: 'Брендовые',
-    image: 'assets/img/d188835d-4446-41c9-87be-2c7f2955d67a-5431481.jpeg',
-    shortDesc: 'Эндуро и турэндуро Kawasaki KLE250/500, KLR650, KLX250/300/450.',
-    fullDesc: 'Сообщество любителей настоящих внедорожных приключений на мотоциклах Kawasaki. От юрких лесных эндуриков KLX250 до неубиваемого всемирного путешественника KLR650 («Doohickey» мод, бак на 23 литра) и двухцилиндрового KLE500.',
-    modelsCovered: ['KLR 650 (Tengai / Gen1 / Gen2 / Gen3)', 'KLE 500 / KLE 250 Anhelo', 'KLX 250 / KLX 300 / KLX 450R', 'Super Sherpa KL250'],
-    keyTopics: ['Замена балансирного натяжителя (Doohickey) на KLR650', 'Зубастая резина Mitas / Michelin Tracker', 'Настройка карбюратора Keihin CVK40', 'Эндуро-маршруты и броды'],
-    rules: ['Братство эндуристов', 'Делимся треками для навигаторов', 'Без мата'],
-    telegramLink: 'https://t.me/KLEclub',
-    estimatedMembers: 4500
+    image: 'assets/img/83726917-f6cf-448f-aa66-f84db02641a2-5431493.jpeg',
+    shortDesc: 'Универсальные эндуро и турэндуро: KLE 250 / 400 / 500, KLR 650, KLX 250 / 300, Super Sherpa.',
+    fullDesc: 'Клуб ценителей неубиваемых дуал-спортов Kawasaki. Доработка успокоителя балансирного вала («Doo-Hickey») на KLR650, переборка карбюраторов на KLE500, форсирование и раздушка инжекторного KLX250, автономные экспедиции по бездорожью.',
+    modelsCovered: ['Kawasaki KLR 650 (Gen 1, Gen 2, Gen 3 2022+)', 'Kawasaki KLE 500 / KLE 400 / KLE 250 Anhelo', 'Kawasaki KLX 250 / D-Tracker / KLX 300', 'Kawasaki Super Sherpa (KL250)'],
+    keyTopics: ['Замена Doohickey на KLR650 (Eagle Mike)', 'Увеличение объема бака (баки IMS, Acerbis)', 'Регулировка карбюраторов Keihin CVK', 'Внедорожный тюнинг и защита картера'],
+    rules: ['Эндуро-братство', 'Делимся треками и местами ночевок', 'Без спама'],
+    telegramLink: 'https://t.me/kleclub',
+    estimatedMembers: 6300
   },
   {
     slug: 'zzrrus',
-    username: 'zzrrus',
+    username: 'ZZRrus',
     title: 'Kawasaki ZZR & Ninja Club',
     brand: 'Kawasaki',
     category: 'Брендовые',
-    image: 'assets/img/6fa62c88-c3f7-4af8-90dd-13e80ec3187e-5431482.jpeg',
-    shortDesc: 'Спорт-туристы Kawasaki ZZR400, ZZR600, ZZR1100, ZZR1200, ZZR1400 (ZX-14R).',
-    fullDesc: 'Легендарные скоростные гипер-байки и спорт-туристы семейства ZZR. Знаменитая динамика, вторая передача на 400-ках, масляное голодание на старых 1100 и космическая тяга 1400-кубового монстра ZX-14R.',
-    modelsCovered: ['ZZR 1400 / ZX-14R', 'ZZR 1200 / ZZR 1100 (ZX-11)', 'ZZR 400 (ZX400K / ZX400N)', 'ZZR 600 (ZX-6E)', 'Ninja ZX-10R / ZX-6R'],
-    keyTopics: ['Лечение вылета второй передачи на ZZR400', 'Синхронизация карбюраторов и чистка игольчатых клапанов', 'Тормоза Nissin / Brembo и армированные магистрали', 'Поведение на скоростях 200+ км/ч'],
-    rules: ['Уважение к мощности техники', 'Делимся мануалами и схемами', 'Без флуда'],
-    telegramLink: 'https://t.me/zzrrus',
-    estimatedMembers: 6800
+    image: 'assets/img/c6655c65-ea9e-49b8-b19b-c40d1279a0ce-5431494.jpeg',
+    shortDesc: 'Сверхскоростные спорт-туристы: ZZR 400, ZZR 600, ZZR 1100, ZZR 1200, ZZR 1400 (ZX-14R).',
+    fullDesc: 'Легендарное сообщество «Зизероводов». Решение классической проблемы вылета второй передачи на ZZR400/1100, настройка системы инерционного наддува RAM-Air, синхронизация карбюраторов и колоссальная мощь ZZR 1400 на автобанах.',
+    modelsCovered: ['Kawasaki ZZR 1400 / ZX-14R Ninja', 'Kawasaki ZZR 400 (I / II поколение)', 'Kawasaki ZZR 1100 (ZX-11) / ZZR 1200', 'Kawasaki ZZR 600 (ZX-6E)', 'Kawasaki ZX-10R / ZX-6R Ninja'],
+    keyTopics: ['Лечение и переборка коробки передач (шестерни 2 передачи и копирный вал)', 'Настройка и герметизация системы RAM-Air', 'Улучшение охлаждения и замена помпы', 'Выбор высокоскоростной резины (W/Y индекс)'],
+    rules: ['Техническая грамотность', 'Взаимопомощь запчастями с разборок', 'Без мата'],
+    telegramLink: 'https://t.me/ZZRrus',
+    estimatedMembers: 9500
   },
   {
     slug: 'ridersvulcan',
@@ -364,63 +426,48 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Kawasaki Vulcan Riders Club',
     brand: 'Kawasaki',
     category: 'Брендовые',
-    image: 'assets/img/42942c91-b8c5-4ea1-8247-3fb818cc5068-10670841.jpeg',
-    shortDesc: 'Круизеры Kawasaki Vulcan VN400, VN800, VN900, VN1500, VN1600, VN1700, VN2000.',
-    fullDesc: 'Всероссийский клуб фанатов чопперов и круизеров Kawasaki Vulcan. От компактных бобберов VN800 и популярных VN900 Custom/Classic до гигантского 2-литрового 2-цилиндрового монстра Vulcan 2000 с паровозной тягой.',
-    modelsCovered: ['Vulcan VN 2000', 'Vulcan VN 1700 Voyager / Vaquero', 'Vulcan VN 1500 / 1600 Mean Streak / Classic', 'Vulcan VN 900 Classic / Custom', 'Vulcan VN 800 / VN 400', 'Vulcan S (650cc)'],
-    keyTopics: ['Обслуживание ременного и карданного привода', 'Масляная шестерня (POG) на VN1500', 'Платформы для ног, спинки водителя и ветровики', 'Звук настоящего японского V-twin'],
-    rules: ['Байкерская солидарность', 'Взаимопомощь по запчастям', 'Уважение'],
+    image: 'assets/img/67bafe67-ef1e-450b-9ffb-5b5840dca449-5431495.jpeg',
+    shortDesc: 'Круизеры Kawasaki Vulcan: VN400, VN800, VN900, VN1500, VN1600, VN1700, VN2000.',
+    fullDesc: 'Российское сообщество владельцев легендарных круизеров Vulcan. Самый большой серийный 2-цилиндровый двигатель в мире (2053 куб.см на VN2000), ременные и карданные передачи, пластиковая шестерня масляного насоса на VN1500 (POG), комфортные кофры и кастомные рули.',
+    modelsCovered: ['Kawasaki VN 2000 (Vulcan 2 Litre)', 'Kawasaki VN 1700 (Voyager / Vaquero / Classic)', 'Kawasaki VN 900 (Classic / Custom)', 'Kawasaki VN 1500 / 1600 (Mean Streak / Nomad)', 'Kawasaki VN 400 / VN 800 Drifter / Classic'],
+    keyTopics: ['Замена пластиковой шестерни маслонасоса (JOG) на металлическую (VN1500)', 'Ресурс и натяжка приводного ремня на VN900/1700/2000', 'Установка кастомных рулей Ape Hanger с удлинением тросов', 'Обслуживание инжектора и топливного фильтра в баке'],
+    rules: ['Байкерское братство и взаимовыручка', 'Без оффтопа', 'Делись опытом кастомизации'],
     telegramLink: 'https://t.me/RidersVulcan',
-    estimatedMembers: 5900
+    estimatedMembers: 7800
   },
 
-  // --- KTM & KAYO ---
+  // --- KTM ---
   {
     slug: 'dukerus',
-    username: 'DukeRus',
+    username: 'dukerus',
     title: 'KTM Duke & Adventure Club',
     brand: 'KTM',
     category: 'Брендовые',
-    image: 'assets/img/4ec10f0f-eb53-4ca2-a8c6-53890f5cbbe0-5431483.jpeg',
-    shortDesc: '«Ready to Race»: KTM Duke 125/200/390/690/790/890/1290 Super Duke и серия Adventure.',
-    fullDesc: 'Чат фанатов оранжевого безумия KTM! Взрывной характер, топовые тормоза Brembo/ByBre, подвеска WP Apex/Xplor, квикшифтеры, электроника Supermoto ABS и тонкости обслуживания форсированных австрийских моторов LC4/LC8.',
-    modelsCovered: ['Duke 390 / RC 390', 'Duke 790 / 890 R / 990', '1290 Super Duke R / GT («The Beast»)', '390 / 790 / 890 / 1290 Super Adventure', '690 Enduro R / SMC R'],
-    keyTopics: ['Масла Motorex и контроль уровня масла', 'Прошивки блоков и устранение чеков двигателя', 'Защитные клетки для станта и слайдеры', 'Трек-дни и агрессивный городской трафик'],
-    rules: ['Любовь к динамике и скорости', 'Помощь с артикулами KTM PowerParts', 'Без токсичности'],
-    telegramLink: 'https://t.me/DukeRus',
-    estimatedMembers: 7800
-  },
-  {
-    slug: 'kayoclub',
-    username: 'KAYOclub',
-    title: 'KAYO Клуб Россия',
-    brand: 'KAYO',
-    category: 'Брендовые',
-    image: 'assets/img/6786a5a2-c361-42ba-b2cb-23bca048fcb1-5431484.jpeg',
-    shortDesc: 'Популярнейшие эндуро мотоциклы и питбайки KAYO T2, T4, K1, K4, K6, TT125, TD125.',
-    fullDesc: 'Крупнейшее сообщество владельцев техники KAYO в России. Самый массовый выбор для входа в эндуро: доработка китайской проводки, настройка подвески KKE/Fastace, правильная обкатка двигателей 172FMM, защита рук и ручки-неломайки.',
-    modelsCovered: ['KAYO T2 Enduro / Supermoto', 'KAYO T4 / K1 / K2 / K4 / K6-R', 'Питбайки KAYO Basic / Classic / TT 125 / 140 / 190', 'Квадроциклы KAYO Bull / AU'],
-    keyTopics: ['Замена заводского масла в вилке и амортизаторе', 'Установка карбюраторов Nibbi Racing PWK', 'Протяжка спиц и замена ступичных подшипников', 'Совместные эндуро-покатушки выходного дня'],
-    rules: ['Делимся реальными лайфхаками ремонта', 'Уважение к новичкам', 'Без спама'],
-    telegramLink: 'https://t.me/KAYOclub',
-    estimatedMembers: 9200
+    image: 'assets/img/1bb2d580-281b-4fc6-b258-fce59160d5b3-5431496.jpeg',
+    shortDesc: 'Австрийские хулиганы: Duke 125/200/250/390/690/790/890/1290 Super Duke R, 390/790/890/1290 Adventure.',
+    fullDesc: 'Клуб любителей оранжевого безумия «Ready to Race». Тонкости моторов LC4 и LC8, двухсторонний квикшифтер Quickshifter+, подвески WP Apex/Pro, контроль давления масла, прошивки блоков управления и устранение течей сальников помпы.',
+    modelsCovered: ['KTM 1290 Super Duke R / GT / Super Adventure R/S', 'KTM 790 / 890 Duke & Adventure (R / Rally)', 'KTM 390 Duke / 390 Adventure / RC 390', 'KTM 690 SMC R / Enduro R'],
+    keyTopics: ['Диагностика через KTM XC-1 / OBD2 адаптеры', 'Обслуживание и замена масла в вилках WP Apex', 'Настройка трекшн-контроля (MTC) и анти-вилли', 'Усиление защиты картера и крышек двигателя'],
+    rules: ['Драйв, спорт и взаимопомощь', 'Без токсичности', 'Только качественный технический контент'],
+    telegramLink: 'https://t.me/dukerus',
+    estimatedMembers: 8900
   },
 
   // --- Suzuki ---
   {
     slug: 'gsfclub',
-    username: 'GSFclub',
+    username: 'gsfclub',
     title: 'Suzuki Bandit GSF Club',
     brand: 'Suzuki',
     category: 'Брендовые',
-    image: 'assets/img/7ffc330f-b44c-4731-be69-ba0b92dbb3a0-5431485.jpeg',
-    shortDesc: 'Культовые стритфайтеры Suzuki Bandit GSF 250, 400, 600, 650, 750, 1200, 1250.',
-    fullDesc: 'Легендарные «Бандиты» с воздушно-масляными моторами SACS и современными инжекторными водянками. Неубиваемый характер мотора от Джиксера, круглая фара, доработка тормозов Tokico, синхронизация карбов и тюнинг выхлопа.',
-    modelsCovered: ['Bandit GSF 1200 / GSF 1250 (Большой Бандит)', 'Bandit GSF 600 / GSF 650', 'Bandit GSF 400 (красноголовый / сероголовый)', 'Bandit GSF 750 / GSF 250'],
-    keyTopics: ['Синхронизация карбюраторов Mikuni/Keihin', 'Устранение провалов на низах и регулировка холостых', 'Замена прогрессии и сальников вилки', 'Бюджетный и надежный мотоцикл на каждый день'],
-    rules: ['Уважение к легенде Bandit', 'Делимся проверенными схемами проводки', 'Без флуда'],
-    telegramLink: 'https://t.me/GSFclub',
-    estimatedMembers: 8100
+    image: 'assets/img/d80f8365-24c7-43cf-be76-0bf85be52427-5431497.jpeg',
+    shortDesc: 'Культовые нейкеды и спорт-туристы Suzuki Bandit: GSF 250, 400, 600, 650, 750, 1200, 1250.',
+    fullDesc: 'Одно из старейших сообществ Рунета. Легендарные моторы масляно-воздушного охлаждения SACS («воздушно-масляные»), невероятный крутящий момент Bandit 1200/1250, настройка карбюраторов Mikuni BST, замена цепей ГРМ и регулировка клапанов.',
+    modelsCovered: ['Suzuki GSF 1200 / 1250 Bandit (N / S)', 'Suzuki GSF 600 / 650 Bandit', 'Suzuki GSF 400 Bandit (Красноголовый / Сероголовый)', 'Suzuki GSF 750 / GSX 1250 FA'],
+    keyTopics: ['Регулировка клапанов винтами и шайбами', 'Чистка и синхронизация карбюраторов Mikuni/Keihin', 'Установка вилки и маятника от GSX-R для лучшей управляемости', 'Продление ресурса моторов SACS'],
+    rules: ['Уважение к традициям Бандит-клуба', 'Помощь запчастями и мануалами', 'Без спама'],
+    telegramLink: 'https://t.me/gsfclub',
+    estimatedMembers: 11800
   },
   {
     slug: 'djebelrus',
@@ -428,29 +475,29 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Suzuki Djebel & DR-Z Club',
     brand: 'Suzuki',
     category: 'Брендовые',
-    image: 'assets/img/eb175783-a4c3-4d69-a115-37330545f782-5431486.jpeg',
-    shortDesc: 'Легенды хард-туризма: Suzuki Djebel 200 / 250 XC, DR650SE, DR-Z400 (S/SM/E).',
-    fullDesc: 'Чат ценителей культового дальнобойного эндуро Djebel с гигантской фарой-прожектором, баком на 17 литров и сухим картером, а также нестареющего хулигана DR-Z400. Путешествия в самые дикие уголки планеты, преодоление тайги и бродов.',
-    modelsCovered: ['Suzuki Djebel 250 XC (GPS ver.)', 'Suzuki Djebel 200', 'Suzuki DR-Z 400 S / SM / E', 'Suzuki DR 650 SE', 'Suzuki DR 250 / DR 350'],
-    keyTopics: ['Мембрана карбюратора TM28 / BST31', 'Регулировка клапанов винтами / шайбами', 'Звездные соотношения 14/44, 13/47 под бездорожье', 'Экспедиционный багаж и мягкие сумки'],
-    rules: ['Культура внедорожных путешествий', 'Бережное отношение к раритетной технике', 'Помощь на маршрутах'],
+    image: 'assets/img/32c1c691-12f5-4424-81e8-78c77aa7621c-5431498.jpeg',
+    shortDesc: 'Легендарные внедорожники: Djebel 200 / 250 XC, DR-Z 400 (S / SM / E), DR 650 SE, DR 250.',
+    fullDesc: 'Клуб фанатов надежных японских эндуро с огромной фарой-«прожектором» и баком на 17 литров. Обслуживание моторов с системой масляного радиатора, настройка вакуумных карбюраторов TM28/BSR32, замена цепи ГРМ на DR-Z 400 и подготовка к автономным таежным походам.',
+    modelsCovered: ['Suzuki Djebel 250 XC / GPS Ver (SJ45A)', 'Suzuki DR-Z 400 S / SM / E', 'Suzuki DR 650 SE', 'Suzuki Djebel 200 (SH42A) / DR 200 Trojan'],
+    keyTopics: ['Замена цепи ГРМ и декомпрессора', 'Настройка и ремонт ускорительного насоса карбюратора', 'Снятие и обслуживание подшипников прогрессии и маятника', 'Организация автономных экспедиций по Сибири, Кольскому и Кавказу'],
+    rules: ['Эндуро-взаимовыручка', 'Делимся треками и координатами стоянок', 'Без коммерции'],
     telegramLink: 'https://t.me/DjebelRus',
-    estimatedMembers: 5400
+    estimatedMembers: 8200
   },
   {
     slug: 'gsxrclub',
-    username: 'GSXRclub',
+    username: 'gsxrclub',
     title: 'Suzuki GSX-R & Hayabusa Club',
     brand: 'Suzuki',
     category: 'Брендовые',
-    image: 'assets/img/299c8fc2-6cb1-4475-8e36-f00e97669d51-5431487.jpeg',
-    shortDesc: 'Спортбайки Suzuki GSX-R 600, 750, 1000 («Джиксеры») и легендарная Hayabusa GSX1300R.',
-    fullDesc: 'Сообщество пилотов самых адреналиновых мотоциклов планеты. Легендарные «Джиксеры» всех поколений (K1–L9) и король автобанов «Буса». Спортивная телеметрия, трековые тренировки, титановые выхлопы Yoshimura и гоночные настройки.',
-    modelsCovered: ['GSX-R 1000 (K-серия, L-серия, R-edition)', 'GSX-R 750 / GSX-R 600', 'GSX 1300 R Hayabusa (Gen 1 / Gen 2 / Gen 3)', 'GSX-S 750 / GSX-S 1000'],
-    keyTopics: ['Настройка подвески Showa BFF / BFRC под трек', 'Квикшифтер и автоблиппер', 'Тормозные суппорты Brembo Monoblock', 'Безопасность пилотирования на гоночных треках'],
-    rules: ['Только в полной экипировке!', 'Без детского хвастовства скоростями', 'Профессиональный подход'],
-    telegramLink: 'https://t.me/GSXRclub',
-    estimatedMembers: 8700
+    image: 'assets/img/4f8ee96f-c1f9-4ae3-9d04-0c5a0ec7b985-5431464.jpeg',
+    shortDesc: 'Спортбайки и гипербайки: GSX-R 600, GSX-R 750, GSX-R 1000, GSX1300R Hayabusa.',
+    fullDesc: 'Клуб любителей адреналина и скорости. Могучая Хаябуса, эталонные Джиксеры GSX-R750, настройка системы впрыска SDTV, выхлопы Yoshimura, титановые клапаны, прошивка ЭБУ (Woolich Racing) и трековые заезды.',
+    modelsCovered: ['Suzuki GSX1300R Hayabusa (Gen 1, Gen 2, Gen 3)', 'Suzuki GSX-R 1000 (K1–L9, R)', 'Suzuki GSX-R 750 / GSX-R 600 (SRAD, K4–L8)', 'Suzuki GSX-S 750 / GSX-S 1000 / Katana'],
+    keyTopics: ['Прошивка мозгов и снятие ограничителя скорости 300 км/ч', 'Регулировка клапана выпускной системы SET (Exup)', 'Установка радиальных тормозных машинок Brembo/Nissin', 'Выбор сликов и полусликов для трека'],
+    rules: ['Дисциплина и экипировка', 'Трековые тренировки', 'Без флуда'],
+    telegramLink: 'https://t.me/gsxrclub',
+    estimatedMembers: 9700
   },
   {
     slug: 'boulevardrus',
@@ -458,14 +505,14 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Suzuki Intruder & Boulevard Club',
     brand: 'Suzuki',
     category: 'Брендовые',
-    image: 'assets/img/226d7f02-a42e-4b68-b7db-14fdc8aa1bf4-5431488.jpeg',
-    shortDesc: 'Мускул-круизеры Suzuki Boulevard M109R (VZR1800), C109R, M50, C50, Intruder.',
-    fullDesc: 'Клуб харизматичных круизеров Suzuki. Главная звезда — мускулистый пауэр-круизер M109R / VZR1800 с широченным 240-м задним баллоном, коваными поршнями размером с кружку и агрессивным обтекателем фары.',
-    modelsCovered: ['Boulevard M109R / Intruder M1800R (VZR1800)', 'Boulevard C109R / Intruder C1800R', 'Boulevard M50 / C50 / C90', 'Intruder VS 400 / 800 / 1400', 'Volusia VL800'],
-    keyTopics: ['Вторая передача и усиление копирного вала на M109R', 'Выбор заднего баллона (240 / 260 / 280)', 'Сцепление и трос сцепления', 'Звук выхлопа Cobra / Vance & Hines'],
-    rules: ['Байкерское братство', 'Делимся проверенными запчастями', 'Взаимопомощь'],
+    image: 'assets/img/7a7fc7dc-faee-4a8a-9e1b-4c40590a36e5-5431465.jpeg',
+    shortDesc: 'Пауэр-круизеры и чопперы Suzuki: M109R / VZR1800, C109R, C90 / M90 / VL1500, C50 / M50 / VL800, VS400/800/1400.',
+    fullDesc: 'Сообщество владельцев мускулистых круизеров Suzuki Boulevard и Intruder. Знаменитый M109R с задним катком 240 мм, обслуживание сцепления, замена демпферов заднего колеса, карданный вал, установка пневмоподвесок и прямотоков Cobra / Hard Krome.',
+    modelsCovered: ['Suzuki Boulevard M109R / Intruder M1800R (VZR1800)', 'Suzuki Boulevard C109R / Intruder C1800R (VLR1800)', 'Suzuki Boulevard C90 / M90 / Intruder 1500 (VL1500 / VZ1500)', 'Suzuki Boulevard C50 / M50 / Intruder 800 (VL800 / VZ800)', 'Suzuki Intruder VS 1400 / VS 800 / VS 400'],
+    keyTopics: ['Усиление корзины сцепления на M109R', 'Замена заднего баллона на 260/280 мм', 'Синхронизация дроссельных заслонок инжектора', 'Установка дуг безопасности и кофров'],
+    rules: ['Байкерское уважение', 'Делись опытом обслуживания гигантов', 'Без спама'],
     telegramLink: 'https://t.me/BoulevardRus',
-    estimatedMembers: 6700
+    estimatedMembers: 8600
   },
   {
     slug: 'skywaveclub',
@@ -473,29 +520,29 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Suzuki Skywave / Burgman Club',
     brand: 'Suzuki',
     category: 'Брендовые',
-    image: 'assets/img/79d1a3c0-ae73-42e1-a083-d5d1445b4c10-5431489.jpeg',
-    shortDesc: 'Люксовые максискутеры Suzuki Skywave / Burgman 250, 400, 650 Executive.',
-    fullDesc: 'Комьюнити владельцев самых удобных максискутеров для города и дальнобоя. Электронный вариатор SECVT на Burgman 650 с ручным переключением передач и режимом Power, огромный багажник под два шлема, подогрев ручек и сидений.',
-    modelsCovered: ['Skywave / Burgman 650 (Executive)', 'Skywave / Burgman 400 (CK41 / CK42 / CK43 / CK44 / CK45)', 'Skywave / Burgman 250 (CJ41–CJ46)'],
-    keyTopics: ['Болты вариатора и шестерни SECVT на Burgman 650', 'Замена ремня и грузиков вариатора (Dr. Pulley)', 'Масло в редукторе и двигателе', 'Комфорт ежедневных городских поездок'],
-    rules: ['Уважение к максискутерному движению', 'Детальные инструкции по ремонту', 'Позитив'],
+    image: 'assets/img/c57c4c34-eb17-48f5-b384-eb05e8fb7fa4-5431466.jpeg',
+    shortDesc: 'Максискутеры бизнес-класса: Skywave / Burgman 250, 400, 650 (Executive).',
+    fullDesc: 'Крупнейший клуб любителей максимального комфорта в городе и путешествиях. Электронный вариатор SECVT на Burgman 650 (замена шестерен и ремня), уход за сцеплением Burgman 400, подогревы сидений и ручек, огромные багажные объемы на 2 шлема.',
+    modelsCovered: ['Suzuki Burgman / Skywave 650 (Executive, SECVT)', 'Suzuki Burgman / Skywave 400 (AN400, Type S)', 'Suzuki Burgman / Skywave 250 (CJ43A, CJ44A, CJ46A)'],
+    keyTopics: ['Диагностика вариатора SECVT (болт-фиксатор, шестерни)', 'Замена грузиков и ремня вариатора (Malossi, Dr.Pulley, Bando)', 'Обслуживание стояночного тормоза и тросов', 'Дальние путешествия на максискутерах'],
+    rules: ['Уважение к скутерному движению', 'Помощь в поиске деталей вариатора', 'Без спама'],
     telegramLink: 'https://t.me/SkywaveClub',
-    estimatedMembers: 4900
+    estimatedMembers: 6700
   },
   {
     slug: 'vstromrus',
-    username: 'vstromrus',
+    username: 'VStromRus',
     title: 'Suzuki V-Strom Club Russia',
     brand: 'Suzuki',
     category: 'Брендовые',
-    image: 'assets/img/e02c6fe9-8fa9-445a-a386-4e555461c390-5431490.jpeg',
-    shortDesc: 'Универсальные турэндуро Suzuki DL650, DL1000, V-Strom 800DE, 1050XT.',
-    fullDesc: 'Клуб любителей комфортных и сверхнадежных турэндуро Suzuki V-Strom («Стром»). Двигатели SV650/TL1000 с огромным ресурсом, удобная прямая посадка, регулируемое ветровое стекло и кофры для покорения тысяч километров.',
-    modelsCovered: ['DL 650 V-Strom (все поколения: круглые фары, клюв, XT)', 'DL 1000 / V-Strom 1050 XT', 'Новый V-Strom 800 DE (рядная двойка)', 'DL 250 V-Strom'],
-    keyTopics: ['Корзина сцепления на DL1000 и устранение вибраций', 'Выбор дуг Givi / Heed и защиты картера', 'Устранение турбулентности стекла (кронштейны MadStad)', 'Лучшие туринговые шины'],
-    rules: ['Путешествия превыше всего', 'Делимся техническим опытом', 'Без спама'],
-    telegramLink: 'https://t.me/vstromrus',
-    estimatedMembers: 6100
+    image: 'assets/img/b8221b2d-1ea3-4cf1-97ba-2caeb4bf58ec-5431476.jpeg',
+    shortDesc: 'Универсальные турэндуро: V-Strom 650 (DL650), V-Strom 1000 (DL1000), V-Strom 800DE, V-Strom 1050.',
+    fullDesc: 'Клуб неутомимых путешественников на V-Strom («Стромоводы»). Неубиваемый 650-кубовый V-Twin от SV650, новый параллельный твин 800DE с 21-м колесом, устранение вибраций корзины сцепления на литре («chudder»), установка высокого стекла и защит картера.',
+    modelsCovered: ['Suzuki DL 650 V-Strom (XT / Explorer)', 'Suzuki DL 1000 / DL 1050 V-Strom (XT)', 'Suzuki V-Strom 800DE / 800', 'Suzuki V-Strom 250 / 250SX'],
+    keyTopics: ['Лечение вибрации корзины сцепления (ShareDecks / модификация)', 'Подбор ветрового стекла и дефлекторов (Givi Airflow, Madstad)', 'Настройка подвески под полную загрузку кофрами', 'Маршруты по Грузии, Турции, Алтаю и Карелии'],
+    rules: ['Путешествия превыше всего', 'Делимся треками и проверенными сервисами', 'Без политики'],
+    telegramLink: 'https://t.me/VStromRus',
+    estimatedMembers: 8400
   },
 
   // --- Yamaha ---
@@ -505,14 +552,14 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Yamaha Star Club Russia',
     brand: 'Yamaha',
     category: 'Брендовые',
-    image: 'assets/img/e913a8fc-a212-40f4-9fb5-75e110c4d5fc-5431491.jpeg',
-    shortDesc: 'Круизеры Yamaha Star: Drag Star 400/650/1100, Royal Star 1300, Road Star 1600/1700, Raider 1900, Stryker, Bolt.',
-    fullDesc: 'Самое душевное и масштабное сообщество владельцев круизеров Yamaha Star. Олдскульные воздушные V-твины с толкателями штанг (Pushrod), карданный и ременной привод, обгонная муфта на Drag Star 1100, харизма чопперов Raider 1900 и бобберов Bolt 950.',
-    modelsCovered: ['Drag Star XVS 400 / 650 / 1100 (Classic & Custom)', 'Royal Star XVZ 1300 (V4 Tour Deluxe / Venture)', 'Road Star XV 1600 / 1700 Wild Star', 'XV 1900 Midnight Star / Raider / Stratoliner', 'XVS 1300 Midnight Star / Stryker', 'Yamaha Bolt 950 (XVS950)'],
-    keyTopics: ['Замена и усиление обгонной муфты на Drag Star 1100', 'Снятие глушителя при замене масляного фильтра / перенос фильтра', 'Регулировка карбюраторов и подсос воздуха', 'Кожаные кофры, батвинги и хром'],
-    rules: ['Традиции мотобратства', 'Взаимопомощь на трассе', 'Уважение к каждому райдеру'],
+    image: 'assets/img/842e4ec3-d5d1-4ba2-bfce-43ca2fa9db81-5431488.jpeg',
+    shortDesc: 'Круизеры Yamaha Star: DragStar 400/650/1100, Royal Star 1300, Road Star 1600/1700, Raider 1900, Stratoliner, Bolt 950.',
+    fullDesc: 'Крупнейшее сообщество владельцев круизеров линейки Star в СНГ. Тонкости обслуживания обгонной муфты на DragStar 1100, снятие заднего колеса и смазка кардана на DragStar 400/650, могучий 1.9-литровый мотор Raider 1900, кастом-проекты на базе Yamaha Bolt.',
+    modelsCovered: ['Yamaha DragStar 400 / 650 / 1100 (XVS Custom / Classic)', 'Yamaha XV1900 Raider / Stratoliner / Roadliner', 'Yamaha XV1600 / XV1700 Road Star / Wild Star', 'Yamaha XVZ1300 Royal Star / Venture', 'Yamaha XV950 Bolt / SCR950'],
+    keyTopics: ['Замена и усиление обгонной муфты (DragStar 1100)', 'Смазка шлицевых соединений кардана спецсмазкой с дисульфидом молибдена', 'Установка прямотоков Cobra/Vance & Hines и перепрошивка ЭБУ/Power Commander', 'Выбор кофров, ветровиков и хромированного тюнинга'],
+    rules: ['Байкерское братство', 'Взаимопомощь на трассе', 'Без коммерческого спама'],
     telegramLink: 'https://t.me/YamahaStarRus',
-    estimatedMembers: 12100
+    estimatedMembers: 13900
   },
   {
     slug: 'yamahafazerclub',
@@ -520,14 +567,14 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Yamaha Fazer & MT Club',
     brand: 'Yamaha',
     category: 'Брендовые',
-    image: 'assets/img/2fc5d3d4-8393-4cf2-8356-6a5ba19c25ff-5431492.jpeg',
-    shortDesc: 'Универсалы Yamaha FZ400, FZ6 (S1/S2), FZ8, FZ1 (Fazer) и линейка «Dark Side of Japan» MT-07, MT-09, MT-10.',
-    fullDesc: 'Клуб скоростных городских стритфайтеров и спорт-туристов Yamaha. Двигатели от супербайков R6 и R1, дефорсированные под удобный городской диапазон, и хулиганские 2- и 3-цилиндровые моторы CP2/CP3 семейства Master of Torque (MT).',
-    modelsCovered: ['FZ6 N / S / Fazer S2 (600cc)', 'FZ1 N / Fazer 1000 (Gen 1 / Gen 2)', 'FZ8 N / Fazer 8', 'MT-07 / Tracer 700 (CP2)', 'MT-09 / Tracer 900 (CP3)', 'MT-10 (CP4 Crossplane)', 'FZ 400 (4YR)'],
-    keyTopics: ['Генератор (ротор с магнитами) на FZ1', 'Дроссельные заслонки и чистка форсунок', 'Подвеска и замена пружин в вилке на MT-07/09', 'Идеальный мотоцикл на каждый день и в прохваты'],
-    rules: ['Активное общение по делу', 'Без спама и мата', 'Поддержка новичков'],
+    image: 'assets/img/b8221b2d-1ea3-4cf1-97ba-2caeb4bf58ec-5431476.jpeg',
+    shortDesc: 'Спортивно-городские мотоциклы: FZ400, FZ6 (N / S / S2), FZ1, FZ8, MT-07, MT-09, MT-10.',
+    fullDesc: 'Клуб владельцев универсальных стритфайтеров и спорт-туристов Yamaha. Двигатели от R6 и R1 в дружелюбном шасси, демпфер сцепления FZ6, ротор генератора на FZ1 (отклеивание магнитов и замена на цельнометаллический), 3-цилиндровый Crossplane CP3 на MT-09.',
+    modelsCovered: ['Yamaha FZ6 (FZ6-N, FZ6-S Fazer, S2)', 'Yamaha FZ1 (FZ1-N, FZ1-S Fazer 1000)', 'Yamaha FZ8 / Fazer8', 'Yamaha MT-07 / MT-09 / MT-10 (SP)', 'Yamaha FZ400 (4YR) / FZS600 / FZS1000'],
+    keyTopics: ['Замена открытого ротора генератора на FZ1 на нового образца', 'Регулировка датчика положения дроссельной заслонки TPS (FZ6)', 'Настройка подвески для города и трека', 'Установка дуг и слайдеров двигателя'],
+    rules: ['Дружеское общение', 'Помощь новичкам', 'Без мата и спама'],
     telegramLink: 'https://t.me/YamahaFazerClub',
-    estimatedMembers: 9500
+    estimatedMembers: 11200
   },
   {
     slug: 'r1r6club',
@@ -535,14 +582,14 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Yamaha YZF R1 & R6 Club',
     brand: 'Yamaha',
     category: 'Брендовые',
-    image: 'assets/img/5f9df273-0975-430c-ba72-f6746efab492-5431493.jpeg',
-    shortDesc: 'Чистокровные супербайки Yamaha YZF-R1 (включая Crossplane CP4) и YZF-R6.',
-    fullDesc: 'Чат пилотов спортивной элиты Yamaha. Неповторимый звук крестообразного коленвала Crossplane R1, 16 000 оборотов ярости на R6, трековые настройки геометрии, слики, прогрев резины и максимальная концентрация на виражах.',
-    modelsCovered: ['YZF-R1 (Карб 1998, инжектор 2002–2008, Crossplane 2009+, R1M)', 'YZF-R6 (RJ03, RJ05, RJ11, RJ15, RJ27)', 'YZF-R3 / R7'],
-    keyTopics: ['Обслуживание моторов CP4 и зазоры клапанов', 'Трековые настройки демпфера руля (Ohlins/GPR)', 'Гоночные тормозные колодки SBS/Ferodo и диски Brembo', 'Телеметрия картодромов (Лидер, Фирсановка, Moscow Raceway, Игора)'],
-    rules: ['Строго для пилотов в полной защите', 'Уважение к трековому этикету', 'Без флуда'],
+    image: 'assets/img/320bb269-83bc-42b7-a36c-2f98e578eb04-5431477.jpeg',
+    shortDesc: 'Бескомпромиссные супербайки Yamaha: YZF-R6 (RJ03-RJ27), YZF-R1 (RN01-RN65 Crossplane CP4).',
+    fullDesc: 'Сообщество пилотов спортивной элиты Yamaha. Легендарный звук крестообразного коленвала Crossplane CP4, подготовка R6 к кольцевым гонкам, настройка подвесок KYB/Öhlins, прошивка ЭБУ под полный выхлоп Akrapovič, титановые шатуны и телеметрия.',
+    modelsCovered: ['Yamaha YZF-R1 Crossplane CP4 (2009–2024)', 'Yamaha YZF-R1 (1998–2008)', 'Yamaha YZF-R6 (RJ11, RJ15, RJ27)', 'Yamaha YZF-R7 / R3'],
+    keyTopics: ['Подготовка к треку: тормоза Brembo RCS, армированные магистрали, грелки', 'Обслуживание клапанного механизма и замена цепи ГРМ', 'Настройка электроники: режимы мощности, Launch Control, анти-слайд', 'Устранение масложора на ранних версиях'],
+    rules: ['Строгая безопасность', 'Экипировка на 100%', 'Без уличного неадеквата'],
     telegramLink: 'https://t.me/r1r6club',
-    estimatedMembers: 7900
+    estimatedMembers: 9600
   },
   {
     slug: 'tenereclub',
@@ -550,14 +597,14 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Yamaha Tenere Club (T7 / XT1200Z)',
     brand: 'Yamaha',
     category: 'Брендовые',
-    image: 'assets/img/128dfad0-e25f-4a0b-93ff-eb4185790be6-5431494.jpeg',
-    shortDesc: 'Раллийные турэндуро Yamaha Tenere 700 (T700 / World Raid), Super Tenere XT1200Z, XT660Z.',
-    fullDesc: 'Клуб покорителей песков, грейдеров и каменистых перевалов на мотоциклах Tenere. Бестселлер раллийного мира Tenere 700 с тяговитым мотором CP2 без лишней душащей электроники и могучий карданный флагман XT1200Z Super Tenere.',
-    modelsCovered: ['Tenere 700 (T700 / Rally / World Raid / Extreme)', 'XT 1200 Z Super Tenere (кардан)', 'XT 660 Z Tenere / XT 660 R', 'XTZ 750 Super Tenere (легенда Дакара)'],
-    keyTopics: ['Защита картера, радиатора и боковых крышек на T7', 'Усиление подвески (картриджи K-Tech / Ohlins / Andreani)', 'Высокое крыло и раллийная навигация', 'Одиночные и групповые экспедиции в горы'],
-    rules: ['Дух приключений и дакаровских побед', 'Обмен GPS-треками', 'Помощь одноклубникам'],
+    image: 'assets/img/14352eb9-4aa8-4447-aa1c-0c151fb78926-5431489.jpeg',
+    shortDesc: 'Культовые ралли-рейдовые турэндуро: Tenere 700 (T7 / World Raid), Super Tenere 1200 (XT1200Z), XT660Z.',
+    fullDesc: 'Клуб покорителей песков, бродов и каменистых перевалов. Тяговитый мотор CP2 на Tenere 700 без лишней электроники, карданный монументальный Super Tenere 1200 с баком на 30 литров, установка усиленных спицованных колес и раллийной навигации.',
+    modelsCovered: ['Yamaha Tenere 700 (T7 / Rally / World Raid / Extreme)', 'Yamaha XT1200Z / XT1200ZE Super Tenere', 'Yamaha XT660Z Tenere / XT660R', 'Yamaha XTZ 750 Super Tenere'],
+    keyTopics: ['Защита радиатора, помпы и картера для жесткого бездорожья', 'Усиление хвостовика рамы и багажные системы', 'Замена картриджей вилки и пружин заднего амортизатора', 'Маршруты по Дагестану, Монголии и Средней Азии'],
+    rules: ['Раллийное братство', 'Делимся GPS-треками и точками эвакуации', 'Без флуда'],
     telegramLink: 'https://t.me/tenereclub',
-    estimatedMembers: 6400
+    estimatedMembers: 7900
   },
   {
     slug: 'yamahatdmrus',
@@ -565,58 +612,58 @@ export const CHATS_CATALOG: ChatCatalogItem[] = [
     title: 'Yamaha TDM Club Russia (850 / 900)',
     brand: 'Yamaha',
     category: 'Брендовые',
-    image: 'assets/img/ca1a58df-eb60-4969-9da8-a0cfa5e2ff74-5431495.jpeg',
-    shortDesc: 'Универсальные кроссоверы Yamaha TDM 850 (1 и 2 поколение) и TDM 900.',
-    fullDesc: 'Сообщество владельцев родоначальника класса дорожных кроссоверов Yamaha TDM. Большие ходы подвески, тяга с самых низов благодаря 270-градусному коленвалу, отличная ветрозащита и непревзойденная практичность на любых дорогах СНГ.',
-    modelsCovered: ['Yamaha TDM 900 (Инжектор, 6-ступка, алюминиевая рама)', 'Yamaha TDM 850-2 (1996–2001, двигатель с TRX850)', 'Yamaha TDM 850-1 (1991–1995, 360-градусный коленвал)'],
-    keyTopics: ['Расход масла на TDM 850 и маслосъемные колпачки', 'Эмульсионные трубки и иглы в карбюраторах Mikuni BDST38', 'Проводка и датчик TPS на TDM 900', 'Кофры, свет и комфортный туризм'],
-    rules: ['Уважение к легендарному «Тыгыдыму»', 'Делимся мануалами и запчастями', 'Без спама'],
+    image: 'assets/img/31969ec6-89bf-4509-96cb-bb4df0894562-5431478.jpeg',
+    shortDesc: 'Универсальные дорожные кроссоверы: TDM 850 (I / II) и TDM 900 (с инжектором и ABS).',
+    fullDesc: 'Клуб почитателей одного из первых кроссоверов в истории мотостроения («Тыгыдым»). 2-цилиндровый рядник с сухим картером, замер уровня масла по мануалу, синхронизация инжектора TDM900, подбор передней резины 18 дюймов и комфорт на любых российских дорогах.',
+    modelsCovered: ['Yamaha TDM 900 (RN08 / RN11 / RN18 с ABS)', 'Yamaha TDM 850-2 (4TX, 1996–2001)', 'Yamaha TDM 850-1 (3VD / 4CN, 1991–1995)', 'Yamaha TRX 850'],
+    keyTopics: ['Правильный замер уровня масла на сухом картере (на горячую после 10 мин работы)', 'Синхронизация дросселей и регулировка клапана холостого хода', 'Переборка и замена эмульсионных трубок в карбюраторах Mikuni (TDM 850)', 'Подбор шин редкой размерности 120/70 ZR18'],
+    rules: ['Взаимоуважение и помощь в поиске редких запчастей', 'Делимся мануалами', 'Без спама'],
     telegramLink: 'https://t.me/YamahaTDMrus',
-    estimatedMembers: 5800
+    estimatedMembers: 8300
   },
   {
     slug: 'vmaxrus',
-    username: 'vmaxrus',
+    username: 'VmaxRus',
     title: 'Yamaha V-Max Club (1200 / 1700)',
     brand: 'Yamaha',
     category: 'Брендовые',
-    image: 'assets/img/28d0901e-c760-4100-8802-0e964177d61b-5431496.jpeg',
-    shortDesc: 'Легендарный «Кувалдолет»: культовый маслбайк Yamaha VMAX 1200 с системой V-Boost и VMAX 1700.',
-    fullDesc: 'Чат владельцев легендарной «Кувалды». Мотор V4, система наддува V-Boost, открывающаяся на 6000 об/мин с диким пинком под зад, переделка слабой стоковой рамы и тормозов, а также 200-сильный космический VMAX 1700.',
-    modelsCovered: ['VMAX 1200 (Полносил 145 л.с. с V-Boost, канадцы, японцы 2LT/3UF)', 'VMAX 1700 (200 л.с., алюминиевая рама, кардан)'],
-    keyTopics: ['Настройка и синхронизация сервопривода V-Boost', 'Усиление рамы (распорки, маятник) и установка колес 17"', 'Тормозные машинки и суппорты от R1 на VMAX 1200', 'Расход топлива и объем бака (фальшбак)'],
-    rules: ['Уважение к бешеному характеру Кувалды', 'Технические тонкости от гуру клуба', 'Без флуда'],
-    telegramLink: 'https://t.me/vmaxrus',
-    estimatedMembers: 5100
+    image: 'assets/img/a04a6011-ddcc-4089-a299-1a48698ee09f-5431491.jpeg',
+    shortDesc: 'Легендарные мускул-байки «Кувалда»: V-Max 1200 (V-Boost 145 л.с.) и VMAX 1700 (200 л.с.).',
+    fullDesc: 'Культовое сообщество владельцев самого харизматичного пауэр-круизера в мире. Система наддува V-Boost, открывающаяся на 6000 об/мин, усиление гибкой рамы распорками, переборка 4 карбюраторов, могучий 1700-кубовый V4 с чип-тюнингом и неповторимый стиль.',
+    modelsCovered: ['Yamaha V-Max 1200 (1985–2007, Full Power 145 hp / 2LT / 1FK)', 'Yamaha VMAX 1700 (2009–2020, 200 hp / RP21)'],
+    keyTopics: ['Настройка сервопривода и синхронизация системы V-Boost', 'Усиление рамы (T-bars, subframe braces) и установка вилки от спортбайка', 'Обгонная муфта стартера и усиленные провода аккумулятора', 'Выбор широкого заднего колеса и тюнинг тормозов'],
+    rules: ['Уважение к легенде V-Max', 'Без глупых споров о расходе топлива (он огромен!)', 'Взаимовыручка'],
+    telegramLink: 'https://t.me/VmaxRus',
+    estimatedMembers: 7500
   },
   {
     slug: 'clubxjr',
-    username: 'clubXJR',
+    username: 'clubxjr',
     title: 'Yamaha XJR & FJ Club (400 / 1200 / 1300)',
     brand: 'Yamaha',
     category: 'Брендовые',
-    image: 'assets/img/6bc992a5-433c-44bf-a9f8-5cf774be090d-5431497.jpeg',
-    shortDesc: 'Классические масл-нейкеды воздушного охлаждения Yamaha XJR 1300, XJR 1200, XJR 400 и спорт-туристы FJ1200.',
-    fullDesc: 'Клуб истинных ценителей чистой мощи воздушного охлаждения. Самый большой серийный 4-цилиндровый «воздушник» в мире (1300 кубов), двойные амортизаторы Ohlins, классическая круглая фара и непревзойденная харизма настоящего железа.',
-    modelsCovered: ['Yamaha XJR 1300 (Карбюраторные RP02/RP06 и инжекторные RP19)', 'Yamaha XJR 1200 (4PU)', 'Yamaha XJR 400 (4HM / RH02J)', 'Yamaha FJ 1200 / FJ 1100'],
-    keyTopics: ['Впускные патрубки карбюраторов (манифолды) и их герметичность', 'Обслуживание задних амортизаторов Ohlins', 'Зазоры клапанов и шайбы', 'Масляный радиатор и температурный режим в пробках'],
-    rules: ['Любовь к олдскулу и качественному металлу', 'Без спама', 'Делимся опытом'],
-    telegramLink: 'https://t.me/clubXJR',
+    image: 'assets/img/32d03fa6-b1cb-4df6-8ff4-dd5d2630a9ce-5431484.jpeg',
+    shortDesc: 'Классические масл-байки с воздушным охлаждением: XJR 400, XJR 1200, XJR 1300 (SP), FJ 1200.',
+    fullDesc: 'Клуб почитателей монументальных 4-цилиндровых «воздушников» Yamaha с двумя амортизаторами Öhlins. Обслуживание карбюраторов, замена цепи генератора и ГРМ, подбор масла для высокотемпературных режимов и классический японский стиль.',
+    modelsCovered: ['Yamaha XJR 1300 / XJR 1300 SP (Карбюратор / Инжектор)', 'Yamaha XJR 1200 (4PU)', 'Yamaha XJR 400 (4HM / RH02J)', 'Yamaha FJ 1200 / FJ 1100'],
+    keyTopics: ['Регулировка тепловых зазоров клапанов шайбами', 'Замена впускных патрубков манифолдов (борьба с подсосом воздуха)', 'Обслуживание задних амортизаторов Öhlins', 'Выбор масел с высокой термостабильностью'],
+    rules: ['Любовь к классическим масл-байкам', 'Без коммерческого спама', 'Помощь соклубникам'],
+    telegramLink: 'https://t.me/clubxjr',
     estimatedMembers: 6200
   },
   {
     slug: 'diversionclub',
-    username: 'Diversion_club',
+    username: 'diversionclub',
     title: 'Yamaha Diversion & XJ6 Club',
     brand: 'Yamaha',
     category: 'Брендовые',
-    image: 'assets/img/5fe25686-e7e2-4ff5-b91c-293e50b86a87-5431498.jpeg',
-    shortDesc: 'Надежные и дружелюбные дорожники Yamaha XJ6 Diversion (XJ6N / XJ6F / XJ6S), XJ600, XJ900.',
-    fullDesc: 'Сообщество владельцев комфортных и надежных мотоциклов линейки Диверсия. Идеальный баланс мягкой тяги 4-цилиндрового мотора, удобной посадки, защиты от ветра и низкой стоимости владения как для новичков, так и для опытных райдеров.',
-    modelsCovered: ['XJ6 Diversion (Naked, S-полуобтекатель, F-полный пластик)', 'XJ 600 S Diversion / XJ 600 N', 'XJ 900 S Diversion (карданный турист)', 'XJ 400 Diversion'],
-    keyTopics: ['Надежность и регламентное ТО каждые 10 000 км', 'Установка дуг и центрального кофра', 'Мягкость сцепления и плавность хода', 'Выбор первого взрослого мотоцикла'],
-    rules: ['Доброжелательность к новичкам', 'Техническая помощь', 'Без токсичности'],
-    telegramLink: 'https://t.me/Diversion_club',
+    image: 'assets/img/264b38d3-0599-4c57-a1dc-27485098b671-5431492.jpeg',
+    shortDesc: 'Надежные и дружелюбные дорожные мотоциклы: XJ6 (N / Diversion / F), XJ 600 S/N, XJ 900 Diversion.',
+    fullDesc: 'Сообщество владельцев идеальных мотоциклов для города и начинающих райдеров. Плавный и эластичный 4-цилиндровый мотор от FZ6, карданный привод на XJ 900, установка центральных кофров, регулировка сцепления и высокий комфорт.',
+    modelsCovered: ['Yamaha XJ6 Diversion / XJ6-N / XJ6-F (2009–2016)', 'Yamaha XJ 600 S Diversion / XJ 600 N (1992–2003)', 'Yamaha XJ 900 S Diversion (Кардан)'],
+    keyTopics: ['Замена масла, фильтров и свечей зажигания', 'Установка дуг безопасности и ветровых стекол повышенного комфорта', 'Обслуживание карданной передачи на XJ 900', 'Выбор резины для комфортных ежедневных поездок'],
+    rules: ['Дружелюбная атмосфера', 'Помощь новичкам без снобизма', 'Без рекламы'],
+    telegramLink: 'https://t.me/diversionclub',
     estimatedMembers: 4600
   },
 
@@ -683,12 +730,75 @@ export function findChatInCatalog(identifier: string): ChatCatalogItem | undefin
 // Memory & Database Cache for 30-Day Daily Summaries
 export const chatSummariesStore: Map<string, ChatDailySummary[]> = new Map();
 
-// Helper to generate a batch of authentic 30-day summaries if none exists
+// Helper to parse HTML-formatted Telegram digests into structured topics
+export function parseDigestSummaryToTopics(rawHtml: string): { dayLabel: string; topics: { emoji: string; title: string; description: string }[] } {
+  const topics: { emoji: string; title: string; description: string }[] = [];
+  if (!rawHtml) return { dayLabel: '', topics: [] };
+
+  // Extract date if present
+  let dayLabel = '';
+  const dateMatch = rawHtml.match(/📅\s*<i>(.*?)<\/i>/i) || rawHtml.match(/📅\s*(.*?)(\n|$)/i);
+  if (dateMatch) {
+    dayLabel = dateMatch[1].trim();
+  }
+
+  // Regex matching standard telegram digest format: 🔥 <b>Topic Title</b>\n<blockquote...>Description</blockquote>
+  const headerRegex = /([🔥💡📣🔧⚙️⚡🛡️🗺️🔍👥📊])\s*<b>(.*?)<\/b>\s*[\n\r]*<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi;
+  let match;
+  while ((match = headerRegex.exec(rawHtml)) !== null) {
+    const emoji = match[1];
+    const title = match[2].trim();
+    const desc = match[3].trim().replace(/<\/?b>/gi, '').replace(/<\/?i>/gi, '').replace(/<a\s+[^>]*>(.*?)<\/a>/gi, '$1');
+    topics.push({ emoji, title, description: desc });
+  }
+
+  // Fallback if no blockquote was used
+  if (topics.length === 0) {
+    const boldRegex = /([🔥💡📣🔧⚙️⚡🛡️🗺️🔍👥📊])\s*<b>(.*?)<\/b>([\s\S]*?)(?=(?:[🔥💡📣🔧⚙️⚡🛡️🗺️🔍👥📊]\s*<b>|$))/gi;
+    while ((match = boldRegex.exec(rawHtml)) !== null) {
+      const emoji = match[1];
+      const title = match[2].trim();
+      const desc = match[3].trim().replace(/<\/?blockquote[^>]*>/gi, '').replace(/<\/?b>/gi, '').replace(/<\/?i>/gi, '').replace(/<a\s+[^>]*>(.*?)<\/a>/gi, '$1');
+      topics.push({ emoji, title, description: desc });
+    }
+  }
+
+  return { dayLabel, topics };
+}
+
+// Convert Firestore chat_digests document into ChatDailySummary
+export function convertDbDigestToSummary(docData: any, chatSlug: string): ChatDailySummary {
+  const rawHtml = docData.summary || '';
+  const parsed = parseDigestSummaryToTopics(rawHtml);
+  const createdDate = docData.createdAt ? new Date(docData.createdAt) : new Date();
+  const dateStr = createdDate.toISOString().split('T')[0];
+  const dayLabel = parsed.dayLabel || new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(createdDate);
+
+  const topics = parsed.topics.length > 0 ? parsed.topics : [
+    { emoji: '🔥', title: 'Главные темы и обсуждения', description: rawHtml.replace(/<[^>]*>/g, '').substring(0, 300) + '...' },
+    { emoji: '💡', title: 'Технические советы и опыт', description: 'Участники чата обменялись практическими рекомендациями по обслуживанию и эксплуатации.' }
+  ];
+
+  return {
+    id: `sum_${chatSlug}_${docData.id || dateStr}`,
+    chatSlug: chatSlug,
+    date: dateStr,
+    dayLabel: dayLabel,
+    title: `Дайджест за ${dayLabel}`,
+    messageCount: docData.messageCount || 50,
+    activeUsersCount: docData.userCount || 15,
+    topics: topics,
+    rawSummaryHtml: rawHtml,
+    createdAt: docData.createdAt || new Date().toISOString(),
+    isReal: true
+  };
+}
+
+// Helper to generate seed summaries if chat has no DB digests yet
 export function generateSeedSummariesForChat(chat: ChatCatalogItem): ChatDailySummary[] {
   const summaries: ChatDailySummary[] = [];
   const now = new Date();
 
-  // Topic variations based on brand and category
   const topicTemplates = [
     {
       emoji: '🔧',
@@ -737,14 +847,12 @@ export function generateSeedSummariesForChat(chat: ChatCatalogItem): ChatDailySu
     const d = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
     const dateStr = d.toISOString().split('T')[0];
     
-    // Format Russian date label
     const dayFormatter = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
     const dayLabel = dayFormatter.format(d);
 
     const msgCount = Math.floor(45 + Math.sin(i * 1.5 + chat.slug.length) * 30 + (i % 5) * 12);
     const userCount = Math.max(8, Math.floor(msgCount * 0.35));
 
-    // Pick 3-4 topics rotationally
     const tIndex1 = (i * 2) % topicTemplates.length;
     const tIndex2 = (i * 2 + 1) % topicTemplates.length;
     const tIndex3 = (i * 2 + 3) % topicTemplates.length;
@@ -771,7 +879,8 @@ export function generateSeedSummariesForChat(chat: ChatCatalogItem): ChatDailySu
       activeUsersCount: userCount,
       topics: chosenTopics.map(t => ({ emoji: t.emoji, title: t.title, description: t.desc })),
       rawSummaryHtml: html,
-      createdAt: d.toISOString()
+      createdAt: d.toISOString(),
+      isReal: false
     });
   }
 
@@ -780,25 +889,75 @@ export function generateSeedSummariesForChat(chat: ChatCatalogItem): ChatDailySu
 
 // Function to add a summary for a chat and prune older than 30
 export function addChatSummary(chatSlug: string, summary: ChatDailySummary): ChatDailySummary[] {
-  let list = chatSummariesStore.get(chatSlug);
-  if (!list || list.length === 0) {
-    const catalogItem = findChatInCatalog(chatSlug);
-    list = catalogItem ? generateSeedSummariesForChat(catalogItem) : [];
-  }
-
+  let list = chatSummariesStore.get(chatSlug) || [];
+  
   // Remove existing summary for this date if exists
   list = list.filter(s => s.date !== summary.date && s.id !== summary.id);
 
   // Insert at top (newest first)
   list.unshift(summary);
 
-  // Keep STRICTLY maximum 30 summaries
+  // Keep strictly maximum 30 summaries
   if (list.length > 30) {
     list = list.slice(0, 30);
   }
 
   chatSummariesStore.set(chatSlug, list);
   return list;
+}
+
+// Async loader to populate chatSummariesStore from real Firestore chat_digests
+export async function loadRealDigestsFromDatabase(): Promise<void> {
+  try {
+    const digestsSnap = await db.collection('chat_digests').get();
+    if (digestsSnap.empty) {
+      console.log('[ChatCatalog] В коллекции chat_digests пока нет записей.');
+      return;
+    }
+
+    const allDigests = digestsSnap.docs.map(d => d.data());
+
+    for (const chat of CHATS_CATALOG) {
+      const mapping = CHAT_TO_DB_MAPPING[chat.slug];
+      
+      // Filter digests belonging to this chat
+      const realForChat = allDigests.filter(d => {
+        if (!d) return false;
+        if (mapping && mapping.id && String(d.chatId) === mapping.id) return true;
+        if (d.chatTitle) {
+          const dTitle = d.chatTitle.toLowerCase();
+          if (mapping?.altTitles?.some(t => dTitle.includes(t))) return true;
+          if (dTitle.includes(chat.title.toLowerCase()) || chat.title.toLowerCase().includes(dTitle)) return true;
+        }
+        return false;
+      });
+
+      if (realForChat.length > 0) {
+        // Sort newest first
+        realForChat.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+        
+        // Convert to ChatDailySummary
+        const realSummaries = realForChat.map(d => convertDbDigestToSummary(d, chat.slug));
+        
+        // If real summaries < 30, we can prepend real ones and fill remaining older dates from seed
+        const realDates = new Set(realSummaries.map(s => s.date));
+        const seedSummaries = generateSeedSummariesForChat(chat).filter(s => !realDates.has(s.date));
+        
+        const combined = [...realSummaries, ...seedSummaries];
+        combined.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+        
+        chatSummariesStore.set(chat.slug, combined.slice(0, 30));
+      } else {
+        // No real digests yet for this chat, use generated seed
+        const seed = generateSeedSummariesForChat(chat);
+        chatSummariesStore.set(chat.slug, seed);
+      }
+    }
+
+    console.log(`[ChatCatalog] ✅ Успешно загружены и привязаны реальные дайджесты из базы для ${CHATS_CATALOG.length} чатов.`);
+  } catch (err) {
+    console.error('[ChatCatalog] Ошибка загрузки дайджестов из базы:', err);
+  }
 }
 
 // Get the 30 daily summaries for a chat (ensuring exactly up to 30 items)

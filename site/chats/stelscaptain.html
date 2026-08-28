@@ -17,6 +17,9 @@
   <!-- Favicon -->
   <link rel="icon" href="../assets/img/c23f0286-8e57-4dd1-8e07-7b56b5b93810-5550045.jpeg" type="image/jpeg">
 
+  <!-- Remote Admin API Config (Connects to http://155.212.162.1:3000) -->
+  <script src="../config.js"></script>
+
   <!-- Google Fonts -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -3028,35 +3031,110 @@
     </div>
   </footer>
 
-  <!-- Live Stats Auto-Updater Script -->
+  <!-- Live Stats & Real Digests Auto-Updater Script (Connects to Remote Admin API) -->
   <script>
-    // Live update stats from public API
     (async function() {
       try {
-        const response = await fetch('/api/public/chats-stats');
+        const getApiUrl = function(endpoint) {
+          if (typeof window.getMotoTgApiUrl === 'function') {
+            return window.getMotoTgApiUrl(endpoint);
+          }
+          const base = window.MOTOTG_API_BASE || (window.MOTOTG_CONFIG && window.MOTOTG_CONFIG.apiBase) || 'http://155.212.162.1:3000';
+          return base + endpoint;
+        };
+
+        const targetSlug = 'stelscaptain';
+        const apiUrl = getApiUrl('/api/public/chat/' + encodeURIComponent(targetSlug));
+        
+        const response = await fetch(apiUrl, {
+          method: 'GET',
+          headers: { 'Accept': 'application/json' },
+          mode: 'cors'
+        });
+
         if (response.ok) {
           const data = await response.json();
-          if (data && data.chats) {
-            const currentChat = data.chats.find(c => 
-              (c.username && c.username.toLowerCase() === 'stelscaptain'.toLowerCase()) ||
-              (c.id && String(c.id).includes('stelscaptain'))
-            );
-            if (currentChat) {
-              if (currentChat.members) {
-                const memEl = document.getElementById('live-members-count');
-                if (memEl) memEl.textContent = currentChat.members.toLocaleString('ru-RU');
+          if (data && data.success && data.chat) {
+            // 1. Update live member counters
+            const liveChat = data.chat;
+            const memberCount = liveChat.liveMembers || liveChat.members;
+            if (memberCount) {
+              const memEl = document.getElementById('live-members-count');
+              if (memEl) memEl.textContent = Number(memberCount).toLocaleString('ru-RU');
+            }
+
+            const msgText = liveChat.liveMessagesText || liveChat.messagesText;
+            if (msgText) {
+              const msgEl = document.getElementById('live-24h-count');
+              if (msgEl) {
+                msgEl.textContent = msgText === 'Нет данных' ? 'Нет данных' : (msgText.includes('сообщ') ? msgText : msgText + ' сообщ.');
               }
-              if (currentChat.messagesText) {
-                const msgEl = document.getElementById('live-24h-count');
-                if (msgEl) {
-                  msgEl.textContent = currentChat.messagesText === 'Нет данных' ? 'Нет данных' : currentChat.messagesText + ' сообщ.';
+            }
+
+            // 2. If real digests are loaded from database, update the archive dynamically
+            if (Array.isArray(data.summaries) && data.summaries.length > 0) {
+              const hasReal = data.summaries.some(function(s) { return s.isReal === true; });
+              if (hasReal) {
+                const archiveContainer = document.getElementById('summaries-archive');
+                if (archiveContainer) {
+                  const freshCardsHtml = data.summaries.map(function(s, idx) {
+                    const isFirst = idx === 0;
+                    const isRealTag = s.isReal ? '<span style="background: #10b981; color: #000; font-size: 11px; font-weight: 800; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; margin-left: 6px; display: inline-flex; align-items: center; gap: 4px;">✓ ИИ Дайджест</span>' : '';
+                    
+                    const topicsPills = (s.topics || []).map(function(t) {
+                      const title = typeof t === 'string' ? t : (t.title || '');
+                      return '<span class="topic-pill">' + title + '</span>';
+                    }).join('');
+
+                    const topicsDetailed = (s.topics || []).map(function(t) {
+                      const title = typeof t === 'string' ? t : (t.title || '');
+                      const summary = typeof t === 'string' ? '' : (t.summary || '');
+                      const icon = (typeof t === 'object' && t.icon) ? t.icon : '📌';
+                      return '<div class="topic-detail-card">' +
+                        '<h4><span class="topic-icon">' + icon + '</span> ' + title + '</h4>' +
+                        (summary ? '<p class="topic-summary-text">' + summary + '</p>' : '') +
+                      '</div>';
+                    }).join('');
+
+                    return '<article class="summary-card ' + (isFirst ? 'is-latest' : '') + '" id="day-' + s.date + '">' +
+                      '<div class="summary-header">' +
+                        '<div class="summary-meta-left">' +
+                          '<span class="summary-date-badge">' +
+                            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>' +
+                            (s.dayLabel || s.date) +
+                          '</span>' +
+                          (isFirst ? '<span class="latest-tag">Свежий выпуск</span>' : '') +
+                          isRealTag +
+                        '</div>' +
+                        '<div class="summary-stats-badges">' +
+                          '<span class="stat-badge" title="Сообщений за сутки">💬 ' + (s.messageCount || 0) + ' сообщ.</span>' +
+                          '<span class="stat-badge" title="Активных участников">👥 ' + (s.activeUsersCount || 0) + ' чел.</span>' +
+                        '</div>' +
+                      '</div>' +
+                      '<div class="summary-topics-preview">' + topicsPills + '</div>' +
+                      '<details class="summary-details-block" ' + (isFirst ? 'open' : '') + '>' +
+                        '<summary class="summary-toggle-btn">' +
+                          '<span class="toggle-text-closed">Показать полный дайджест дня</span>' +
+                          '<span class="toggle-text-open">Свернуть дайджест</span>' +
+                          '<svg class="toggle-chevron" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>' +
+                        '</summary>' +
+                        '<div class="summary-content-body">' +
+                          '<div class="summary-topics-list">' + topicsDetailed + '</div>' +
+                          (s.summary ? '<div class="summary-atmosphere-box"><strong>👥 Итоги и выжимка:</strong><p>' + s.summary + '</p></div>' : '') +
+                        '</div>' +
+                      '</details>' +
+                    '</article>';
+                  }).join('
+');
+
+                  archiveContainer.innerHTML = freshCardsHtml;
                 }
               }
             }
           }
         }
       } catch (e) {
-        console.log('Stats loaded from static bundle');
+        console.log('[MOTOTG] Данные загружены из встроенного статического кэша');
       }
     })();
   </script>

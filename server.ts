@@ -10,7 +10,7 @@ import bcrypt from 'bcryptjs';
 import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
 import { FilterSettings, Chat, BotSettings, ActiveMuteEntry } from './types';
-import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary } from './chatsCatalog';
+import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 import { generateAllStaticPages, renderChatHtmlPage } from './generateSitePages';
 
 const app = express();
@@ -94,7 +94,8 @@ async function generateAIResponse(promptText: string, options?: { model?: string
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: promptText }]
-      })
+      }),
+      signal: AbortSignal.timeout(45000)
     });
 
     if (!response.ok) {
@@ -135,7 +136,8 @@ async function generateAIResponse(promptText: string, options?: { model?: string
       body: JSON.stringify({
         model,
         messages: [{ role: 'user', content: promptText }]
-      })
+      }),
+      signal: AbortSignal.timeout(45000)
     });
 
     if (!response.ok) {
@@ -179,7 +181,8 @@ async function generateAIResponse(promptText: string, options?: { model?: string
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts: [{ text: promptText }] }]
-        })
+        }),
+        signal: AbortSignal.timeout(45000)
       });
       if (!response.ok) {
         const errText = await response.text();
@@ -4837,7 +4840,9 @@ async function initBot(token: string) {
 
     const cfWorkerUrl = settings.disableCloudflare ? null : (settings.cfWorkerUrl || process.env.CF_WORKER_URL);
     const apiRoot = settings.telegramApiRoot || process.env.TELEGRAM_API_ROOT;
-    const telegrafOptions: any = {};
+    const telegrafOptions: any = {
+      handlerTimeout: 180000 // 3 minutes timeout for long-running handler operations
+    };
     if (apiRoot) {
       const cleanApiRoot = apiRoot.replace(/\/$/, '');
       telegrafOptions.telegram = {
@@ -4892,8 +4897,13 @@ async function initBot(token: string) {
       }
     }
 
-    bot.catch((err, ctx) => {
-      console.error(`Unhandled error while processing ${ctx.updateType}:`, err);
+    bot.catch((err: any, ctx: any) => {
+      const isTimeout = err?.name === 'TimeoutError' || (err?.message && err.message.includes('timed out after'));
+      if (isTimeout) {
+        console.warn(`[Bot Warning] Message/update processing timed out for "${ctx?.updateType || 'unknown'}": ${err?.message || err}`);
+      } else {
+        console.error(`Unhandled error while processing ${ctx?.updateType || 'unknown'}:`, err);
+      }
     });
     
     bot.start(async (ctx) => {
@@ -5951,31 +5961,34 @@ async function initBot(token: string) {
 
                 const waitMsg = await ctx.reply('🤖 Анализирую сообщения за 24ч и формирую дайджест с помощью Gemini AI... Пожалуйста, подождите несколько секунд.');
 
-                try {
-                  const digest = await generateChatSummary(chatId, 24, undefined, false);
+                // Run generation asynchronously so Telegraf message middleware resolves immediately
+                (async () => {
                   try {
-                    await ctx.telegram.deleteMessage(chatId, waitMsg.message_id);
-                  } catch (e) {}
-
-                  await sendTelegramHtmlMessage(chatId, digest.summary);
-                  digest.sentToTelegram = true;
-                  (digest as any).sentAt = new Date().toISOString();
-                  queueWrite('chat_digests', digest.id, cleanData(digest));
-                } catch (err: any) {
-                  console.error('Failed to generate summary on command:', err);
-                  const isThresholdErr = err?.message?.includes('требуется минимум 10') || err?.message?.includes('только');
-                  const errorText = isThresholdErr 
-                    ? `ℹ️ <b>Дайджест не сформирован</b>\n\nЗа последние 24 часа в чате зафиксировано мало активности (меньше 10 сообщений). Дайджест составляется только при активном общении участников.`
-                    : `❌ <b>Ошибка генерации:</b> ${escapeHtml(err.message || String(err))}`;
-
-                  try {
-                    await ctx.telegram.editMessageText(chatId, waitMsg.message_id, undefined, errorText, { parse_mode: 'HTML' });
-                  } catch (e) {
+                    const digest = await generateChatSummary(chatId, 24, undefined, false);
                     try {
-                      await ctx.reply(errorText, { parse_mode: 'HTML' });
-                    } catch (replyErr) {}
+                      await ctx.telegram.deleteMessage(chatId, waitMsg.message_id);
+                    } catch (e) {}
+
+                    await sendTelegramHtmlMessage(chatId, digest.summary);
+                    digest.sentToTelegram = true;
+                    (digest as any).sentAt = new Date().toISOString();
+                    queueWrite('chat_digests', digest.id, cleanData(digest));
+                  } catch (err: any) {
+                    console.error('Failed to generate summary on command:', err);
+                    const isThresholdErr = err?.message?.includes('требуется минимум 10') || err?.message?.includes('только');
+                    const errorText = isThresholdErr 
+                      ? `ℹ️ <b>Дайджест не сформирован</b>\n\nЗа последние 24 часа в чате зафиксировано мало активности (меньше 10 сообщений). Дайджест составляется только при активном общении участников.`
+                      : `❌ <b>Ошибка генерации:</b> ${escapeHtml(err.message || String(err))}`;
+
+                    try {
+                      await ctx.telegram.editMessageText(chatId, waitMsg.message_id, undefined, errorText, { parse_mode: 'HTML' });
+                    } catch (e) {
+                      try {
+                        await ctx.reply(errorText, { parse_mode: 'HTML' });
+                      } catch (replyErr) {}
+                    }
                   }
-                }
+                })();
                 return;
               }
 
@@ -7491,8 +7504,20 @@ app.post('/api/broadcast/delete', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// PUBLIC CHATS STATS API FOR MOTOTG.RU
+// PUBLIC CHATS STATS & DIGESTS API FOR MOTOTG.RU
 // ==========================================
+
+// Global CORS & preflight middleware for all public endpoints (allowing remote static site on mototg.ru to connect)
+app.use('/api/public', (req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 let publicStatsCache: {
   timestamp: number;
   data: any;
@@ -7502,8 +7527,8 @@ async function generatePublicChatsStats(forceRefresh = false) {
   const now = Date.now();
   const ONE_DAY_MS = 24 * 60 * 60 * 1000;
   
-  // Return cached result if fresh and not forced (cache valid for 24 hours)
-  if (!forceRefresh && publicStatsCache && (now - publicStatsCache.timestamp < ONE_DAY_MS)) {
+  // Return cached result if fresh and not forced (cache valid for 1 hour for responsive live updates)
+  if (!forceRefresh && publicStatsCache && (now - publicStatsCache.timestamp < 3600 * 1000)) {
     return publicStatsCache.data;
   }
 
@@ -7518,39 +7543,52 @@ async function generatePublicChatsStats(forceRefresh = false) {
   let totalMembers = 0;
   let totalMessages24h = 0;
 
-  // Track all managed active chats
-  const chatList = chats.length > 0 ? chats : [];
+  // Iterate over all 41 catalog items to ensure complete coverage for the website
+  for (const catItem of CHATS_CATALOG) {
+    const mapping = CHAT_TO_DB_MAPPING[catItem.slug];
+    
+    // Find matching managed chat in bot's chat array
+    const matchedChat = chats.find(c => {
+      if (!c) return false;
+      const cIdStr = String(c.id);
+      if (mapping?.id && cIdStr === mapping.id) return true;
+      if (c.username && (c.username.toLowerCase().replace('@', '') === catItem.username.toLowerCase() || mapping?.altUsernames?.includes(c.username.toLowerCase().replace('@', '')))) return true;
+      if (c.title && (c.title.toLowerCase().includes(catItem.title.toLowerCase()) || catItem.title.toLowerCase().includes(c.title.toLowerCase()))) return true;
+      if (mapping?.altTitles?.some(t => c.title?.toLowerCase().includes(t))) return true;
+      return false;
+    });
 
-  for (const chat of chatList) {
-    if (!chat) continue;
-    const chatIdStr = String(chat.id);
-    
-    // 1. Calculate messages in last 24h
+    const targetChatIdStr = matchedChat ? String(matchedChat.id) : (mapping?.id || '');
+
+    // 1. Calculate messages in last 24h from chatMessages and statsHistory
     let messages24h = 0;
-    
-    // Check in-memory chat messages first
-    const recentMsgs = chatMessages.filter(m => String(m.chatId) === chatIdStr && m.timestamp >= twentyFourHoursAgo);
-    if (recentMsgs.length > 0) {
-      messages24h = recentMsgs.length;
-    } else {
-      // Fallback to statsHistory chatStats
-      const todayCount = todayStats?.chatStats?.[chatIdStr]?.msgs || 0;
-      const yesterdayCount = yesterdayStats?.chatStats?.[chatIdStr]?.msgs || 0;
-      messages24h = todayCount + Math.round(yesterdayCount * 0.5);
+    if (targetChatIdStr) {
+      const recentMsgs = chatMessages.filter(m => String(m.chatId) === targetChatIdStr && (m.timestamp ? new Date(m.timestamp).getTime() : 0) >= twentyFourHoursAgo);
+      if (recentMsgs.length > 0) {
+        messages24h = recentMsgs.length;
+      } else {
+        const todayCount = todayStats?.chatStats?.[targetChatIdStr]?.msgs || 0;
+        const yesterdayCount = yesterdayStats?.chatStats?.[targetChatIdStr]?.msgs || 0;
+        messages24h = todayCount + Math.round(yesterdayCount * 0.5);
+      }
     }
 
-    // 2. Members count
-    let members = chat.members || 0;
-    if ((!members || forceRefresh) && bot && chat.active) {
+    // 2. Calculate real members count
+    let members = matchedChat?.members || 0;
+    if ((!members || forceRefresh) && bot && matchedChat?.active && matchedChat?.id) {
       try {
-        const count = await bot.telegram.getChatMembersCount(chat.id);
+        const count = await bot.telegram.getChatMembersCount(matchedChat.id);
         if (typeof count === 'number') {
           members = count;
-          chat.members = count;
+          matchedChat.members = count;
         }
       } catch (e) {
         // Ignore API limits/permissions errors
       }
+    }
+
+    if (!members) {
+      members = catItem.estimatedMembers || 1500;
     }
 
     totalMembers += members;
@@ -7558,26 +7596,25 @@ async function generatePublicChatsStats(forceRefresh = false) {
 
     // Requirement: if messages < 10, display "Нет данных"
     const messagesText = messages24h >= 10 ? `${messages24h}` : 'Нет данных';
-
-    const username = chat.username ? chat.username.replace('@', '') : '';
-    const link = chat.link || (username ? `https://t.me/${username}` : '');
+    const cleanUsername = catItem.username.replace('@', '');
 
     results.push({
-      id: chat.id,
-      title: chat.title,
-      username: username,
-      link: link,
+      id: targetChatIdStr || catItem.slug,
+      slug: catItem.slug,
+      title: catItem.title,
+      username: cleanUsername,
+      link: catItem.telegramLink,
       members: members,
       messages24h: messages24h,
       messagesText: messagesText,
-      active: chat.active !== false
+      active: matchedChat ? matchedChat.active !== false : true
     });
   }
 
   const payload = {
     success: true,
     updatedAt: new Date().toISOString(),
-    nextUpdateAt: new Date(now + ONE_DAY_MS).toISOString(),
+    nextUpdateAt: new Date(now + 3600 * 1000).toISOString(),
     totalChats: results.length,
     totalMembers: totalMembers,
     totalMessages24h: totalMessages24h,
@@ -7732,9 +7769,10 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  app.listen(PORT, '0.0.0.0', async () => {
     console.log(`Server running on http://localhost:${PORT}`);
     try {
+      await loadRealDigestsFromDatabase();
       generateAllStaticPages(sitePath);
     } catch (genErr) {
       console.warn('[SiteGen] Error generating static pages:', genErr);

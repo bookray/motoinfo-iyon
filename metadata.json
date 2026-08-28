@@ -1,6 +1,6 @@
 {
   "name": "Motoinfo Admin - июнь",
-  "description": "A comprehensive web-based administration dashboard for the TeleGuard Telegram Moderation Bot, featuring chat management, analytics, global bans, and scheduling tools. Supports both Firebase and SQLite backends.",
+  "description": "Telegram chat administration and public catalog with 41 moto communities, daily AI digests archive, live statistics, and comprehensive advertising portal.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

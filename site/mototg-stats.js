@@ -6,9 +6,16 @@
  * 4. Кэширует данные в localStorage на 24 часа.
  */
 (function () {
-  const DEFAULT_API_URL = window.MOTOTG_API_URL || '/api/public/chats-stats';
+  function getApiUrl() {
+    if (typeof window.getMotoTgApiUrl === 'function') {
+      return window.getMotoTgApiUrl('/api/public/chats-stats');
+    }
+    const base = window.MOTOTG_API_BASE || (window.MOTOTG_CONFIG && window.MOTOTG_CONFIG.apiBase) || 'http://155.212.162.1:3000';
+    return `${base}/api/public/chats-stats`;
+  }
+
   const CACHE_KEY = 'mototg_chats_stats_v2';
-  const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 часа
+  const CACHE_TTL_MS = 60 * 60 * 1000; // 1 час для актуальности данных
 
   // Маппинг username -> slug страницы
   const SLUG_MAP = {
@@ -252,9 +259,11 @@
 
     // 2. Запрашиваем свежие данные с сервера
     try {
-      const response = await fetch(DEFAULT_API_URL, {
+      const apiUrl = getApiUrl();
+      const response = await fetch(apiUrl, {
         method: 'GET',
-        headers: { 'Accept': 'application/json' }
+        headers: { 'Accept': 'application/json' },
+        mode: 'cors'
       });
 
       if (!response.ok) {
