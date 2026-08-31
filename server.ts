@@ -1051,17 +1051,40 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     return m.lastSeen && m.lastSeen > twentyFourHoursAgo;
   }).length;
 
-  let filteredStatsHistory = [...statsHistory];
-  if (startDate) {
-    filteredStatsHistory = filteredStatsHistory.filter(s => s.date >= startDate);
-  }
-  if (endDate) {
-    filteredStatsHistory = filteredStatsHistory.filter(s => s.date <= endDate);
-  }
-
-  // If no date range provided, default to last 7 days for the chart
-  if (!startDate && !endDate) {
-    filteredStatsHistory = filteredStatsHistory.slice(-7);
+  let filteredStatsHistory: any[] = [];
+  if (startDate && endDate) {
+    filteredStatsHistory = statsHistory.filter(s => s.date >= startDate && s.date <= endDate);
+  } else if (startDate) {
+    filteredStatsHistory = statsHistory.filter(s => s.date >= startDate);
+  } else if (endDate) {
+    filteredStatsHistory = statsHistory.filter(s => s.date <= endDate);
+  } else {
+    // Continuous 7 calendar days ending today
+    const days: any[] = [];
+    const nowMs = Date.now();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(nowMs - i * 24 * 60 * 60 * 1000);
+      const isoDate = d.toISOString().split('T')[0];
+      const [y, m, dayNum] = isoDate.split('-');
+      const displayName = `${dayNum}.${m}.${y}`;
+      const found = statsHistory.find(s => s.date === isoDate);
+      if (found) {
+        days.push(found);
+      } else {
+        days.push({
+          date: isoDate,
+          name: displayName,
+          joins: 0,
+          leaves: 0,
+          msgs: 0,
+          chatStats: {},
+          activeUsers: [],
+          onlineUsers: [],
+          totalMembers: totalMembers
+        });
+      }
+    }
+    filteredStatsHistory = days;
   }
 
   const chartData = filteredStatsHistory.map(point => {
@@ -3444,6 +3467,9 @@ let chatDigests: any[] = [];
 let digestConfigs: any[] = [];
 let chatMessages: any[] = [];
 let pinnedMessages: any[] = [];
+let isBotPollingActive = false;
+let lastTelegramUpdateAt = Date.now();
+let botReconnectTimer: any = null;
 const messageAuthorCache = new Map<string, { userId: string, username?: string, firstName?: string, lastName?: string }>();
 
 function parsePinnedMessageData(chatId: string, pinned: any, chatUsername?: string) {
@@ -3785,6 +3811,15 @@ const TONE_STYLE_PROMPTS: Record<string, string> = {
 Добрый, весёлый и слегка безумный стиль, где обычный чат превращается в ситком, реалити-шоу и приключенческий сериал одновременно! Много тёплого юмора, лёгкого абсурда, неожиданных выводов, драматических преувеличений и театральных преувеличений с редкими вспышками очаровательного творческого безумия!`
 };
 
+class DigestSkippedError extends Error {
+  isSkipped: boolean;
+  constructor(message: string) {
+    super(message);
+    this.name = 'DigestSkippedError';
+    this.isSkipped = true;
+  }
+}
+
 interface DigestQueueTask {
   id: string;
   chatId: string;
@@ -3831,7 +3866,11 @@ async function processNextDigestInQueue() {
     if (currentTask.resolve) currentTask.resolve(digest);
     console.log(`[DigestQueue] ✅ Finished digest for chat ${currentTask.chatId}`);
   } catch (err: any) {
-    console.error(`[DigestQueue] ❌ Task failed/skipped for chat ${currentTask.chatId}:`, err?.message || err);
+    if (err?.isSkipped || err?.name === 'DigestSkippedError') {
+      console.log(`[DigestQueue] ℹ️ Пропуск задачи для чата ${currentTask.chatId}: ${err?.message || err}`);
+    } else {
+      console.error(`[DigestQueue] ❌ Task failed for chat ${currentTask.chatId}:`, err?.message || err);
+    }
     if (currentTask.reject) currentTask.reject(err);
   } finally {
     // 2.5s pacing delay between AI generation requests to avoid quota spikes and rate limits
@@ -3875,9 +3914,15 @@ async function generateChatSummary(
   const userCount = uniqueUsers.size;
   const messageCount = msgs.length;
 
-  // THRESHOLD CHECK: If less than 10 messages, do not generate/post
-  if (messageCount < minThreshold) {
-    throw new Error(`В чате за последние ${hoursBack}ч зафиксировано только ${messageCount} сообщений (требуется минимум ${minThreshold}). Дайджест не формируется, чтобы не беспокоить участников чата.`);
+  // THRESHOLD CHECK:
+  // For automated scheduled daily posting: skip if message count is below threshold (< 10)
+  if (isScheduled && messageCount < minThreshold) {
+    throw new DigestSkippedError(`В чате за последние ${hoursBack}ч зафиксировано только ${messageCount} сообщений (требуется минимум ${minThreshold}). Дайджест пропущен, чтобы не беспокоить участников чата.`);
+  }
+
+  // For manual requests from admin panel: allow generating if there is at least 1 message; if 0, notify
+  if (!isScheduled && messageCount === 0) {
+    throw new Error(`В чате «${chatTitle}» за последние ${hoursBack}ч нет новых сообщений от участников для составления дайджеста.`);
   }
 
   // WAVE CHECK FOR SCHEDULED POSTING:
@@ -3885,7 +3930,7 @@ async function generateChatSummary(
   if (isScheduled && config?.lastWaveSummarizedAt) {
     const newMsgsSinceLastWave = msgs.filter(m => m.timestamp > config.lastWaveSummarizedAt!).length;
     if (newMsgsSinceLastWave < minThreshold) {
-      throw new Error(`В чате нет новой волны сообщений с момента предыдущего дайджеста (${newMsgsSinceLastWave} новых сообщ. < ${minThreshold}). Пропуск генерации до следующей волны активности.`);
+      throw new DigestSkippedError(`В чате нет новой волны сообщений с момента предыдущего дайджеста (${newMsgsSinceLastWave} новых сообщ. < ${minThreshold}). Пропуск генерации до следующей волны активности.`);
     }
   }
 
@@ -4904,6 +4949,13 @@ async function initBot(token: string) {
       } else {
         console.error(`Unhandled error while processing ${ctx?.updateType || 'unknown'}:`, err);
       }
+    });
+
+    // Global middleware to track bot polling heartbeat
+    bot.use(async (ctx, next) => {
+      isBotPollingActive = true;
+      lastTelegramUpdateAt = Date.now();
+      return next();
     });
     
     bot.start(async (ctx) => {
@@ -7123,15 +7175,25 @@ async function initBot(token: string) {
           dropPendingUpdates: false,
           allowedUpdates: ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         }).then(() => {
+          isBotPollingActive = true;
           console.log('Telegram bot launched successfully and actively listening via Long Polling');
         }).catch(err => {
+          isBotPollingActive = false;
           if (err && (err.code === 409 || err.response?.error_code === 409 || String(err).includes('409') || String(err).includes('Conflict'))) {
-            console.warn('⚠️ Конфликт 409: Другой экземпляр бота с таким же токеном опрашивает Telegram API. Остановите предыдущий процесс, если он запущен локально.');
+            console.warn('⚠️ Конфликт 409: Другой экземпляр бота с таким же токеном опрашивает Telegram API. Повторная попытка через 10 сек...');
           } else {
             console.error('Failed to launch bot via polling:', err?.message || err);
           }
+          if (botReconnectTimer) clearTimeout(botReconnectTimer);
+          botReconnectTimer = setTimeout(() => {
+            if (settings.botToken) {
+              console.log('[BotSupervisor] 🔄 Auto-recovering bot polling connection...');
+              initBot(settings.botToken).catch(e => console.error('[BotSupervisor] Recovery error:', e));
+            }
+          }, 10000);
         });
       } catch (err: any) {
+        isBotPollingActive = false;
         if (err.response && err.response.error_code === 409) {
           console.warn('Telegram bot conflict detected (409).');
         } else {
@@ -7823,19 +7885,56 @@ async function startServer() {
     // Periodic 48h chat message retention cleanup (prunes messages older than 48 hours)
     cleanupOldChatMessages().catch(e => console.warn('[Cleanup48h] Error:', e?.message));
 
+    // Bot Watchdog: ensure bot instance is active and polling is alive
+    if (settings.botToken) {
+      if (!bot || !isBotPollingActive) {
+        console.log('[BotSupervisor] ⚠️ Bot instance is missing or polling is inactive. Auto-reconnecting...');
+        initBot(settings.botToken).catch(e => console.error('[BotSupervisor] Auto-reconnect error:', e?.message));
+      } else {
+        bot.telegram.getMe().then(me => {
+          botInfo = { id: me.id, username: me.username };
+        }).catch(err => {
+          console.warn('[BotSupervisor] ⚠️ Bot ping getMe failed:', err?.message || err);
+          if (!String(err).includes('401') && !String(err).includes('Unauthorized')) {
+            console.log('[BotSupervisor] Attempting soft reconnection...');
+            initBot(settings.botToken).catch(e => console.error('[BotSupervisor] Soft reconnection error:', e?.message));
+          }
+        });
+      }
+    }
+
+    // Ensure today's stats entry exists in statsHistory
+    const todayDateStr = now.toISOString().split('T')[0];
+    if (!statsHistory.some(s => s.date === todayDateStr)) {
+      const [y, m, d] = todayDateStr.split('-');
+      const totalMembers = chats.filter(c => c.active).reduce((acc, c) => acc + (c.members || 0), 0);
+      const newTodayPoint = {
+        date: todayDateStr,
+        name: `${d}.${m}.${y}`,
+        joins: 0,
+        leaves: 0,
+        msgs: 0,
+        chatStats: {},
+        hourly: {},
+        activeUsers: [],
+        onlineUsers: [],
+        totalMembers: totalMembers
+      };
+      updateStats(newTodayPoint).catch(() => {});
+    }
+
     // Handle scheduled daily AI digests using sequential queue
     const localHHmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    const todayDateStr = now.toISOString().split('T')[0];
 
     for (const config of digestConfigs) {
       if (!config.enabled) continue;
       if (config.scheduleTime === localHHmm || config.scheduleTime === currentHHmm) {
-        if (config.lastSentAt && config.lastSentAt.startsWith(todayDateStr)) {
+        if (config.lastAttemptedDate === todayDateStr || (config.lastSentAt && config.lastSentAt.startsWith(todayDateStr))) {
           continue;
         }
 
-        // Mark as queued today to prevent double enqueueing in the same minute
-        config.lastSentAt = `${todayDateStr}T${localHHmm}:00.000Z`;
+        // Mark attempt today to prevent double enqueueing in the same minute
+        config.lastAttemptedDate = todayDateStr;
         await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs }));
 
         console.log(`[AI Digest] 📥 Enqueueing scheduled daily summary for chat ${config.chatId} (${config.chatTitle}) into sequential queue`);
@@ -7856,7 +7955,7 @@ async function startServer() {
           await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs }));
           console.log(`[AI Digest] ✅ Sequential queue completed scheduled digest for chat ${config.chatId}`);
         }).catch(async (digestErr: any) => {
-          if (digestErr?.message?.includes('минимум 10') || digestErr?.message?.includes('волны')) {
+          if (digestErr?.isSkipped || digestErr?.name === 'DigestSkippedError' || digestErr?.message?.includes('минимум') || digestErr?.message?.includes('волны')) {
             console.log(`[AI Digest] ℹ️ Skipped chat ${config.chatId} (${config.chatTitle || 'chat'}): ${digestErr.message}`);
           } else {
             console.error(`[AI Digest] ❌ Failed scheduled digest in queue for chat ${config.chatId}:`, digestErr);
