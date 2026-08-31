@@ -22,7 +22,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ chats }) => {
     username: '',
     email: '',
     password: '',
-    role: UserRole.ADVERTISER,
+    role: UserRole.ADVERTISER as UserRole,
     assignedChatIds: [] as string[],
     maxMessages: 100,
     accessPeriodDays: 30,

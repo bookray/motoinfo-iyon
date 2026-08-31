@@ -83,10 +83,13 @@ const App: React.FC = () => {
     userVoteDuration: 1440,
     notifyMultiChat: false,
     multiChatThreshold: 5,
+    warnLimit: 3
   });
   const [settings, setSettings] = useState<BotSettings>({
     botToken: '',
+    dbType: DatabaseType.FIREBASE,
     dbHost: 'localhost',
+    dbPort: 3306,
     dbUser: 'root',
     dbPass: '',
     dbName: 'teleguard',
@@ -636,6 +639,7 @@ const App: React.FC = () => {
             dateRange={dateRange}
             onDateRangeChange={setDateRange}
             onUpdateChat={handleUpdateChat}
+            timezoneOffset={settings.timezoneOffset}
           />
         )}
               {activeTab === Tab.CHATS && (

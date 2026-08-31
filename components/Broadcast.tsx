@@ -591,6 +591,13 @@ export const Broadcast: React.FC<BroadcastProps> = ({ chats, currentUser }) => {
                         <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${item.source === 'ADMIN' ? 'bg-blue-500/20 text-blue-300' : 'bg-purple-500/20 text-purple-300'}`}>
                           {item.source === 'ADMIN' ? 'Админка' : 'Бот'}
                         </span>
+                        {item.pin && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 flex items-center gap-1">
+                            📌 {item.unpinDays && item.unpinDays > 0 
+                              ? `Закреп на ${item.unpinDays} дн.` 
+                              : (item.pinTime && item.pinTime > 0 ? `Закреп на ${item.pinTime} ч.` : 'Закреп')}
+                          </span>
+                        )}
                       </div>
                       {currentUser.role === UserRole.SUPER_ADMIN && (
                         <div className="flex items-center gap-1 text-xs text-slate-500 mt-0.5">

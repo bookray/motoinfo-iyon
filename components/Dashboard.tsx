@@ -19,6 +19,7 @@ interface DashboardProps {
   dateRange: { start: string; end: string };
   onDateRangeChange: (range: { start: string; end: string }) => void;
   onUpdateChat?: (chat: Chat) => void;
+  timezoneOffset?: number;
 }
 
 const StatCard = ({ title, value, sub, icon: Icon, color }: any) => (
@@ -43,7 +44,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
   onToggleChatFilter,
   dateRange,
   onDateRangeChange,
-  onUpdateChat
+  onUpdateChat,
+  timezoneOffset = 3
 }) => {
   const [showRetry, setShowRetry] = useState(false);
   const [activityViewMode, setActivityViewMode] = useState<'heatmap' | 'hourly'>('heatmap');
@@ -52,6 +54,40 @@ export const Dashboard: React.FC<DashboardProps> = ({
   const [dayFilter, setDayFilter] = useState<'all' | 'weekdays' | 'weekends'>('all');
   const [hoveredCell, setHoveredCell] = useState<HeatmapCell | null>(null);
   const [selectedCell, setSelectedCell] = useState<HeatmapCell | null>(null);
+
+  // Live Server/Project Time calculation for Heatmap highlighting
+  const [currentLiveTime, setCurrentLiveTime] = useState<{ dayIndex: number; hour: number; minute: number; timeStr: string }>(() => {
+    const now = new Date();
+    const tz = typeof timezoneOffset === 'number' ? timezoneOffset : 3;
+    const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const adjusted = new Date(utcMs + (tz * 3600000));
+    const jsDay = adjusted.getDay();
+    return {
+      dayIndex: jsDay === 0 ? 6 : jsDay - 1,
+      hour: adjusted.getHours(),
+      minute: adjusted.getMinutes(),
+      timeStr: `${String(adjusted.getHours()).padStart(2, '0')}:${String(adjusted.getMinutes()).padStart(2, '0')}`
+    };
+  });
+
+  React.useEffect(() => {
+    const updateLiveTime = () => {
+      const now = new Date();
+      const tz = typeof timezoneOffset === 'number' ? timezoneOffset : 3;
+      const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+      const adjusted = new Date(utcMs + (tz * 3600000));
+      const jsDay = adjusted.getDay();
+      setCurrentLiveTime({
+        dayIndex: jsDay === 0 ? 6 : jsDay - 1,
+        hour: adjusted.getHours(),
+        minute: adjusted.getMinutes(),
+        timeStr: `${String(adjusted.getHours()).padStart(2, '0')}:${String(adjusted.getMinutes()).padStart(2, '0')}`
+      });
+    };
+    updateLiveTime();
+    const timer = setInterval(updateLiveTime, 5000);
+    return () => clearInterval(timer);
+  }, [timezoneOffset]);
 
   React.useEffect(() => {
     if (!stats) {
@@ -566,6 +602,17 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <Flame className="w-3 h-3 text-amber-400" />
                   7 дней × 24 часа
                 </span>
+                <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-medium">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                  </span>
+                  <span className="text-slate-400">Сейчас:</span>
+                  <span className="font-mono font-bold text-white">{DAY_NAMES[currentLiveTime.dayIndex]} {currentLiveTime.timeStr}</span>
+                  <span className="text-[10px] text-emerald-300/80 font-mono">
+                    (UTC{(timezoneOffset >= 0 ? `+${timezoneOffset}` : timezoneOffset)})
+                  </span>
+                </div>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
                 Интенсивность сообщений, участников и вступлений по дням недели (Пн–Вс) и часам суток (00:00–23:00) {dateRange.start && dateRange.end ? `(за период ${formatDate(dateRange.start)} - ${formatDate(dateRange.end)})` : (dateRange.start || dateRange.end ? '' : '(за последние 7 дней)')}
@@ -818,6 +865,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                           const isSelected = selectedCell?.day === dayIdx && selectedCell?.hour === hour;
                           const isHovered = hoveredCell?.day === dayIdx && hoveredCell?.hour === hour;
                           const isPeakWeek = peakCell?.day === dayIdx && peakCell?.hour === hour && peakCell[activityMetric] > 0;
+                          const isCurrentTimeSlot = currentLiveTime.dayIndex === dayIdx && currentLiveTime.hour === hour;
 
                           return (
                             <button
@@ -825,16 +873,26 @@ export const Dashboard: React.FC<DashboardProps> = ({
                               onClick={() => setSelectedCell(cell)}
                               onMouseEnter={() => setHoveredCell(cell)}
                               onMouseLeave={() => setHoveredCell(null)}
-                              className={`h-9 rounded-md border flex flex-col items-center justify-center transition-all relative ${getCellColorClass(val, isSelected, isHovered)}`}
-                              title={`${day.fullName} ${cell.time}: ${val.toLocaleString()} (${activityMetric === 'msgs' ? 'сообщений' : activityMetric === 'activeUsers' ? 'участников' : 'вступлений'})`}
+                              className={`h-9 rounded-md border flex flex-col items-center justify-center transition-all relative ${
+                                isCurrentTimeSlot 
+                                  ? 'ring-2 ring-emerald-400 ring-offset-2 ring-offset-slate-950 z-20 shadow-[0_0_15px_rgba(52,211,153,0.6)] font-bold !border-emerald-400' 
+                                  : ''
+                              } ${getCellColorClass(val, isSelected, isHovered)}`}
+                              title={`${day.fullName} ${cell.time}: ${val.toLocaleString()} (${activityMetric === 'msgs' ? 'сообщений' : activityMetric === 'activeUsers' ? 'участников' : 'вступлений'})${isCurrentTimeSlot ? ' • ТЕКУЩЕЕ ВРЕМЯ (СЕЙЧАС)' : ''}`}
                             >
                               {val > 0 && (
-                                <span className="text-[9px] font-mono leading-none tracking-tighter truncate max-w-full px-0.5">
+                                <span className={`text-[9px] font-mono leading-none tracking-tighter truncate max-w-full px-0.5 ${isCurrentTimeSlot ? 'text-emerald-300 font-bold' : ''}`}>
                                   {val > 999 ? `${(val / 1000).toFixed(1)}k` : val}
                                 </span>
                               )}
-                              {isPeakWeek && (
+                              {isPeakWeek && !isCurrentTimeSlot && (
                                 <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-900 animate-pulse" />
+                              )}
+                              {isCurrentTimeSlot && (
+                                <span className="absolute -top-1.5 -left-1.5 flex h-3 w-3 z-30 pointer-events-none" title="Текущее время">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 border-2 border-slate-950"></span>
+                                </span>
                               )}
                             </button>
                           );
@@ -991,9 +1049,19 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-                <span>Кликните на любую ячейку карты для фиксации параметров интервала</span>
+              {/* Current Time Indicator Legend */}
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-medium">
+                  <div className="w-3.5 h-3.5 rounded-xs border-2 border-emerald-400 bg-slate-900 relative flex items-center justify-center">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  </div>
+                  <span>Текущий час ({DAY_NAMES[currentLiveTime.dayIndex]} {currentLiveTime.timeStr})</span>
+                </div>
+
+                <div className="hidden sm:flex items-center gap-2 text-[11px] text-slate-500">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Кликните на любую ячейку карты для фиксации параметров интервала</span>
+                </div>
               </div>
             </div>
           </div>

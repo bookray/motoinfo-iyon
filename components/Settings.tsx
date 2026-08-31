@@ -18,7 +18,9 @@ import {
   Cpu,
   Globe,
   ExternalLink,
-  Zap
+  Zap,
+  Clock,
+  Calendar
 } from 'lucide-react';
 
 interface SettingsProps {
@@ -31,6 +33,15 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
   const [isSaving, setIsSaving] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+
+  // Live ticking clock for server time & project time preview
+  const [currentUtc, setCurrentUtc] = useState<Date>(new Date());
+  React.useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentUtc(new Date());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
 
   // Sync local state if props change (e.g. after successful save or remote update)
   React.useEffect(() => {
@@ -217,6 +228,176 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Server Time & Project Timezone Settings */}
+        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
+                <Clock className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Серверное время и часовой пояс проекта</h3>
+                <p className="text-xs text-slate-400">
+                  Корректировка времени для расписания задач, AI-дайджестов, тепловой карты и ночного экспорта XML
+                </p>
+              </div>
+            </div>
+
+            {/* Live Clock Badges */}
+            {(() => {
+              const tz = typeof localSettings.timezoneOffset === 'number' ? localSettings.timezoneOffset : 3;
+              const utcMs = currentUtc.getTime() + (currentUtc.getTimezoneOffset() * 60000);
+              const projectDate = new Date(utcMs + (tz * 3600000));
+              const pad = (n: number) => String(n).padStart(2, '0');
+              const serverUtcTimeStr = `${pad(currentUtc.getUTCHours())}:${pad(currentUtc.getUTCMinutes())}:${pad(currentUtc.getUTCSeconds())} UTC`;
+              const projectTimeStr = `${pad(projectDate.getHours())}:${pad(projectDate.getMinutes())}:${pad(projectDate.getSeconds())}`;
+
+              return (
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
+                    <span className="text-slate-500 mr-1.5 font-medium">Сервер (UTC):</span>
+                    <span className="font-mono font-bold text-slate-300">{serverUtcTimeStr}</span>
+                  </div>
+                  <div className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs flex items-center gap-2">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                    </span>
+                    <span className="text-emerald-400 font-medium">Время проекта:</span>
+                    <span className="font-mono font-bold text-white text-sm">{projectTimeStr}</span>
+                    <span className="text-emerald-300/80 font-mono text-[11px]">
+                      (UTC{tz >= 0 ? `+${tz}` : tz})
+                    </span>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                  Смещение часового пояса (часов от UTC)
+                </label>
+                <div className="flex items-center gap-3">
+                  <div className="relative flex-1">
+                    <span className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 font-mono text-sm">UTC</span>
+                    <input
+                      type="number"
+                      min="-12"
+                      max="14"
+                      step="1"
+                      value={typeof localSettings.timezoneOffset === 'number' ? localSettings.timezoneOffset : 3}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        setLocalSettings({ ...localSettings, timezoneOffset: isNaN(val) ? 0 : val });
+                      }}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-14 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-sm font-bold"
+                      placeholder="3"
+                    />
+                  </div>
+                  <span className="text-sm font-bold text-emerald-400 font-mono">
+                    {((typeof localSettings.timezoneOffset === 'number' ? localSettings.timezoneOffset : 3) >= 0 ? '+' : '') +
+                      (typeof localSettings.timezoneOffset === 'number' ? localSettings.timezoneOffset : 3)} ч.
+                  </span>
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-400 leading-relaxed">
+                  По умолчанию установлено <strong className="text-slate-200">+3 (Московское время MSK)</strong>. 
+                  Все графики, суточные срезы, отложенные задачи и тепловая карта рассчитываются с учетом этого смещения.
+                </p>
+              </div>
+
+              {/* Quick Preset Buttons */}
+              <div>
+                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block mb-2">
+                  Быстрый выбор часового пояса:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {[
+                    { label: 'UTC +0 (Лондон)', val: 0 },
+                    { label: 'UTC +2 (Калининград)', val: 2 },
+                    { label: 'UTC +3 (Москва, СПб, Минск)', val: 3 },
+                    { label: 'UTC +4 (Самара, Баку)', val: 4 },
+                    { label: 'UTC +5 (Екатеринбург, Ташкент)', val: 5 },
+                    { label: 'UTC +6 (Омск, Алматы)', val: 6 },
+                    { label: 'UTC +7 (Красноярск, Новосибирск)', val: 7 },
+                    { label: 'UTC +8 (Иркутск)', val: 8 },
+                    { label: 'UTC +9 (Якутск, Токио)', val: 9 },
+                    { label: 'UTC +10 (Владивосток)', val: 10 }
+                  ].map((preset) => {
+                    const currentVal = typeof localSettings.timezoneOffset === 'number' ? localSettings.timezoneOffset : 3;
+                    const isActive = currentVal === preset.val;
+                    return (
+                      <button
+                        key={preset.val}
+                        type="button"
+                        onClick={() => setLocalSettings({ ...localSettings, timezoneOffset: preset.val })}
+                        className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all ${
+                          isActive 
+                            ? 'bg-emerald-600 text-white shadow-sm font-bold border border-emerald-500' 
+                            : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white hover:border-slate-700'
+                        }`}
+                      >
+                        {preset.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Time Details Card */}
+            {(() => {
+              const tz = typeof localSettings.timezoneOffset === 'number' ? localSettings.timezoneOffset : 3;
+              const utcMs = currentUtc.getTime() + (currentUtc.getTimezoneOffset() * 60000);
+              const projectDate = new Date(utcMs + (tz * 3600000));
+              const daysRu = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
+              const pad = (n: number) => String(n).padStart(2, '0');
+              const projectTimeStr = `${pad(projectDate.getHours())}:${pad(projectDate.getMinutes())}:${pad(projectDate.getSeconds())}`;
+              const projectDateStr = `${pad(projectDate.getDate())}.${pad(projectDate.getMonth() + 1)}.${projectDate.getFullYear()}`;
+              const dayName = daysRu[projectDate.getDay()];
+
+              return (
+                <div className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <span className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
+                      <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+                      Текущий локальный момент проекта:
+                    </span>
+                    <span className="text-[11px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                      UTC{tz >= 0 ? `+${tz}` : tz}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase font-semibold block">Время:</span>
+                      <span className="text-xl font-bold font-mono text-white">{projectTimeStr}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-500 uppercase font-semibold block">Дата:</span>
+                      <span className="text-sm font-bold text-slate-200">{projectDateStr}</span>
+                      <span className="text-[10px] text-slate-400 block font-medium">({dayName})</span>
+                    </div>
+                  </div>
+
+                  <div className="pt-2 border-t border-slate-800/60 text-[11px] text-slate-400 space-y-1">
+                    <div className="flex items-center gap-1.5 text-emerald-300">
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      <span>Подсветка квадрата в тепловой карте: <strong>{dayName.substring(0, 2)}, {pad(projectDate.getHours())}:00</strong></span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-slate-400">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
+                      <span>Авто-генерация XML: <strong>03:30</strong> (по локальному времени)</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+
         {/* Telegram Bot Settings */}
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm">
           <div className="flex items-center gap-3 mb-6">

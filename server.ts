@@ -738,6 +738,34 @@ app.get('/api/settings', authenticateToken, (req, res) => res.json(settings));
 app.get('/api/tasks', authenticateToken, (req, res) => res.json(tasks));
 app.get('/api/whitelist', authenticateToken, (req, res) => res.json(whitelist));
 
+// Live Server & Project Time info endpoint
+app.get('/api/time', (req, res) => {
+  const now = new Date();
+  const tzOffset = typeof settings.timezoneOffset === 'number' ? settings.timezoneOffset : 3;
+  const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const adjustedMs = utcMs + (tzOffset * 3600000);
+  const adjustedDate = new Date(adjustedMs);
+
+  const jsDay = adjustedDate.getDay();
+  const dayIndex = jsDay === 0 ? 6 : jsDay - 1; // 0=Mon, 6=Sun
+  const hour = adjustedDate.getHours();
+  const minute = adjustedDate.getMinutes();
+  const timeFormatted = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(adjustedDate.getSeconds()).padStart(2, '0')}`;
+  const dateFormatted = `${adjustedDate.getFullYear()}-${String(adjustedDate.getMonth() + 1).padStart(2, '0')}-${String(adjustedDate.getDate()).padStart(2, '0')}`;
+
+  res.json({
+    serverUtcIso: now.toISOString(),
+    serverTimestamp: now.getTime(),
+    timezoneOffset: tzOffset,
+    projectIso: adjustedDate.toISOString(),
+    projectTimeFormatted: timeFormatted,
+    projectDateFormatted: dateFormatted,
+    dayIndex,
+    hour,
+    minute
+  });
+});
+
 app.post('/api/bans/chat', async (req, res) => {
   const { userId, chatId, reason, duration, unit, type } = req.body;
   try {
@@ -3430,11 +3458,98 @@ async function handleCaptchaPassed(ctx: any, chatId: string, userId: string, use
     }
   }
 }
+interface BroadcastSessionOptions {
+  pin: boolean;
+  unpinDays: number;
+  delay: number;
+  silent: boolean;
+  selectedChats: string[];
+  waitingForUnpinDaysInput?: boolean;
+}
+
 let broadcastSessions = new Map<string, { 
   message: any, 
   messages?: any[],
-  options: { pin: boolean, delay: number, silent: boolean, selectedChats: string[] } 
+  options: BroadcastSessionOptions
 }>();
+
+let scheduledUnpins: {
+  id?: string;
+  chatId: string;
+  messageId: number;
+  unpinAt: string;
+  broadcastId?: string;
+  createdAt?: string;
+}[] = [];
+
+function getDaysPlural(days: number): string {
+  const n = Math.abs(days) % 100;
+  const n1 = n % 10;
+  if (n > 10 && n < 20) return 'дней';
+  if (n1 > 1 && n1 < 5) return 'дня';
+  if (n1 === 1) return 'день';
+  return 'дней';
+}
+
+function renderBroadcastOptionsText(options: BroadcastSessionOptions): string {
+  const unpinStr = options.unpinDays > 0 
+    ? `⏳ ${options.unpinDays} ${getDaysPlural(options.unpinDays)}` 
+    : '♾️ Бессрочно (не откреплять)';
+
+  return `⚙️ <b>Настройки рассылки:</b>\n\n` +
+    `📌 <b>Закреп:</b> ${options.pin ? '✅ Включен' : '❌ Выключен'}\n` +
+    `⏳ <b>Дней до открепления:</b> ${options.pin ? unpinStr : '— <i>(закреп выключен)</i>'}\n` +
+    `⏱ <b>Задержка:</b> ${options.delay} сек.\n` +
+    `🔕 <b>Без звука:</b> ${options.silent ? '✅ Включен' : '❌ Выключен'}`;
+}
+
+function renderBroadcastOptionsKeyboard(options: BroadcastSessionOptions): any[][] {
+  const unpinBtnLabel = options.unpinDays > 0
+    ? `⏳ Открепить через: ${options.unpinDays} дн.`
+    : `⏳ Дней до открепления: Бессрочно`;
+
+  return [
+    [{ text: `📌 Закреп: ${options.pin ? 'Выкл' : 'Вкл'}`, callback_data: 'bc_opt_pin' }],
+    [{ text: unpinBtnLabel, callback_data: 'bc_opt_unpin_menu' }],
+    [{ text: `🔕 Без звука: ${options.silent ? 'Выкл' : 'Вкл'}`, callback_data: 'bc_opt_silent' }],
+    [{ text: `⏱ Задержка: ${options.delay} сек.`, callback_data: 'bc_opt_delay' }],
+    [{ text: '⬅️ Назад', callback_data: 'bc_back' }]
+  ];
+}
+
+function renderBroadcastUnpinMenuText(options: BroadcastSessionOptions): string {
+  const currentText = options.unpinDays > 0 
+    ? `${options.unpinDays} ${getDaysPlural(options.unpinDays)}`
+    : 'Бессрочно (не откреплять)';
+
+  return `⏳ <b>Дней до открепления поста:</b>\n\n` +
+    `Текущий выбор: <b>${currentText}</b>\n\n` +
+    `Выберите, через сколько дней бот автоматически открепит разосланный пост во всех чатах, либо задайте своё значение:`;
+}
+
+function renderBroadcastUnpinMenuKeyboard(options: BroadcastSessionOptions): any[][] {
+  const isSelected = (d: number) => options.unpinDays === d ? '🔘 ' : '';
+
+  return [
+    [{ text: `${isSelected(0)}♾️ Бессрочно (не откреплять)`, callback_data: 'bc_unpin_set_0' }],
+    [
+      { text: `${isSelected(1)}1 день`, callback_data: 'bc_unpin_set_1' },
+      { text: `${isSelected(2)}2 дня`, callback_data: 'bc_unpin_set_2' },
+      { text: `${isSelected(3)}3 дня`, callback_data: 'bc_unpin_set_3' }
+    ],
+    [
+      { text: `${isSelected(5)}5 дней`, callback_data: 'bc_unpin_set_5' },
+      { text: `${isSelected(7)}7 дней (нед.)`, callback_data: 'bc_unpin_set_7' },
+      { text: `${isSelected(10)}10 дней`, callback_data: 'bc_unpin_set_10' }
+    ],
+    [
+      { text: `${isSelected(14)}14 дней (2 нед.)`, callback_data: 'bc_unpin_set_14' },
+      { text: `${isSelected(30)}30 дней (мес.)`, callback_data: 'bc_unpin_set_30' }
+    ],
+    [{ text: '✏️ Ввести своё количество дней', callback_data: 'bc_unpin_custom' }],
+    [{ text: '⬅️ Назад в настройки', callback_data: 'bc_options' }]
+  ];
+}
 let mediaGroupBuffers = new Map<string, {
   mediaGroupId: string,
   messages: any[],
@@ -4165,7 +4280,8 @@ let settings = {
   openRouterModel: 'google/gemini-2.0-flash-001',
   customAiEndpoint: '',
   customAiApiKey: '',
-  customAiModel: 'gpt-4o-mini'
+  customAiModel: 'gpt-4o-mini',
+  timezoneOffset: 3
 };
 
 // Sync functions
@@ -4282,6 +4398,14 @@ async function syncData() {
       const deletionsDoc = await db.collection('config').doc('deletions').get();
       if (deletionsDoc.exists) {
         scheduledDeletions = (deletionsDoc.data() as any).items || [];
+      }
+    });
+
+    await safeLoad('config/unpins', async () => {
+      const unpinsDoc = await db.collection('config').doc('unpins').get();
+      if (unpinsDoc.exists) {
+        scheduledUnpins = (unpinsDoc.data() as any).items || [];
+        console.log(`Loaded ${scheduledUnpins.length} scheduled unpins`);
       }
     });
 
@@ -5151,6 +5275,44 @@ async function initBot(token: string) {
 
       // Handle Broadcast from Admin
       if (chatType === 'private' && isCurrentAdmin) {
+        const existingSession = broadcastSessions.get(userId);
+
+        // Check if admin is currently entering custom unpin days number
+        if (existingSession && existingSession.options?.waitingForUnpinDaysInput && ctx.message && 'text' in ctx.message) {
+          const textVal = ctx.message.text.trim();
+          const daysNum = parseInt(textVal, 10);
+          if (!isNaN(daysNum) && daysNum >= 0 && daysNum <= 365) {
+            existingSession.options.unpinDays = daysNum;
+            if (daysNum > 0) {
+              existingSession.options.pin = true;
+            }
+            existingSession.options.waitingForUnpinDaysInput = false;
+            broadcastSessions.set(userId, existingSession);
+
+            const daysLabel = daysNum === 0 
+              ? '♾️ Бессрочно (не откреплять)' 
+              : `${daysNum} ${getDaysPlural(daysNum)}`;
+
+            await ctx.reply(`✅ <b>Срок открепления установлен:</b> ${daysLabel}${daysNum > 0 ? '\n📌 Закрепление поста автоматически включено.' : ''}`, { parse_mode: 'HTML' });
+            
+            await ctx.reply(renderBroadcastOptionsText(existingSession.options), {
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: renderBroadcastOptionsKeyboard(existingSession.options)
+              }
+            });
+            return;
+          } else {
+            await ctx.reply('⚠️ Пожалуйста, введите целое число от 0 до 365 (0 — не откреплять, или число дней, например: <code>3</code> или <code>7</code>):', { 
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: [[{ text: '❌ Отмена ввода', callback_data: 'bc_options' }]]
+              }
+            });
+            return;
+          }
+        }
+
         // If it's a command, handle it normally. 
         if (ctx.message && 'text' in ctx.message && ctx.message.text.startsWith('/')) {
            // allow commands to pass through
@@ -5175,9 +5337,11 @@ async function initBot(token: string) {
                     messages: buf.messages,
                     options: {
                       pin: false,
+                      unpinDays: 0,
                       delay: 10,
                       silent: false,
-                      selectedChats: chats.filter(c => c.active).map(c => String(c.id))
+                      selectedChats: chats.filter(c => c.active).map(c => String(c.id)),
+                      waitingForUnpinDaysInput: false
                     }
                   });
 
@@ -5206,9 +5370,11 @@ async function initBot(token: string) {
               messages: [ctx.message], 
               options: { 
                 pin: false, 
+                unpinDays: 0,
                 delay: 10, 
                 silent: false, 
-                selectedChats: chats.filter(c => c.active).map(c => String(c.id))
+                selectedChats: chats.filter(c => c.active).map(c => String(c.id)),
+                waitingForUnpinDaysInput: false
               } 
             });
             
@@ -5492,7 +5658,7 @@ async function initBot(token: string) {
                         }
                       });
                       await ctx.reply(
-                        `🔊 С пользователя ${targetMention} сняты ограничения.\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        `🔊 С пользователя ${targetMention} сняты ограничения.`,
                         { parse_mode: 'Markdown' }
                       );
                       await addLog({
@@ -5537,7 +5703,7 @@ async function initBot(token: string) {
                       });
 
                       await ctx.reply(
-                        `🔇 Пользователь ${targetMention} обеззвучен на *${durationInfo.formatted}*.\n📝 Причина: _${reason}_\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        `🔇 Пользователь ${targetMention} обеззвучен на *${durationInfo.formatted}*.\n📝 Причина: _${reason}_`,
                         { parse_mode: 'Markdown' }
                       );
 
@@ -5563,7 +5729,7 @@ async function initBot(token: string) {
                     try {
                       await ctx.telegram.unbanChatMember(chatId, targetUser.id, { only_if_banned: true });
                       await ctx.reply(
-                        `✅ Пользователь ${targetMention} разблокирован в чате.\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        `✅ Пользователь ${targetMention} разблокирован в чате.`,
                         { parse_mode: 'Markdown' }
                       );
                       await addLog({
@@ -5593,7 +5759,7 @@ async function initBot(token: string) {
                       await ctx.telegram.banChatMember(chatId, targetUser.id, untilDate);
 
                       await ctx.reply(
-                        `🚫 Пользователь ${targetMention} заблокирован ${durationInfo ? 'на *' + durationInfo.formatted + '*' : '*навсегда*'}.\n📝 Причина: _${reason}_\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        `🚫 Пользователь ${targetMention} заблокирован ${durationInfo ? 'на *' + durationInfo.formatted + '*' : '*навсегда*'}.\n📝 Причина: _${reason}_`,
                         { parse_mode: 'Markdown' }
                       );
 
@@ -5630,7 +5796,7 @@ async function initBot(token: string) {
 
                     const remainingActive = userWarns.length - 1;
                     await ctx.reply(
-                      `✅ С пользователя ${targetMention} снято предупреждение.\nТекущее количество: *${remainingActive}/${warnLimit}*\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                      `✅ С пользователя ${targetMention} снято предупреждение.\nТекущее количество: *${remainingActive}/${warnLimit}*`,
                       { parse_mode: 'Markdown' }
                     );
 
@@ -5656,12 +5822,12 @@ async function initBot(token: string) {
 
                     if (banned) {
                       await ctx.reply(
-                        `🚫 Пользователь ${targetMention} набрал(а) максимум предупреждений (*${activeWarns}/${warnLimit}*) и был(а) *заблокирован(а)*!\n📝 Причина последнего: _${reason}_\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        `🚫 Пользователь ${targetMention} набрал(а) максимум предупреждений (*${activeWarns}/${warnLimit}*) и был(а) *заблокирован(а)*!\n📝 Причина последнего: _${reason}_`,
                         { parse_mode: 'Markdown' }
                       );
                     } else {
                       await ctx.reply(
-                        `⚠️ Пользователю ${targetMention} выдано предупреждение (*${activeWarns}/${warnLimit}*).\n📝 Причина: _${reason}_\n👮‍♂️ Модератор: [${adminName}](tg://user?id=${adminId})`,
+                        `⚠️ Пользователю ${targetMention} выдано предупреждение (*${activeWarns}/${warnLimit}*).\n📝 Причина: _${reason}_`,
                         { parse_mode: 'Markdown' }
                       );
                     }
@@ -6783,17 +6949,60 @@ async function initBot(token: string) {
       }
 
       if (data === 'bc_options') {
-        const { pin, delay, silent } = session!.options;
-        return ctx.editMessageText(`⚙️ Настройки рассылки:\n\nЗакреп: ${pin ? '✅' : '❌'}\nЗадержка: ${delay} сек.\nБез звука: ${silent ? '✅' : '❌'}`, {
+        session!.options.waitingForUnpinDaysInput = false;
+        return ctx.editMessageText(renderBroadcastOptionsText(session!.options), {
+          parse_mode: 'HTML',
           reply_markup: {
-            inline_keyboard: [
-              [{ text: `Закреп: ${pin ? 'Выкл' : 'Вкл'}`, callback_data: 'bc_opt_pin' }],
-              [{ text: `Без звука: ${silent ? 'Выкл' : 'Вкл'}`, callback_data: 'bc_opt_silent' }],
-              [{ text: `Задержка: ${delay} сек.`, callback_data: 'bc_opt_delay' }],
-              [{ text: '⬅️ Назад', callback_data: 'bc_back' }]
-            ]
+            inline_keyboard: renderBroadcastOptionsKeyboard(session!.options)
           }
         });
+      }
+
+      if (data === 'bc_opt_unpin_menu') {
+        session!.options.waitingForUnpinDaysInput = false;
+        return ctx.editMessageText(renderBroadcastUnpinMenuText(session!.options), {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: renderBroadcastUnpinMenuKeyboard(session!.options)
+          }
+        });
+      }
+
+      if (data.startsWith('bc_unpin_set_')) {
+        const days = parseInt(data.replace('bc_unpin_set_', ''), 10);
+        session!.options.unpinDays = isNaN(days) ? 0 : Math.max(0, days);
+        if (session!.options.unpinDays > 0) {
+          session!.options.pin = true;
+        }
+        session!.options.waitingForUnpinDaysInput = false;
+        broadcastSessions.set(userId, session!);
+        const label = session!.options.unpinDays === 0 ? 'Бессрочно' : `${session!.options.unpinDays} ${getDaysPlural(session!.options.unpinDays)}`;
+        await ctx.answerCbQuery(`Выбрано: ${label}`);
+        return ctx.editMessageText(renderBroadcastOptionsText(session!.options), {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: renderBroadcastOptionsKeyboard(session!.options)
+          }
+        });
+      }
+
+      if (data === 'bc_unpin_custom') {
+        session!.options.waitingForUnpinDaysInput = true;
+        broadcastSessions.set(userId, session!);
+        await ctx.editMessageText(
+          `✏️ <b>Введите количество дней до открепления поста:</b>\n\n` +
+          `Отправьте в ответ сообщением число дней (например: <code>1</code>, <code>4</code>, <code>10</code>, <code>60</code>) или <code>0</code> для бессрочного закрепления.\n\n` +
+          `<i>По истечении указанного срока бот автоматически открепит пост во всех чатах.</i>`,
+          {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '❌ Отмена', callback_data: 'bc_options' }]
+              ]
+            }
+          }
+        );
+        return ctx.answerCbQuery();
       }
 
       if (data === 'bc_select_chats') {
@@ -6904,14 +7113,10 @@ async function initBot(token: string) {
           session!.options.delay = delays[(currentIndex + 1) % delays.length];
         }
         broadcastSessions.set(userId, session!);
-        return ctx.editMessageText(`⚙️ Настройки рассылки:\n\nЗакреп: ${session!.options.pin ? '✅' : '❌'}\nЗадержка: ${session!.options.delay} сек.\nБез звука: ${session!.options.silent ? '✅' : '❌'}`, {
+        return ctx.editMessageText(renderBroadcastOptionsText(session!.options), {
+          parse_mode: 'HTML',
           reply_markup: {
-            inline_keyboard: [
-              [{ text: `Закреп: ${session!.options.pin ? 'Выкл' : 'Вкл'}`, callback_data: 'bc_opt_pin' }],
-              [{ text: `Без звука: ${session!.options.silent ? 'Выкл' : 'Вкл'}`, callback_data: 'bc_opt_silent' }],
-              [{ text: `Задержка: ${session!.options.delay} сек.`, callback_data: 'bc_opt_delay' }],
-              [{ text: '⬅️ Назад', callback_data: 'bc_back' }]
-            ]
+            inline_keyboard: renderBroadcastOptionsKeyboard(session!.options)
           }
         });
       }
@@ -6926,9 +7131,10 @@ async function initBot(token: string) {
 
         await ctx.editMessageText(`🚀 Начинаю рассылку в ${targetChats.length} чатов...`);
         
-        const { pin, delay, silent } = session!.options;
+        const { pin, unpinDays = 0, delay, silent } = session!.options;
         const messages = session!.messages || (session!.message ? [session!.message] : []);
         const primaryMessage = messages[0] || session!.message;
+        const historyEntryId = Math.random().toString(36).substr(2, 9);
         
         broadcastSessions.delete(userId);
 
@@ -7004,6 +7210,21 @@ async function initBot(token: string) {
                   console.log(`[Pin Bot] Attempting to pin in ${chat.id}`);
                   await ctx.telegram.pinChatMessage(chat.id, mainMsgId, { disable_notification: false });
                   console.log(`[Pin Bot] Successfully pinned in ${chat.id}`);
+                  await recordPinnedMessage(chat.id, primaryMessage || { message_id: mainMsgId, date: Math.floor(Date.now() / 1000) }, false);
+
+                  // Schedule auto-unpin if unpinDays > 0
+                  if (unpinDays > 0) {
+                    const unpinAt = new Date(Date.now() + unpinDays * 24 * 60 * 60 * 1000).toISOString();
+                    scheduledUnpins.push({
+                      id: Math.random().toString(36).substr(2, 9),
+                      chatId: String(chat.id),
+                      messageId: mainMsgId,
+                      unpinAt: unpinAt,
+                      broadcastId: historyEntryId,
+                      createdAt: new Date().toISOString()
+                    });
+                    console.log(`[ScheduledUnpin] Registered unpin for msg ${mainMsgId} in ${chat.id} at ${unpinAt} (${unpinDays} days)`);
+                  }
                 } catch (e) {
                   console.error(`[Pin Bot] Failed to pin in ${chat.id}:`, (e as any).message || e);
                 }
@@ -7017,6 +7238,10 @@ async function initBot(token: string) {
             }
           }
 
+          if (unpinDays > 0 && scheduledUnpins.length > 0) {
+            await db.collection('config').doc('unpins').set({ items: scheduledUnpins }).catch(e => console.error('Failed to save unpins to db:', e));
+          }
+
           let textSummary = 'Media message';
           if (primaryMessage) {
             if ('text' in primaryMessage && primaryMessage.text) textSummary = primaryMessage.text;
@@ -7028,7 +7253,7 @@ async function initBot(token: string) {
 
           // Save to history
           const historyEntry = {
-            id: Math.random().toString(36).substr(2, 9),
+            id: historyEntryId,
             userId: userId,
             username: username || userId,
             text: textSummary,
@@ -7036,6 +7261,8 @@ async function initBot(token: string) {
             chatIds: targetChats.map(c => String(c.id)),
             messageIds: messageIds,
             pin: pin,
+            unpinDays: unpinDays,
+            pinTime: unpinDays * 24,
             source: 'BOT'
           };
           broadcastHistory.unshift(historyEntry);
@@ -7045,11 +7272,21 @@ async function initBot(token: string) {
           // Update lastBroadcastMessages for deletion feature
           lastBroadcastMessages = currentBroadcastMessages;
 
-          const reportText = `✅ Рассылка завершена!\n\nУспешно: ${success}\nОшибок: ${failed}\n\n🔗 Ссылки:\n${reportLinks.join('\n')}`;
+          let reportText = `✅ Рассылка завершена!\n\nУспешно: ${success}\nОшибок: ${failed}`;
+          if (pin) {
+            const unpinNote = unpinDays > 0 ? `${unpinDays} ${getDaysPlural(unpinDays)}` : 'бессрочно';
+            reportText += `\n📌 Закреп: Включен (открепление: ${unpinNote})`;
+          }
+          reportText += `\n\n🔗 Ссылки:\n${reportLinks.join('\n')}`;
           
           // If report is too long, split it
           if (reportText.length > 4000) {
-             await ctx.telegram.sendMessage(ctx.chat!.id, `✅ Рассылка завершена!\n\nУспешно: ${success}\nОшибок: ${failed}`);
+             let shortReport = `✅ Рассылка завершена!\n\nУспешно: ${success}\nОшибок: ${failed}`;
+             if (pin) {
+               const unpinNote = unpinDays > 0 ? `${unpinDays} ${getDaysPlural(unpinDays)}` : 'бессрочно';
+               shortReport += `\n📌 Закреп: Включен (открепление: ${unpinNote})`;
+             }
+             await ctx.telegram.sendMessage(ctx.chat!.id, shortReport);
              // Send links in chunks
              for (let i = 0; i < reportLinks.length; i += 20) {
                await ctx.telegram.sendMessage(ctx.chat!.id, reportLinks.slice(i, i + 20).join('\n'));
@@ -7064,7 +7301,7 @@ async function initBot(token: string) {
             type: 'SYSTEM',
             user: 'Bot (Admin)',
             chat: 'Broadcast',
-            details: `Рассылка завершена. Успешно: ${success}, Ошибок: ${failed}`
+            details: `Рассылка завершена. Успешно: ${success}, Ошибок: ${failed}${pin ? ` (Закреп: ${unpinDays > 0 ? `${unpinDays} дн.` : 'бессрочно'})` : ''}`
           });
         })();
         
@@ -7885,7 +8122,13 @@ async function startServer() {
   // Scheduler background job
   setInterval(async () => {
     const now = new Date();
+    const tzOffset = typeof settings.timezoneOffset === 'number' ? settings.timezoneOffset : 3;
+    const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
+    const adjustedNow = new Date(utcMs + (tzOffset * 3600000));
+    
     const currentHHmm = now.toISOString().substring(11, 16); // "HH:mm" in UTC
+    const localHHmm = `${String(adjustedNow.getHours()).padStart(2, '0')}:${String(adjustedNow.getMinutes()).padStart(2, '0')}`;
+    const todayDateStr = adjustedNow.toISOString().split('T')[0];
 
     // Handle expired votes
     for (const [voteId, vote] of activeVotes.entries()) {
@@ -7923,6 +8166,30 @@ async function startServer() {
       await db.collection('config').doc('deletions').set({ items: scheduledDeletions });
     }
 
+    // Handle scheduled unpins (e.g. broadcast messages auto-unpin after N days)
+    const remainingUnpins = [];
+    let unpinsChanged = false;
+    for (const item of scheduledUnpins) {
+      if (new Date(item.unpinAt) <= now) {
+        try {
+          if (bot) {
+            await bot.telegram.unpinChatMessage(item.chatId, item.messageId);
+            console.log(`[ScheduledUnpin] Auto-unpinned message ${item.messageId} in ${item.chatId} after expiration`);
+          }
+          unpinsChanged = true;
+        } catch (e) {
+          console.error(`[ScheduledUnpin] Failed to unpin message ${item.messageId} in ${item.chatId}:`, (e as any).message || e);
+          unpinsChanged = true;
+        }
+      } else {
+        remainingUnpins.push(item);
+      }
+    }
+    if (unpinsChanged) {
+      scheduledUnpins = remainingUnpins;
+      await db.collection('config').doc('unpins').set({ items: scheduledUnpins }).catch(e => console.error('Failed to save unpins:', e));
+    }
+
     // Periodic 48h chat message retention cleanup (prunes messages older than 48 hours)
     cleanupOldChatMessages().catch(e => console.warn('[Cleanup48h] Error:', e?.message));
 
@@ -7945,7 +8212,6 @@ async function startServer() {
     }
 
     // Ensure today's stats entry exists in statsHistory
-    const todayDateStr = now.toISOString().split('T')[0];
     if (!statsHistory.some(s => s.date === todayDateStr)) {
       const [y, m, d] = todayDateStr.split('-');
       const totalMembers = chats.filter(c => c.active).reduce((acc, c) => acc + (c.members || 0), 0);
@@ -7965,8 +8231,6 @@ async function startServer() {
     }
 
     // Handle scheduled daily AI digests using sequential queue
-    const localHHmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-
     for (const config of digestConfigs) {
       if (!config.enabled) continue;
       if (config.scheduleTime === localHHmm || config.scheduleTime === currentHHmm) {
@@ -8007,7 +8271,7 @@ async function startServer() {
 
     for (const task of tasks) {
       if (!task.active) continue;
-      if (task.time !== currentHHmm) continue;
+      if (task.time !== localHHmm && task.time !== currentHHmm) continue;
 
       const lastRun = task.lastRun ? new Date(task.lastRun) : null;
       const daysSinceLastRun = lastRun ? Math.floor((now.getTime() - lastRun.getTime()) / (1000 * 60 * 60 * 24)) : Infinity;

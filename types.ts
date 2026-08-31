@@ -92,6 +92,9 @@ export interface MultiChatUser {
   lastName?: string;
   chatIds: string[];
   chatCount: number;
+  chats?: string[];
+  isWhitelisted?: boolean;
+  isBanned?: boolean;
 }
 
 export interface FilterSettings {
@@ -132,6 +135,7 @@ export interface ActiveMuteEntry {
   id: string; // `${chatId}_${userId}`
   userId: string;
   chatId: string;
+  chatTitle?: string;
   userMention?: string;
   userName?: string;
   mutedAt: string;
@@ -249,6 +253,7 @@ export interface BotSettings {
   customAiApiKey?: string;
   customAiModel?: string;
   reputationEnabled?: boolean;
+  timezoneOffset?: number;
 }
 
 export interface ChatBan {
@@ -337,6 +342,7 @@ export interface BroadcastHistory {
   pin: boolean;
   pinResults?: { [chatId: string]: { success: boolean, error?: string } };
   pinTime?: number;
+  unpinDays?: number;
   imageUrl?: string;
   buttons?: { text: string; url: string }[];
   source: 'ADMIN' | 'BOT';
