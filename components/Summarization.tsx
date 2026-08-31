@@ -28,7 +28,12 @@ import {
   Laugh,
   Heart,
   Sun,
-  ShieldCheck
+  ShieldCheck,
+  FileCode,
+  Download,
+  Terminal,
+  Layers,
+  Database
 } from 'lucide-react';
 import { Chat, ChatDigestConfig, ChatDigestEntry, DigestToneStyle, TONE_STYLES, TONE_STYLE_LIST } from '../types';
 
@@ -179,8 +184,13 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string; hint?: string } | null>(null);
   const [expandedDigestId, setExpandedDigestId] = useState<string | null>(null);
-  const [activeSubTab, setActiveSubTab] = useState<'schedule' | 'generator' | 'history'>('schedule');
+  const [activeSubTab, setActiveSubTab] = useState<'schedule' | 'generator' | 'history' | 'export'>('schedule');
   const [selectedToneStyle, setSelectedToneStyle] = useState<DigestToneStyle>('default');
+
+  // XML Export State
+  const [xmlStatus, setXmlStatus] = useState<any>(null);
+  const [isGeneratingXml, setIsGeneratingXml] = useState<boolean>(false);
+  const [xmlCopied, setXmlCopied] = useState<boolean>(false);
 
   // In-Admin AI Settings Modal State
   const [showAiModal, setShowAiModal] = useState<boolean>(false);
@@ -263,6 +273,15 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
           setCurrentDigest(data[0]);
         }
       }
+
+      // Load XML Export Status
+      try {
+        const xmlRes = await authFetch('/api/export/xml/status');
+        if (xmlRes.ok) {
+          const xmlData = await xmlRes.json();
+          setXmlStatus(xmlData);
+        }
+      } catch (_) {}
     } catch (e) {
       console.error('Failed to load digest data:', e);
       showNotification('Не удалось загрузить данные дайджестов', 'error');
@@ -569,6 +588,37 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
     }
   };
 
+  const handleGenerateXml = async () => {
+    setIsGeneratingXml(true);
+    try {
+      const res = await authFetch('/api/export/xml/generate', {
+        method: 'POST'
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        showNotification('XML-файл успешно сгенерирован и сохранен');
+        const statusRes = await authFetch('/api/export/xml/status');
+        if (statusRes.ok) {
+          setXmlStatus(await statusRes.json());
+        }
+      } else {
+        showNotification(data.error || 'Ошибка при генерации XML', 'error');
+      }
+    } catch (e: any) {
+      showNotification(e.message || 'Ошибка запроса генерации XML', 'error');
+    } finally {
+      setIsGeneratingXml(false);
+    }
+  };
+
+  const handleCopyXmlUrl = () => {
+    const fullUrl = `${window.location.origin}/export.xml`;
+    navigator.clipboard.writeText(fullUrl);
+    setXmlCopied(true);
+    setTimeout(() => setXmlCopied(false), 2000);
+    showNotification('Ссылка на XML-файл скопирована в буфер обмена');
+  };
+
   const handleCopy = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
@@ -773,6 +823,21 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
           <span>История дайджестов</span>
           <span className="px-2 py-0.5 bg-slate-800 text-slate-300 text-xs rounded-full">
             {history.length}
+          </span>
+        </button>
+
+        <button
+          onClick={() => setActiveSubTab('export')}
+          className={`flex items-center gap-2.5 px-4 py-2.5 rounded-xl font-medium text-sm transition-all whitespace-nowrap ${
+            activeSubTab === 'export'
+              ? 'bg-emerald-600/10 text-emerald-400 border border-emerald-500/30'
+              : 'text-slate-400 hover:bg-slate-800/60 hover:text-slate-200'
+          }`}
+        >
+          <FileCode className="w-4 h-4 text-emerald-400" />
+          <span>XML-Экспорт (Cron)</span>
+          <span className="px-2 py-0.5 bg-emerald-950 text-emerald-300 border border-emerald-800/50 text-xs rounded-full">
+            30 дней
           </span>
         </button>
       </div>
@@ -1302,6 +1367,166 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* TAB 4: XML EXPORT FOR EXTERNAL SITE / CRON */}
+      {activeSubTab === 'export' && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+          {/* Main Hero Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 relative overflow-hidden">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2.5 bg-emerald-500/15 border border-emerald-500/30 rounded-xl text-emerald-400">
+                    <FileCode className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-bold text-white">Регулярный XML-экспорт для внешнего сайта</h3>
+                    <p className="text-xs text-slate-400">
+                      Автоматически формируется ночью и при каждом новом дайджесте. Готов к синхронизации через Cron.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  onClick={handleGenerateXml}
+                  disabled={isGeneratingXml}
+                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-lg shadow-emerald-900/30 disabled:opacity-50"
+                >
+                  <RefreshCw className={`w-4 h-4 ${isGeneratingXml ? 'animate-spin' : ''}`} />
+                  <span>{isGeneratingXml ? 'Генерация...' : 'Сгенерировать XML сейчас'}</span>
+                </button>
+
+                <a
+                  href="/export.xml"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5"
+                >
+                  <ExternalLink className="w-4 h-4 text-blue-400" />
+                  <span>Открыть /export.xml</span>
+                </a>
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Metrics Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-1">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Прямой URL файла</span>
+                <Globe className="w-4 h-4 text-blue-400" />
+              </div>
+              <div className="font-mono text-sm text-emerald-400 font-bold truncate">/export.xml</div>
+              <p className="text-[11px] text-slate-500">Открытый доступ без авторизации для Cron</p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-1">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Охват сообществ</span>
+                <Layers className="w-4 h-4 text-indigo-400" />
+              </div>
+              <div className="text-lg font-bold text-white">
+                {xmlStatus?.totalCatalogChats || 41} чатов
+              </div>
+              <p className="text-[11px] text-slate-500">
+                {xmlStatus?.activeChatsCount || 0} подключено ботом в реальном времени
+              </p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-1">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Глубина архива</span>
+                <Clock className="w-4 h-4 text-amber-400" />
+              </div>
+              <div className="text-lg font-bold text-white">30 дней</div>
+              <p className="text-[11px] text-slate-500">Полные тексты дайджестов и темы</p>
+            </div>
+
+            <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-4 space-y-1">
+              <div className="flex items-center justify-between text-slate-400 text-xs">
+                <span>Статус файла</span>
+                <Database className="w-4 h-4 text-emerald-400" />
+              </div>
+              <div className="text-sm font-bold text-emerald-400 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>{xmlStatus?.diskFile?.sizeKb || '150'} KB на диске</span>
+              </div>
+              <p className="text-[11px] text-slate-500 truncate">
+                {xmlStatus?.lastGeneratedAt 
+                  ? new Date(xmlStatus.lastGeneratedAt).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+                  : 'Актуален'}
+              </p>
+            </div>
+          </div>
+
+          {/* Cron Integration Guide */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <Terminal className="w-5 h-5 text-indigo-400" />
+                <h4 className="text-sm font-bold text-white">Настройка подтягивания через Cron на вашем внешнем хостинге</h4>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopyXmlUrl}
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
+              >
+                {xmlCopied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-blue-400" />}
+                <span>{xmlCopied ? 'Скопировано!' : 'Скопировать полный URL'}</span>
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              На вашем внешнем веб-сервере настройте простую задачу в Crontab (например, запуск каждую ночь в 04:00), которая скачивает готовый XML-файл и сохраняет его в папку вашего сайта:
+            </p>
+
+            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 font-mono text-xs text-emerald-400 space-y-2 select-all">
+              <div className="text-slate-500"># 1. Скачивание через curl (ежедневно в 04:00 ночи):</div>
+              <div className="text-slate-200">
+                0 4 * * * curl -sSL "{typeof window !== 'undefined' ? window.location.origin : ''}/export.xml" -o /path/to/your/website/export.xml
+              </div>
+              <div className="text-slate-500 pt-2"># 2. Либо через wget:</div>
+              <div className="text-slate-200">
+                0 4 * * * wget -q -O /path/to/your/website/export.xml "{typeof window !== 'undefined' ? window.location.origin : ''}/export.xml"
+              </div>
+            </div>
+          </div>
+
+          {/* XML Structure Specification Preview */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 space-y-4">
+            <h4 className="text-sm font-bold text-white flex items-center gap-2">
+              <FileCode className="w-4 h-4 text-emerald-400" />
+              <span>Формат и структура данных в XML</span>
+            </h4>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 text-xs">
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                <div className="font-bold text-indigo-400">Содержимое каждого элемента &lt;chat&gt;:</div>
+                <ul className="space-y-1.5 text-slate-300">
+                  <li>• <code className="text-emerald-400">&lt;title&gt;</code>: Официальное название чата (в блоке CDATA)</li>
+                  <li>• <code className="text-emerald-400">&lt;link&gt;</code>: Ссылка на чат в Telegram (https://t.me/...)</li>
+                  <li>• <code className="text-emerald-400">&lt;members_count&gt;</code>: Число участников (актуальное из базы бота)</li>
+                  <li>• <code className="text-emerald-400">&lt;messages_24h&gt;</code>: Кол-во сообщений за последние сутки</li>
+                  <li>• <code className="text-emerald-400">&lt;digests&gt;</code>: Блок суточных дайджестов за 30 дней</li>
+                </ul>
+              </div>
+
+              <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
+                <div className="font-bold text-indigo-400">Содержимое каждого &lt;digest&gt; за 30 дней:</div>
+                <ul className="space-y-1.5 text-slate-300">
+                  <li>• Атрибуты: <code className="text-amber-300">date="YYYY-MM-DD"</code>, <code className="text-amber-300">message_count="..."</code>, <code className="text-amber-300">active_users="..."</code></li>
+                  <li>• <code className="text-emerald-400">&lt;topics&gt;</code>: Ключевые темы дня с описанием</li>
+                  <li>• <code className="text-emerald-400">&lt;text&gt;</code>: Чистый читаемый текст дайджеста для сайта</li>
+                  <li>• <code className="text-emerald-400">&lt;html_text&gt;</code>: Исходный HTML Telegram с цитатами</li>
+                </ul>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

@@ -11,7 +11,7 @@ import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
 import { FilterSettings, Chat, BotSettings, ActiveMuteEntry } from './types';
 import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
-import { generateAllStaticPages, renderChatHtmlPage } from './generateSitePages';
+import { buildExportXml, saveXmlExportToFile, getLatestExportXml, getExportMetadata } from './xmlExport';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -4093,10 +4093,10 @@ ${blackListPosts.length > 0 ? `
     };
 
     addChatSummary(targetSlug, catalogDailySummary);
-    // Regenerate static pages to reflect latest summary
-    generateAllStaticPages(path.join(process.cwd(), 'site'));
+    // Regenerate XML export file to reflect latest summary
+    saveXmlExportToFile({ chats, chatMessages, statsHistory });
   } catch (syncErr) {
-    console.warn('[ChatCatalog] Не удалось синхронизировать дайджест с каталогом:', syncErr);
+    console.warn('[ChatCatalog] Не удалось синхронизировать дайджест с каталогом / обновить XML экспорт:', syncErr);
   }
 
   await addLog({
@@ -7791,28 +7791,69 @@ app.get(['/api/public/chat/:slugOrUsername', '/api/public/chat-details'], async 
   }
 });
 
-// Static files for mototg site & individual chat pages
-const sitePath = path.join(process.cwd(), 'site');
-app.use('/mototg', express.static(sitePath));
-app.use('/site', express.static(sitePath));
-app.use('/chats', express.static(path.join(sitePath, 'chats')));
+// Public XML export endpoints for external website cron & integrations
+app.get(['/export.xml', '/api/public/export.xml', '/api/export/xml'], (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Content-Type', 'application/xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=300'); // 5 min cache
 
-// Chat page direct route: /chats/:slug or /chat/:slug
-app.get(['/chats/:slug', '/chat/:slug'], (req, res, next) => {
-  const rawSlug = req.params.slug;
-  const slugParam = (Array.isArray(rawSlug) ? rawSlug[0] : String(rawSlug || '')).replace('.html', '');
-  const chat = findChatInCatalog(slugParam);
-  if (chat) {
-    const filePath = path.join(sitePath, 'chats', `${chat.slug}.html`);
-    if (fs.existsSync(filePath)) {
-      return res.sendFile(filePath);
-    } else {
-      const summaries = getChatSummaries(chat.slug);
-      const html = renderChatHtmlPage(chat, summaries, '/site/');
-      return res.send(html);
-    }
+  try {
+    const xml = getLatestExportXml({ chats, chatMessages, statsHistory });
+    res.send(xml);
+  } catch (error: any) {
+    console.error('[XmlExport] Error generating XML export:', error);
+    res.status(500).send(`<?xml version="1.0" encoding="UTF-8"?><error>${error.message || 'Error generating XML'}</error>`);
   }
-  next();
+});
+
+// XML Export status & metadata
+app.get('/api/export/xml/status', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  const metadata = getExportMetadata();
+  const filePath = path.join(process.cwd(), 'public', 'export.xml');
+  const fileExists = fs.existsSync(filePath);
+  let fileSize = 0;
+  let fileMtime: string | null = null;
+  if (fileExists) {
+    const stat = fs.statSync(filePath);
+    fileSize = stat.size;
+    fileMtime = stat.mtime.toISOString();
+  }
+
+  res.json({
+    success: true,
+    totalCatalogChats: CHATS_CATALOG.length,
+    activeChatsCount: chats.filter(c => c.active).length,
+    ...metadata,
+    diskFile: {
+      exists: fileExists,
+      path: '/export.xml',
+      sizeBytes: fileSize,
+      sizeKb: (fileSize / 1024).toFixed(1),
+      modifiedAt: fileMtime
+    },
+    exportUrl: '/export.xml',
+    apiExportUrl: '/api/public/export.xml'
+  });
+});
+
+// Manual on-demand XML export trigger
+app.post('/api/export/xml/generate', authenticateToken, async (req, res) => {
+  try {
+    await loadRealDigestsFromDatabase();
+    const result = saveXmlExportToFile({ chats, chatMessages, statsHistory });
+    res.json({
+      success: true,
+      message: 'XML файл успешно сгенерирован и сохранён',
+      ...result,
+      exportUrl: '/export.xml'
+    });
+  } catch (error: any) {
+    console.error('[XmlExport] Error in manual generation:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 async function startServer() {
@@ -7835,9 +7876,9 @@ async function startServer() {
     console.log(`Server running on http://localhost:${PORT}`);
     try {
       await loadRealDigestsFromDatabase();
-      generateAllStaticPages(sitePath);
+      saveXmlExportToFile({ chats, chatMessages, statsHistory });
     } catch (genErr) {
-      console.warn('[SiteGen] Error generating static pages:', genErr);
+      console.warn('[XmlExport] Error generating initial XML export:', genErr);
     }
   });
 
@@ -8047,6 +8088,15 @@ async function startServer() {
         console.log('[PublicStats] ✅ Суточная статистика чатов успешно обновлена');
       } catch (e) {
         console.warn('[PublicStats] Ошибка автообновления статистики:', e);
+      }
+    }
+
+    // Nightly automatic XML export generation (runs at 03:30 MSK/local and hourly on minute :05)
+    if (localHHmm === '03:30' || currentHHmm === '00:15' || now.getMinutes() === 5) {
+      try {
+        saveXmlExportToFile({ chats, chatMessages, statsHistory });
+      } catch (e: any) {
+        console.warn('[XmlExport] Ошибка плановой генерации XML:', e?.message || e);
       }
     }
   }, 60000); // Check every minute
