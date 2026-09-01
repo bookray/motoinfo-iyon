@@ -68,12 +68,12 @@ function getEffectiveWebAppUrl(reqOrigin?: string): string {
     return settings.webAppUrl.trim();
   }
   if (process.env.APP_URL && process.env.APP_URL.trim()) {
-    return process.env.APP_URL.trim();
+    return process.env.APP_URL.trim().replace('ais-dev-', 'ais-pre-');
   }
   if (reqOrigin && reqOrigin.startsWith('http')) {
-    return reqOrigin;
+    return reqOrigin.replace('ais-dev-', 'ais-pre-');
   }
-  return 'https://ais-dev-2yzww6kqlfl4r7wmyqj4ri-313227547728.europe-west2.run.app';
+  return 'https://ais-pre-2yzww6kqlfl4r7wmyqj4ri-313227547728.europe-west2.run.app';
 }
 
 function verifyTelegramWebAppData(initData: string, botToken: string): { isValid: boolean; user?: any } {
@@ -775,43 +775,30 @@ app.post('/api/telegram-webapp-auth', async (req, res) => {
       }
     }
 
-    // 3. Check if user matches adminTelegramUsername or bookray chat ID
-    const isOwner = (tgUsername && tgUsername === adminUsername) || 
+    // Strict Owner verification: TMA is strictly for owner bookray
+    const isOwner = (tgUsername && tgUsername.toLowerCase() === adminUsername.toLowerCase()) || 
                     (tgUserId === process.env.BOOKRAY_CHAT_ID) ||
-                    (tgUsername === 'bookray');
+                    (tgUsername.toLowerCase() === 'bookray');
 
-    if (isOwner) {
-      userRole = 'SUPER_ADMIN';
-      if (!matchedUser) {
-        matchedUser = {
-          id: `tg_${tgUserId}`,
-          username: tgUsername || `tg_${tgUserId}`,
-          email: `${tgUsername || tgUserId}@telegram.admin`,
-          role: 'SUPER_ADMIN',
-          assignedChatIds: [],
-          createdAt: new Date().toISOString()
-        };
-      }
+    if (!isOwner) {
+      console.warn(`[TMA Auth] Access denied for user @${tgUsername || tgUserId} (ID: ${tgUserId})`);
+      return res.status(403).json({ 
+        accessDenied: true,
+        error: `⛔ Доступ к мини-приложению ограничен. Панель управления доступна исключительно владельцу бота (@${adminUsername || 'bookray'}).`,
+        telegramUser: { id: tgUserId, username: tgUsername, firstName: tgUser.first_name }
+      });
     }
 
-    if (!matchedUser && !isOwner) {
-      // Check if user is in whitelist
-      const isWhitelisted = whitelist.some(w => w.userId === tgUserId || (tgUsername && w.userId.toLowerCase() === `@${tgUsername}`));
-      if (isWhitelisted) {
-        matchedUser = {
-          id: `tg_${tgUserId}`,
-          username: tgUsername || `user_${tgUserId}`,
-          email: `${tgUsername || tgUserId}@telegram.member`,
-          role: 'ADMIN',
-          assignedChatIds: [],
-          createdAt: new Date().toISOString()
-        };
-      } else {
-        return res.status(403).json({ 
-          error: `Пользователь @${tgUsername || tgUserId} (${tgUser.first_name || ''}) не найден в списке администраторов системы. Обратитесь к главному администратору (@${adminUsername}).`,
-          telegramUser: { id: tgUserId, username: tgUsername, firstName: tgUser.first_name }
-        });
-      }
+    userRole = 'SUPER_ADMIN';
+    if (!matchedUser) {
+      matchedUser = {
+        id: `tg_${tgUserId}`,
+        username: tgUsername || 'bookray',
+        email: `${tgUsername || 'bookray'}@telegram.admin`,
+        role: 'SUPER_ADMIN',
+        assignedChatIds: [],
+        createdAt: new Date().toISOString()
+      };
     }
 
     const sessionPayload = {
@@ -5408,8 +5395,10 @@ async function initBot(token: string) {
         const userId = ctx.from?.id.toString();
         const username = ctx.from?.username;
         const chatType = ctx.chat?.type;
-        const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
-        const isCurrentAdmin = username && username.toLowerCase() === adminUsername;
+        const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase().replace(/^@/, '');
+        const isCurrentAdmin = (username && username.toLowerCase() === adminUsername) ||
+                               (userId === process.env.BOOKRAY_CHAT_ID) ||
+                               (username && username.toLowerCase() === 'bookray');
 
         console.log(`[Bot] /start received from user ${userId} (@${username || 'none'}) in ${chatType} chat ${ctx.chat?.id}`);
 
@@ -5422,14 +5411,14 @@ async function initBot(token: string) {
             const todayMsgs = todayStat?.msgs || 0;
 
             const appUrl = getEffectiveWebAppUrl();
-            const text = `👋 <b>Здравствуйте, Администратор (@${username})!</b>\n\n` +
+            const text = `👋 <b>Здравствуйте, Владелец (@${username || 'bookray'})!</b>\n\n` +
               `🤖 <b>TeleGuard Bot</b> активен и работает в штатном режиме.\n\n` +
               `📊 <b>Текущее состояние:</b>\n` +
               `• Активных чатов под защитой: <b>${activeChatsCount}</b>\n` +
               `• Сообщений сегодня: <b>${todayMsgs}</b>\n` +
               `• Режим связи: <b>${isPollingMode ? 'Long Polling (активен)' : 'Webhook (активен)'}</b>\n` +
               `• Ваш Telegram ID: <code>${userId}</code>\n\n` +
-              `📱 <b>Мини-приложение:</b> Нажмите кнопку ниже или меню слева для открытия панели управления прямо внутри Telegram!\n\n` +
+              `📱 <b>Мини-приложение:</b> Нажмите кнопку ниже или меню слева для открытия панели управления прямо внутри Telegram без паролей!\n\n` +
               `⚙️ <b>Команды:</b>\n` +
               `• /app или /panel — открыть мини-приложение TeleGuard\n` +
               `• /status — подробная статистика и статус бота\n` +
@@ -5451,14 +5440,8 @@ async function initBot(token: string) {
             if (session) {
               await ctx.reply(`🛡 <b>Проверка Captcha:</b>\n\nПожалуйста, отправьте правильный ответ на капчу в ответном сообщении, чтобы подтвердить заявку на вступление в группу.`, { parse_mode: 'HTML' });
             } else {
-              const appUrl = getEffectiveWebAppUrl();
-              await ctx.reply(`👋 <b>Привет! Я TeleGuard Bot.</b>\n\nЯ защищаю группы и чаты от спама, нежелательных ссылок, мата и собираю аналитику активности.\n\n🆔 Ваш Telegram ID: <code>${userId}</code>`, { 
-                parse_mode: 'HTML',
-                reply_markup: {
-                  inline_keyboard: [
-                    [{ text: '📱 Открыть панель TeleGuard', web_app: { url: appUrl } }]
-                  ]
-                }
+              await ctx.reply(`👋 <b>Привет! Я TeleGuard Bot.</b>\n\nЯ защищаю группы и чаты от спама, нежелательных ссылок, мата и собираю аналитику активности.\n\n🆔 Ваш Telegram ID: <code>${userId}</code>\n\nДоступные команды: /id, /ping, /help`, { 
+                parse_mode: 'HTML'
               });
             }
           }
@@ -5473,6 +5456,19 @@ async function initBot(token: string) {
 
     const sendPanelCommand = async (ctx: any) => {
       try {
+        const userId = ctx.from?.id?.toString();
+        const username = ctx.from?.username;
+        const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase().replace(/^@/, '');
+        const isCurrentAdmin = (username && username.toLowerCase() === adminUsername) ||
+                               (userId === process.env.BOOKRAY_CHAT_ID) ||
+                               (username && username.toLowerCase() === 'bookray');
+
+        if (!isCurrentAdmin) {
+          return ctx.reply(`⛔ <b>Доступ запрещен.</b>\n\nМини-приложение TeleGuard доступно исключительно владельцу бота (@${adminUsername || 'bookray'}).`, {
+            parse_mode: 'HTML'
+          });
+        }
+
         const appUrl = getEffectiveWebAppUrl();
         await ctx.reply('📱 <b>Панель управления TeleGuard</b>\n\nНажмите кнопку ниже, чтобы открыть веб-панель прямо в Telegram:', {
           parse_mode: 'HTML',
@@ -5494,26 +5490,42 @@ async function initBot(token: string) {
 
     bot.command('help', async (ctx) => {
       try {
-        const appUrl = getEffectiveWebAppUrl();
-        const text = `📖 <b>Справка по командам TeleGuard:</b>\n\n` +
-          `• /start — Запуск и главное меню бота\n` +
-          `• /app, /panel — Открыть мини-приложение TeleGuard прямо в Telegram\n` +
-          `• /status — Проверка статуса, аптайма и сегодняшней статистики\n` +
-          `• /id — Показать ID чата и ваш ID\n` +
-          `• /ping — Проверка отклика бота\n` +
-          `• /setinfo — Назначить чат для уведомлений (только для администратора)\n` +
-          `• /digest или /summary — Сформировать ИИ-сводку за 24 часа\n\n` +
-          `Управление фильтрами, списками, рассылками и аналитикой доступно в веб-панели.`;
-        await ctx.reply(text, { 
-          parse_mode: 'HTML',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '📱 Открыть панель управления', web_app: { url: appUrl } }]
-            ]
-          }
-        });
+        const userId = ctx.from?.id?.toString();
+        const username = ctx.from?.username;
+        const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase().replace(/^@/, '');
+        const isCurrentAdmin = (username && username.toLowerCase() === adminUsername) ||
+                               (userId === process.env.BOOKRAY_CHAT_ID) ||
+                               (username && username.toLowerCase() === 'bookray');
+
+        if (isCurrentAdmin) {
+          const appUrl = getEffectiveWebAppUrl();
+          const text = `📖 <b>Справка по командам TeleGuard (Владелец):</b>\n\n` +
+            `• /start — Запуск и главное меню бота\n` +
+            `• /app, /panel — Открыть мини-приложение TeleGuard прямо в Telegram\n` +
+            `• /status — Проверка статуса, аптайма и сегодняшней статистики\n` +
+            `• /id — Показать ID чата и ваш ID\n` +
+            `• /ping — Проверка отклика бота\n` +
+            `• /setinfo — Назначить чат для уведомлений\n` +
+            `• /digest или /summary — Сформировать ИИ-сводку за 24 часа\n\n` +
+            `Управление фильтрами, списками, рассылками и аналитикой доступно в веб-панели.`;
+          await ctx.reply(text, { 
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '📱 Открыть панель управления', web_app: { url: appUrl } }]
+              ]
+            }
+          });
+        } else {
+          const text = `📖 <b>Справка TeleGuard Bot:</b>\n\n` +
+            `• /start — Информация о боте\n` +
+            `• /id — Показать ваш Telegram ID\n` +
+            `• /ping — Проверка связи с ботом\n\n` +
+            `Бот защищает чаты от спама, нежелательных ссылок и собирает аналитику.`;
+          await ctx.reply(text, { parse_mode: 'HTML' });
+        }
       } catch (e) {
-        ctx.reply('TeleGuard Bot: справка доступна в панели управления.').catch(() => {});
+        ctx.reply('TeleGuard Bot: справка доступна по команде /help.').catch(() => {});
       }
     });
 

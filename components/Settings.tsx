@@ -68,9 +68,11 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
     setMenuButtonResult(null);
     try {
       const token = localStorage.getItem('token');
+      const rawOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+      const publicOrigin = rawOrigin.replace('ais-dev-', 'ais-pre-');
       const targetUrl = (localSettings.webAppUrl && localSettings.webAppUrl.trim()) 
         ? localSettings.webAppUrl.trim() 
-        : window.location.origin;
+        : publicOrigin;
 
       const res = await fetch('/api/telegram-menu-button', {
         method: 'POST',
@@ -94,9 +96,11 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
   };
 
   const handleCopyAppUrl = () => {
+    const rawOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    const publicOrigin = rawOrigin.replace('ais-dev-', 'ais-pre-');
     const url = (localSettings.webAppUrl && localSettings.webAppUrl.trim()) 
       ? localSettings.webAppUrl.trim() 
-      : window.location.origin;
+      : publicOrigin;
     navigator.clipboard.writeText(url);
     setCopiedAppUrl(true);
     setTimeout(() => setCopiedAppUrl(false), 2000);
