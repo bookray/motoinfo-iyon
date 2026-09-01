@@ -24,6 +24,8 @@ export const Logs: React.FC<LogsProps> = ({ logs, chats }) => {
       case 'BROADCAST': return 'text-purple-400 bg-purple-400/10 border-purple-400/20';
       case 'SETTINGS': return 'text-amber-400 bg-amber-400/10 border-amber-400/20';
       case 'AUTH': return 'text-indigo-400 bg-indigo-400/10 border-indigo-400/20';
+      case 'DIGEST': return 'text-purple-400 bg-purple-400/10 border-purple-400/20';
+      case 'ERROR': return 'text-rose-500 bg-rose-500/10 border-rose-500/30';
       default: return 'text-slate-400';
     }
   };
@@ -72,7 +74,7 @@ export const Logs: React.FC<LogsProps> = ({ logs, chats }) => {
     document.body.removeChild(link);
   };
 
-  const logTypes = ['ALL', 'JOIN', 'LEAVE', 'BAN', 'KICK', 'WARN', 'MUTE', 'SYSTEM', 'BROADCAST', 'SETTINGS', 'AUTH', 'CHAT_UPDATE', 'TASK'];
+  const logTypes = ['ALL', 'DIGEST', 'ERROR', 'JOIN', 'LEAVE', 'BAN', 'KICK', 'WARN', 'MUTE', 'SYSTEM', 'BROADCAST', 'SETTINGS', 'AUTH', 'CHAT_UPDATE', 'TASK'];
 
   return (
     <div className="h-[calc(100vh-8rem)] flex flex-col space-y-4">

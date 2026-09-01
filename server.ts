@@ -1303,40 +1303,74 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     const jsDay = parsedDate.getUTCDay(); // 0=Sun, 1=Mon, ..., 6=Sat
     const dayIndex = (jsDay + 6) % 7; // 0=Пн .. 6=Вс
 
-    if (point.hourly) {
-      for (let h = 0; h < 24; h++) {
-        const hData = point.hourly[h] || point.hourly[String(h)];
-        if (hData) {
-          hourlyMsgsCount[h] += (hData.msgs || 0);
-          hourlyJoinsCount[h] += (hData.joins || 0);
-          heatmapMsgsCount[dayIndex][h] += (hData.msgs || 0);
-          heatmapJoinsCount[dayIndex][h] += (hData.joins || 0);
-          if (Array.isArray(hData.activeUsers)) {
-            hData.activeUsers.forEach((u: string) => {
-              hourlyUsersSets[h].add(u);
-              heatmapUsersSets[dayIndex][h].add(u);
-            });
-          }
-        }
-      }
-    }
-    if (allowedChatIds && point.chatStats) {
-      allowedChatIds.forEach(chatId => {
-        const cStat = point.chatStats[chatId];
-        if (cStat && cStat.hourly) {
-          for (let h = 0; h < 24; h++) {
-            const hData = cStat.hourly[h] || cStat.hourly[String(h)];
-            if (hData) {
-              if (Array.isArray(hData.activeUsers)) {
-                hData.activeUsers.forEach((u: string) => {
-                  hourlyUsersSets[h].add(u);
-                  heatmapUsersSets[dayIndex][h].add(u);
-                });
+    if (allowedChatIds) {
+      // Aggregate ONLY for the allowed chats
+      if (point.chatStats) {
+        allowedChatIds.forEach(chatId => {
+          const cStat = point.chatStats[chatId];
+          if (cStat && cStat.hourly) {
+            for (let h = 0; h < 24; h++) {
+              const hData = cStat.hourly[h] || cStat.hourly[String(h)];
+              if (hData) {
+                hourlyMsgsCount[h] += (hData.msgs || 0);
+                hourlyJoinsCount[h] += (hData.joins || 0);
+                heatmapMsgsCount[dayIndex][h] += (hData.msgs || 0);
+                heatmapJoinsCount[dayIndex][h] += (hData.joins || 0);
+                if (Array.isArray(hData.activeUsers)) {
+                  hData.activeUsers.forEach((u: string) => {
+                    hourlyUsersSets[h].add(u);
+                    heatmapUsersSets[dayIndex][h].add(u);
+                  });
+                }
               }
             }
           }
+        });
+      }
+    } else {
+      // All chats: use global point.hourly or fallback to chatStats sum
+      let hasGlobalHourly = false;
+      if (point.hourly) {
+        for (let h = 0; h < 24; h++) {
+          const hData = point.hourly[h] || point.hourly[String(h)];
+          if (hData && (hData.msgs > 0 || hData.joins > 0 || (Array.isArray(hData.activeUsers) && hData.activeUsers.length > 0))) {
+            hasGlobalHourly = true;
+            hourlyMsgsCount[h] += (hData.msgs || 0);
+            hourlyJoinsCount[h] += (hData.joins || 0);
+            heatmapMsgsCount[dayIndex][h] += (hData.msgs || 0);
+            heatmapJoinsCount[dayIndex][h] += (hData.joins || 0);
+            if (Array.isArray(hData.activeUsers)) {
+              hData.activeUsers.forEach((u: string) => {
+                hourlyUsersSets[h].add(u);
+                heatmapUsersSets[dayIndex][h].add(u);
+              });
+            }
+          }
         }
-      });
+      }
+
+      if (!hasGlobalHourly && point.chatStats) {
+        Object.keys(point.chatStats).forEach(cId => {
+          const cStat = point.chatStats[cId];
+          if (cStat && cStat.hourly) {
+            for (let h = 0; h < 24; h++) {
+              const hData = cStat.hourly[h] || cStat.hourly[String(h)];
+              if (hData) {
+                hourlyMsgsCount[h] += (hData.msgs || 0);
+                hourlyJoinsCount[h] += (hData.joins || 0);
+                heatmapMsgsCount[dayIndex][h] += (hData.msgs || 0);
+                heatmapJoinsCount[dayIndex][h] += (hData.joins || 0);
+                if (Array.isArray(hData.activeUsers)) {
+                  hData.activeUsers.forEach((u: string) => {
+                    hourlyUsersSets[h].add(u);
+                    heatmapUsersSets[dayIndex][h].add(u);
+                  });
+                }
+              }
+            }
+          }
+        });
+      }
     }
   });
 
@@ -4032,7 +4066,16 @@ async function generateChatSummary(
   // THRESHOLD CHECK:
   // For automated scheduled daily posting: skip if message count is below threshold (< 10)
   if (isScheduled && messageCount < minThreshold) {
-    throw new DigestSkippedError(`В чате за последние ${hoursBack}ч зафиксировано только ${messageCount} сообщений (требуется минимум ${minThreshold}). Дайджест пропущен, чтобы не беспокоить участников чата.`);
+    const skipReason = `В чате за последние ${hoursBack}ч зафиксировано только ${messageCount} сообщений (требуется минимум ${minThreshold}). Дайджест пропущен, чтобы не беспокоить участников чата.`;
+    addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'DIGEST',
+      user: 'AI Summarizer',
+      chat: chatTitle,
+      details: `ℹ️ [Пропуск по порогу активности] ${skipReason}`
+    }).catch(() => {});
+    throw new DigestSkippedError(skipReason);
   }
 
   // For manual requests from admin panel: allow generating if there is at least 1 message; if 0, notify
@@ -4045,7 +4088,16 @@ async function generateChatSummary(
   if (isScheduled && config?.lastWaveSummarizedAt) {
     const newMsgsSinceLastWave = msgs.filter(m => m.timestamp > config.lastWaveSummarizedAt!).length;
     if (newMsgsSinceLastWave < minThreshold) {
-      throw new DigestSkippedError(`В чате нет новой волны сообщений с момента предыдущего дайджеста (${newMsgsSinceLastWave} новых сообщ. < ${minThreshold}). Пропуск генерации до следующей волны активности.`);
+      const skipReason = `В чате нет новой волны сообщений с момента предыдущего дайджеста (${newMsgsSinceLastWave} новых сообщ. < ${minThreshold}). Пропуск генерации до следующей волны активности.`;
+      addLog({
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date().toISOString(),
+        type: 'DIGEST',
+        user: 'AI Summarizer',
+        chat: chatTitle,
+        details: `ℹ️ [Пропуск волны активности] ${skipReason}`
+      }).catch(() => {});
+      throw new DigestSkippedError(skipReason);
     }
   }
 
@@ -4138,6 +4190,14 @@ ${blackListPosts.length > 0 ? `
     rawSummaryText = await generateAIResponse(promptText);
   } catch (aiErr: any) {
     console.error('Failed to generate AI response:', aiErr);
+    addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'ERROR',
+      user: 'Gemini AI',
+      chat: chatTitle,
+      details: `❌ [Ошибка ИИ при суммаризации] ${aiErr?.message || aiErr}`
+    }).catch(() => {});
     throw aiErr;
   }
 
@@ -4165,8 +4225,24 @@ ${blackListPosts.length > 0 ? `
       digestEntry.sentToTelegram = true;
       (digestEntry as any).sentAt = new Date().toISOString();
       console.log(`Digest ${digestEntry.id} successfully sent to Telegram chat ${destinationChatId}`);
-    } catch (sendErr) {
+      addLog({
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date().toISOString(),
+        type: 'DIGEST',
+        user: 'Telegram Bot',
+        chat: chatTitle,
+        details: `✅ [Дайджест опубликован] Суточный дайджест успешно отправлен в Telegram-чат (${messageCount} сообщ., ${userCount} участников)`
+      }).catch(() => {});
+    } catch (sendErr: any) {
       console.error(`Failed to send digest to Telegram chat ${destinationChatId}:`, sendErr);
+      addLog({
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date().toISOString(),
+        type: 'ERROR',
+        user: 'Telegram Bot',
+        chat: chatTitle,
+        details: `❌ [Ошибка отправки дайджеста] Не удалось отправить сообщение в чат ${destinationChatId}: ${sendErr?.message || sendErr}`
+      }).catch(() => {});
     }
   }
 
@@ -8264,6 +8340,18 @@ async function startServer() {
             console.log(`[AI Digest] ℹ️ Skipped chat ${config.chatId} (${config.chatTitle || 'chat'}): ${digestErr.message}`);
           } else {
             console.error(`[AI Digest] ❌ Failed scheduled digest in queue for chat ${config.chatId}:`, digestErr);
+            // Allow retry on next tick if transient error occurred
+            config.lastAttemptedDate = undefined;
+            await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs })).catch(() => {});
+            
+            addLog({
+              id: Math.random().toString(36).substr(2, 9),
+              timestamp: new Date().toISOString(),
+              type: 'ERROR',
+              user: 'AI Summarizer',
+              chat: config.chatTitle || config.chatId,
+              details: `❌ [Сбой расписания дайджеста] ${digestErr?.message || digestErr}`
+            }).catch(() => {});
           }
         });
       }

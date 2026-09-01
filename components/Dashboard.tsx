@@ -801,7 +801,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <div className="w-16 shrink-0 text-slate-500 font-sans font-bold text-xs uppercase pl-1">
                     День
                   </div>
-                  <div className="grid grid-cols-24 flex-1 gap-1 text-center">
+                  <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] flex-1 gap-1 text-center">
                     {Array.from({ length: 24 }, (_, h) => (
                       <div 
                         key={`head-h-${h}`} 
@@ -848,7 +848,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                       </div>
 
                       {/* 24 Hour Tiles */}
-                      <div className="grid grid-cols-24 flex-1 gap-1">
+                      <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] flex-1 gap-1">
                         {Array.from({ length: 24 }, (_, hour) => {
                           const cell = dayCells.find(c => c.hour === hour) || {
                             day: dayIdx,
@@ -923,7 +923,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   <div className="w-16 shrink-0 text-slate-500 font-sans font-semibold pl-1">
                     Сумма
                   </div>
-                  <div className="grid grid-cols-24 flex-1 gap-1 text-center">
+                  <div className="grid grid-cols-[repeat(24,minmax(0,1fr))] flex-1 gap-1 text-center">
                     {Array.from({ length: 24 }, (_, h) => {
                       const hVal = hourStats[h]?.metricVal || 0;
                       return (
