@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   LayoutDashboard, MessageSquareText, Shield, 
   Calendar, Radio, ScrollText, Menu, X, LogOut, Database, Settings as SettingsIcon,
-  Bot, UserPlus, Cloud, Network, Award, Sparkles
+  Bot, UserPlus, Cloud, Network, Award, Sparkles, Smartphone, Layers
 } from 'lucide-react';
 
 import { Chat, ScheduledMessage, LogEntry, GlobalBan, FilterSettings, Tab, BotSettings, Stats, WhitelistEntry, MultiChatUser, LatestMember, ChatBan, User, UserRole, DatabaseType } from './types';
@@ -30,6 +30,107 @@ const App: React.FC = () => {
   });
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [activeTab, setActiveTab] = useState<Tab>(Tab.STATISTICS);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  // Telegram WebApp detection & state
+  const [isTelegramWebApp, setIsTelegramWebApp] = useState<boolean>(false);
+  const [telegramUser, setTelegramUser] = useState<any>(null);
+  const [telegramAuthError, setTelegramAuthError] = useState<string | null>(null);
+
+  // Trigger Telegram Haptic Feedback
+  const triggerHaptic = (style: 'light' | 'medium' | 'heavy' | 'selection' | 'success' | 'error' = 'selection') => {
+    try {
+      const tg = (window as any).Telegram?.WebApp;
+      if (!tg?.HapticFeedback) return;
+      if (style === 'selection') {
+        tg.HapticFeedback.selectionChanged();
+      } else if (style === 'success' || style === 'error') {
+        tg.HapticFeedback.notificationOccurred(style);
+      } else {
+        tg.HapticFeedback.impactOccurred(style);
+      }
+    } catch (e) {}
+  };
+
+  // Telegram WebApp initial detection and auto-login
+  useEffect(() => {
+    const tg = (window as any).Telegram?.WebApp;
+    if (tg) {
+      try {
+        tg.ready();
+        tg.expand();
+        if (tg.setHeaderColor) tg.setHeaderColor('#020617');
+        if (tg.setBackgroundColor) tg.setBackgroundColor('#020617');
+        if (tg.enableClosingConfirmation) tg.enableClosingConfirmation();
+      } catch (e) {
+        console.warn('TMA init error:', e);
+      }
+
+      if (tg.initData && tg.initData.trim() !== '') {
+        setIsTelegramWebApp(true);
+        if (tg.initDataUnsafe?.user) {
+          setTelegramUser(tg.initDataUnsafe.user);
+        }
+
+        // If not already logged in or if running inside TMA, verify and login automatically
+        const autoLoginTMA = async () => {
+          try {
+            const res = await fetch(`${API_BASE_URL}/telegram-webapp-auth`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ initData: tg.initData })
+            });
+
+            if (res.ok) {
+              const data = await res.json();
+              localStorage.setItem('token', data.token);
+              localStorage.setItem('user', JSON.stringify(data.user));
+              setToken(data.token);
+              setCurrentUser(data.user);
+              setTelegramAuthError(null);
+              triggerHaptic('success');
+            } else {
+              const errData = await res.json().catch(() => ({}));
+              console.warn('TMA auto-auth failed:', errData.error);
+              setTelegramAuthError(errData.error || 'Ошибка входа через Telegram');
+            }
+          } catch (e: any) {
+            console.error('TMA auto-login network error:', e);
+          }
+        };
+
+        if (!token || !currentUser) {
+          autoLoginTMA();
+        }
+      }
+    }
+  }, []);
+
+  // Telegram BackButton binding
+  useEffect(() => {
+    const tg = (window as any).Telegram?.WebApp;
+    if (!tg?.BackButton) return;
+
+    if (sidebarOpen) {
+      tg.BackButton.show();
+      const onBackSidebar = () => {
+        triggerHaptic('light');
+        setSidebarOpen(false);
+      };
+      tg.BackButton.onClick(onBackSidebar);
+      return () => tg.BackButton.offClick(onBackSidebar);
+    } else if (activeTab !== Tab.STATISTICS) {
+      tg.BackButton.show();
+      const onBackTab = () => {
+        triggerHaptic('light');
+        setActiveTab(Tab.STATISTICS);
+      };
+      tg.BackButton.onClick(onBackTab);
+      return () => tg.BackButton.offClick(onBackTab);
+    } else {
+      tg.BackButton.hide();
+    }
+  }, [activeTab, sidebarOpen]);
 
   const authenticatedFetch = async (url: string, options: RequestInit = {}) => {
     const activeToken = localStorage.getItem('token') || token;
@@ -50,7 +151,6 @@ const App: React.FC = () => {
     }
     return res;
   };
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [dbStatus, setDbStatus] = useState<'online' | 'offline'>('online');
   const [botStatus, setBotStatus] = useState<'online' | 'offline'>('offline');
@@ -439,20 +539,25 @@ const App: React.FC = () => {
 
   const NavItem = ({ tab, icon: Icon, label }: { tab: Tab, icon: any, label: string }) => (
     <button
-      onClick={() => { setActiveTab(tab); setSidebarOpen(false); }}
-      className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 group ${
+      onClick={() => { 
+        triggerHaptic('selection');
+        setActiveTab(tab); 
+        setSidebarOpen(false); 
+      }}
+      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group cursor-pointer ${
         activeTab === tab 
-          ? 'bg-blue-600/10 text-blue-400 font-medium' 
-          : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+          ? 'bg-blue-600/15 text-blue-400 font-semibold border border-blue-500/20 shadow-sm shadow-blue-950/40' 
+          : 'text-slate-400 hover:bg-slate-800/80 hover:text-slate-200 border border-transparent'
       }`}
     >
-      <Icon className={`w-5 h-5 ${activeTab === tab ? 'text-blue-400' : 'text-slate-500 group-hover:text-slate-300'}`} />
-      <span>{label}</span>
+      <Icon className={`w-5 h-5 shrink-0 ${activeTab === tab ? 'text-blue-400' : 'text-slate-500 group-hover:text-slate-300'}`} />
+      <span className="truncate">{label}</span>
       {activeTab === tab && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></div>}
     </button>
   );
 
   const handleLogout = () => {
+    triggerHaptic('medium');
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setToken(null);
@@ -460,7 +565,7 @@ const App: React.FC = () => {
   };
 
   if (!token || !currentUser) {
-    return <Login onLogin={(t, u) => { setToken(t); setCurrentUser(u); }} />;
+    return <Login onLogin={(t, u) => { setToken(t); setCurrentUser(u); }} telegramError={telegramAuthError} />;
   }
 
   // Filter data based on assigned chats
@@ -473,7 +578,10 @@ const App: React.FC = () => {
       {sidebarOpen && (
         <div 
           className="fixed inset-0 bg-black/70 z-40 md:hidden backdrop-blur-sm transition-opacity" 
-          onClick={() => setSidebarOpen(false)} 
+          onClick={() => {
+            triggerHaptic('light');
+            setSidebarOpen(false);
+          }} 
         />
       )}
 
@@ -484,13 +592,18 @@ const App: React.FC = () => {
               <Shield className="w-6 h-6 text-white" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-white tracking-tight">Мотобат</h1>
-              <p className="text-xs text-slate-500 font-medium">Админ-панель</p>
+              <h1 className="text-xl font-bold text-white tracking-tight">TeleGuard</h1>
+              <p className="text-xs text-slate-500 font-medium">
+                {isTelegramWebApp ? 'Telegram Mini App' : 'Админ-панель'}
+              </p>
             </div>
           </div>
           <button
-            onClick={() => setSidebarOpen(false)}
-            className="md:hidden p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800 transition-colors"
+            onClick={() => {
+              triggerHaptic('light');
+              setSidebarOpen(false);
+            }}
+            className="md:hidden p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-800 transition-colors cursor-pointer"
             aria-label="Закрыть меню"
           >
             <X className="w-5 h-5" />
@@ -520,28 +633,66 @@ const App: React.FC = () => {
             </>
           )}
         </nav>
+
+        {/* Sidebar Footer with current user & TMA badge */}
+        <div className="p-4 border-t border-slate-800/80 bg-slate-950/40">
+          <div className="flex items-center justify-between">
+            <div className="min-w-0 flex items-center gap-2">
+              <div className="w-8 h-8 rounded-full bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-xs font-bold text-blue-400 shrink-0">
+                {currentUser.username.slice(0, 2).toUpperCase()}
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-white truncate">@{currentUser.username}</p>
+                <span className="text-[10px] text-slate-500 uppercase tracking-wider font-semibold">
+                  {currentUser.role === UserRole.SUPER_ADMIN ? 'Супер-админ' : currentUser.role}
+                </span>
+              </div>
+            </div>
+            <button 
+              onClick={handleLogout}
+              className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-slate-800/80 rounded-lg transition-colors cursor-pointer"
+              title="Выйти"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
       </aside>
 
-      <main className="flex-1 min-w-0 h-full h-[100dvh] max-h-[100dvh] overflow-y-auto overflow-x-hidden flex flex-col">
+      <main className="flex-1 min-w-0 h-full h-[100dvh] max-h-[100dvh] overflow-y-auto overflow-x-hidden flex flex-col relative">
         <header className="sticky top-0 bg-slate-950/95 backdrop-blur-md border-b border-slate-800 px-4 sm:px-6 py-3 sm:py-4 flex items-center justify-between z-30 shrink-0 pt-[max(0.75rem,env(safe-area-inset-top))]">
           <div className="flex items-center gap-3 sm:gap-4 min-w-0">
             <button 
-              onClick={() => setSidebarOpen(true)} 
+              onClick={() => {
+                triggerHaptic('light');
+                setSidebarOpen(true);
+              }} 
               className="md:hidden p-2 text-slate-300 hover:text-white bg-slate-900/90 active:bg-slate-800 border border-slate-800 rounded-xl transition-all shadow-sm active:scale-95 touch-manipulation cursor-pointer shrink-0"
               aria-label="Открыть меню"
             >
               <Menu className="w-5 h-5" />
             </button>
-            <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight truncate">
-              {activeTab.replace('_', ' ')}
-            </h2>
+            <div className="min-w-0">
+              <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight truncate">
+                {activeTab.replace('_', ' ')}
+              </h2>
+            </div>
           </div>
           
-          <div className="flex items-center gap-3 sm:gap-6 shrink-0">
-            {isLoading && <div className="text-xs text-blue-400 animate-pulse hidden sm:block">Подключение...</div>}
+          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
+            {isLoading && <div className="text-xs text-blue-400 animate-pulse hidden sm:block">Синхронизация...</div>}
             
+            {/* Telegram Mini App indicator badge */}
+            {isTelegramWebApp && (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-400 text-xs font-semibold">
+                <Smartphone className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Telegram App</span>
+                <span className="sm:hidden font-mono text-[11px]">TMA</span>
+              </div>
+            )}
+
             {currentUser.role !== UserRole.ADVERTISER && (
-              <div className="hidden lg:flex items-center gap-4">
+              <div className="hidden lg:flex items-center gap-3">
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 rounded-lg border border-slate-800">
                   <Database className={`w-3.5 h-3.5 ${dbStatus === 'online' ? 'text-emerald-500' : 'text-rose-500'}`} />
                   <span className="text-[10px] font-mono text-slate-400">{settings.dbType === DatabaseType.FIREBASE ? 'Firebase' : 'MySQL'}</span>
@@ -565,13 +716,7 @@ const App: React.FC = () => {
                       : cfStatus === 'offline' 
                         ? 'bg-rose-500 animate-pulse' 
                         : 'bg-slate-700'
-                  }`} title={
-                    cfStatus === 'online' 
-                      ? 'Воркер активен и доступен' 
-                      : cfStatus === 'offline' 
-                        ? 'Воркер недоступен' 
-                        : 'Воркер не настроен'
-                  }></div>
+                  }`}></div>
                 </div>
 
                 <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 rounded-lg border border-slate-800">
@@ -585,21 +730,15 @@ const App: React.FC = () => {
                       : proxyStatus === 'offline' 
                         ? 'bg-rose-500 animate-pulse' 
                         : 'bg-slate-700'
-                  }`} title={
-                    proxyStatus === 'online' 
-                      ? 'Telegram Proxy активен и доступен' 
-                      : proxyStatus === 'offline' 
-                        ? 'Telegram Proxy недоступен' 
-                        : 'Telegram Proxy не настроен'
-                  }></div>
+                  }`}></div>
                 </div>
               </div>
             )}
 
-            <div className="flex items-center gap-3 border-l border-slate-800 pl-4 sm:pl-6">
+            <div className="flex items-center gap-2 sm:gap-3 border-l border-slate-800 pl-3 sm:pl-4">
               <button 
                 onClick={handleLogout}
-                className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-rose-400 rounded-lg border border-slate-800 transition-all cursor-pointer"
+                className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-rose-400 rounded-xl border border-slate-800 transition-all cursor-pointer shadow-sm"
                 title="Выйти"
               >
                 <LogOut className="w-4 h-4" />
@@ -608,7 +747,7 @@ const App: React.FC = () => {
           </div>
         </header>
 
-        <div className="p-4 sm:p-6 md:p-8 max-w-7xl mx-auto w-full flex-1">
+        <div className="p-4 sm:p-6 md:p-8 max-w-7xl mx-auto w-full flex-1 pb-28 md:pb-8">
           {!isLoading && dbStatus === 'offline' && (
             <div className="mb-6 bg-rose-500/10 border border-rose-500/50 p-4 rounded-xl flex items-center gap-4 text-rose-200">
               <div className="p-2 bg-rose-500/20 rounded-lg"><X className="w-5 h-5" /></div>
@@ -707,6 +846,74 @@ const App: React.FC = () => {
             </>
           )}
         </div>
+
+        {/* Mobile & Telegram Mini App Bottom Navigation Bar */}
+        <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur-xl border-t border-slate-800/80 px-2 py-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-2xl">
+          <div className="grid grid-cols-5 gap-1 max-w-lg mx-auto">
+            <button
+              onClick={() => {
+                triggerHaptic('selection');
+                setActiveTab(Tab.STATISTICS);
+              }}
+              className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-all ${
+                activeTab === Tab.STATISTICS ? 'text-blue-400 bg-blue-500/10 font-semibold' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <LayoutDashboard className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">Статистика</span>
+            </button>
+
+            <button
+              onClick={() => {
+                triggerHaptic('selection');
+                setActiveTab(Tab.CHATS);
+              }}
+              className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-all ${
+                activeTab === Tab.CHATS ? 'text-blue-400 bg-blue-500/10 font-semibold' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <MessageSquareText className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">Чаты</span>
+            </button>
+
+            <button
+              onClick={() => {
+                triggerHaptic('selection');
+                setActiveTab(Tab.AI_SUMMARY);
+              }}
+              className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-all ${
+                activeTab === Tab.AI_SUMMARY ? 'text-blue-400 bg-blue-500/10 font-semibold' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Sparkles className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">ИИ-Сводка</span>
+            </button>
+
+            <button
+              onClick={() => {
+                triggerHaptic('selection');
+                setActiveTab(Tab.MODERATION);
+              }}
+              className={`flex flex-col items-center justify-center py-1.5 rounded-xl transition-all ${
+                activeTab === Tab.MODERATION ? 'text-blue-400 bg-blue-500/10 font-semibold' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <Shield className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">Защита</span>
+            </button>
+
+            <button
+              onClick={() => {
+                triggerHaptic('light');
+                setSidebarOpen(true);
+              }}
+              className="flex flex-col items-center justify-center py-1.5 rounded-xl transition-all text-slate-400 hover:text-slate-200"
+            >
+              <Layers className="w-5 h-5 mb-0.5" />
+              <span className="text-[10px] leading-tight">Меню</span>
+            </button>
+          </div>
+        </nav>
       </main>
     </div>
   );

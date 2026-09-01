@@ -3,6 +3,7 @@ dotenv.config();
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { Telegraf } from 'telegraf';
 import cors from 'cors';
 import jwt from 'jsonwebtoken';
@@ -30,6 +31,77 @@ function getGeminiClient(): GoogleGenAI {
     lastGeminiKey = apiKey;
   }
   return geminiClient;
+}
+
+function getProjectDate(dateInput: Date | number | string = new Date()): { dateObj: Date, dateStr: string, hour: number, minute: number, dayIndex: number, formatted: string } {
+  const date = typeof dateInput === 'object' && dateInput instanceof Date ? dateInput : new Date(dateInput);
+  const tzOffset = typeof (settings as any)?.timezoneOffset === 'number' ? (settings as any).timezoneOffset : 3;
+  const utcMs = date.getTime() + (date.getTimezoneOffset() * 60000);
+  const adjustedDate = new Date(utcMs + (tzOffset * 3600000));
+  const hour = adjustedDate.getHours();
+  const minute = adjustedDate.getMinutes();
+  const jsDay = adjustedDate.getDay();
+  const dayIndex = jsDay === 0 ? 6 : jsDay - 1; // 0=Mon, 6=Sun
+  const y = adjustedDate.getFullYear();
+  const m = String(adjustedDate.getMonth() + 1).padStart(2, '0');
+  const d = String(adjustedDate.getDate()).padStart(2, '0');
+  const dateStr = `${y}-${m}-${d}`;
+  const formatted = `${d}.${m}.${y}`;
+  return { dateObj: adjustedDate, dateStr, hour, minute, dayIndex, formatted };
+}
+
+function shiftHourlyStats(hourly: Record<string, any>, offset: number): Record<string, any> {
+  if (!hourly || typeof hourly !== 'object') return {};
+  const shifted: Record<string, any> = {};
+  for (const [hStr, val] of Object.entries(hourly)) {
+    const h = parseInt(hStr, 10);
+    if (!isNaN(h) && val) {
+      const newH = (h + offset + 24) % 24;
+      shifted[newH] = val;
+    }
+  }
+  return shifted;
+}
+
+function getEffectiveWebAppUrl(reqOrigin?: string): string {
+  if (settings?.webAppUrl && settings.webAppUrl.trim()) {
+    return settings.webAppUrl.trim();
+  }
+  if (process.env.APP_URL && process.env.APP_URL.trim()) {
+    return process.env.APP_URL.trim();
+  }
+  if (reqOrigin && reqOrigin.startsWith('http')) {
+    return reqOrigin;
+  }
+  return 'https://ais-dev-2yzww6kqlfl4r7wmyqj4ri-313227547728.europe-west2.run.app';
+}
+
+function verifyTelegramWebAppData(initData: string, botToken: string): { isValid: boolean; user?: any } {
+  if (!initData || !botToken) return { isValid: false };
+  try {
+    const params = new URLSearchParams(initData);
+    const hash = params.get('hash');
+    if (!hash) return { isValid: false };
+
+    params.delete('hash');
+    const sortedKeys = Array.from(params.keys()).sort();
+    const dataCheckString = sortedKeys.map(key => `${key}=${params.get(key)}`).join('\n');
+
+    // HMAC-SHA256("WebAppData", botToken)
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    const calculatedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+    if (calculatedHash !== hash) {
+      return { isValid: false };
+    }
+
+    const userStr = params.get('user');
+    const user = userStr ? JSON.parse(userStr) : null;
+    return { isValid: true, user };
+  } catch (err) {
+    console.error('Failed to verify Telegram WebApp data:', err);
+    return { isValid: false };
+  }
 }
 
 function getGeminiEffectiveBaseUrl(options?: { customBaseUrl?: string; proxySource?: string }): string | null {
@@ -657,6 +729,151 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+// Telegram Mini App authentication endpoint
+app.post('/api/telegram-webapp-auth', async (req, res) => {
+  const { initData } = req.body;
+  if (!initData) {
+    return res.status(400).json({ error: 'Параметр initData отсутствует' });
+  }
+
+  const token = settings.botToken || process.env.TELEGRAM_BOT_TOKEN || '';
+  if (!token) {
+    return res.status(500).json({ error: 'Токен бота не настроен' });
+  }
+
+  const verification = verifyTelegramWebAppData(initData, token);
+  if (!verification.isValid || !verification.user) {
+    return res.status(401).json({ error: 'Недействительная подпись Telegram WebApp' });
+  }
+
+  const tgUser = verification.user;
+  const tgUserId = String(tgUser.id);
+  const tgUsername = (tgUser.username || '').toLowerCase();
+  const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase().replace(/^@/, '');
+
+  console.log(`[TMA Auth] Authentication request from Telegram User: ID=${tgUserId}, @${tgUsername || 'unknown'} (${tgUser.first_name || ''})`);
+
+  let matchedUser: any = null;
+  let userRole = 'ADMIN';
+
+  try {
+    // 1. Check in users collection by username
+    if (tgUsername) {
+      const userSnap = await db.collection('users').where('username', '==', tgUsername).get();
+      if (!userSnap.empty) {
+        matchedUser = userSnap.docs[0].data();
+        userRole = matchedUser.role || 'ADMIN';
+      }
+    }
+
+    // 2. Check by telegramId
+    if (!matchedUser) {
+      const tgIdSnap = await db.collection('users').where('telegramId', '==', tgUserId).get();
+      if (!tgIdSnap.empty) {
+        matchedUser = tgIdSnap.docs[0].data();
+        userRole = matchedUser.role || 'ADMIN';
+      }
+    }
+
+    // 3. Check if user matches adminTelegramUsername or bookray chat ID
+    const isOwner = (tgUsername && tgUsername === adminUsername) || 
+                    (tgUserId === process.env.BOOKRAY_CHAT_ID) ||
+                    (tgUsername === 'bookray');
+
+    if (isOwner) {
+      userRole = 'SUPER_ADMIN';
+      if (!matchedUser) {
+        matchedUser = {
+          id: `tg_${tgUserId}`,
+          username: tgUsername || `tg_${tgUserId}`,
+          email: `${tgUsername || tgUserId}@telegram.admin`,
+          role: 'SUPER_ADMIN',
+          assignedChatIds: [],
+          createdAt: new Date().toISOString()
+        };
+      }
+    }
+
+    if (!matchedUser && !isOwner) {
+      // Check if user is in whitelist
+      const isWhitelisted = whitelist.some(w => w.userId === tgUserId || (tgUsername && w.userId.toLowerCase() === `@${tgUsername}`));
+      if (isWhitelisted) {
+        matchedUser = {
+          id: `tg_${tgUserId}`,
+          username: tgUsername || `user_${tgUserId}`,
+          email: `${tgUsername || tgUserId}@telegram.member`,
+          role: 'ADMIN',
+          assignedChatIds: [],
+          createdAt: new Date().toISOString()
+        };
+      } else {
+        return res.status(403).json({ 
+          error: `Пользователь @${tgUsername || tgUserId} (${tgUser.first_name || ''}) не найден в списке администраторов системы. Обратитесь к главному администратору (@${adminUsername}).`,
+          telegramUser: { id: tgUserId, username: tgUsername, firstName: tgUser.first_name }
+        });
+      }
+    }
+
+    const sessionPayload = {
+      id: matchedUser.id || `tg_${tgUserId}`,
+      username: matchedUser.username || tgUsername || `tg_${tgUserId}`,
+      role: matchedUser.role || userRole,
+      assignedChatIds: matchedUser.assignedChatIds || [],
+      telegramId: tgUserId,
+      firstName: tgUser.first_name,
+      isTelegramWebApp: true
+    };
+
+    const jwtToken = jwt.sign(sessionPayload, JWT_SECRET, { expiresIn: '14d' });
+    const { password: _, ...safeUser } = matchedUser;
+
+    return res.json({
+      token: jwtToken,
+      user: { ...safeUser, role: sessionPayload.role, isTelegramWebApp: true, telegramUser: tgUser }
+    });
+
+  } catch (err: any) {
+    console.error('Error during TMA auth:', err);
+    return res.status(500).json({ error: 'Внутренняя ошибка авторизации через Telegram' });
+  }
+});
+
+// Configure or sync Telegram Chat Menu Button
+app.post('/api/telegram-menu-button', authenticateToken, async (req, res) => {
+  try {
+    if (!bot) {
+      return res.status(400).json({ error: 'Бот не инициализирован' });
+    }
+    const targetUrl = req.body.webAppUrl || getEffectiveWebAppUrl(req.headers.origin);
+    
+    await (bot.telegram as any).setChatMenuButton({
+      menu_button: {
+        type: 'web_app',
+        text: '📱 Панель',
+        web_app: { url: targetUrl }
+      }
+    });
+
+    console.log(`[Bot] Successfully set Chat Menu Button to: ${targetUrl}`);
+    res.json({ success: true, message: 'Кнопка меню бота в Telegram успешно настроена!', webAppUrl: targetUrl });
+  } catch (e: any) {
+    console.error('Failed to set chat menu button in Telegram:', e);
+    res.status(500).json({ error: 'Ошибка установки кнопки меню: ' + (e.message || e) });
+  }
+});
+
+// Get Telegram Mini App configuration & effective URLs
+app.get('/api/telegram-webapp-config', authenticateToken, (req, res) => {
+  const effectiveUrl = getEffectiveWebAppUrl(req.headers.origin);
+  res.json({
+    effectiveUrl,
+    configuredUrl: settings.webAppUrl || '',
+    botUsername: botInfo?.username || '',
+    botId: botInfo?.id || null,
+    adminUsername: settings.adminTelegramUsername || 'bookray'
+  });
+});
+
 app.get('/api/auth/me', authenticateToken, (req, res) => {
   res.json({ user: (req as any).user });
 });
@@ -741,28 +958,20 @@ app.get('/api/whitelist', authenticateToken, (req, res) => res.json(whitelist));
 // Live Server & Project Time info endpoint
 app.get('/api/time', (req, res) => {
   const now = new Date();
+  const proj = getProjectDate(now);
   const tzOffset = typeof settings.timezoneOffset === 'number' ? settings.timezoneOffset : 3;
-  const utcMs = now.getTime() + (now.getTimezoneOffset() * 60000);
-  const adjustedMs = utcMs + (tzOffset * 3600000);
-  const adjustedDate = new Date(adjustedMs);
-
-  const jsDay = adjustedDate.getDay();
-  const dayIndex = jsDay === 0 ? 6 : jsDay - 1; // 0=Mon, 6=Sun
-  const hour = adjustedDate.getHours();
-  const minute = adjustedDate.getMinutes();
-  const timeFormatted = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:${String(adjustedDate.getSeconds()).padStart(2, '0')}`;
-  const dateFormatted = `${adjustedDate.getFullYear()}-${String(adjustedDate.getMonth() + 1).padStart(2, '0')}-${String(adjustedDate.getDate()).padStart(2, '0')}`;
+  const timeFormatted = `${String(proj.hour).padStart(2, '0')}:${String(proj.minute).padStart(2, '0')}:${String(proj.dateObj.getSeconds()).padStart(2, '0')}`;
 
   res.json({
     serverUtcIso: now.toISOString(),
     serverTimestamp: now.getTime(),
     timezoneOffset: tzOffset,
-    projectIso: adjustedDate.toISOString(),
+    projectIso: proj.dateObj.toISOString(),
     projectTimeFormatted: timeFormatted,
-    projectDateFormatted: dateFormatted,
-    dayIndex,
-    hour,
-    minute
+    projectDateFormatted: proj.dateStr,
+    dayIndex: proj.dayIndex,
+    hour: proj.hour,
+    minute: proj.minute
   });
 });
 
@@ -974,8 +1183,10 @@ app.get('/api/stats', authenticateToken, (req, res) => {
   const totalMembers = filteredChats.reduce((acc, chat) => acc + (chat.members || 0), 0);
   const activeChatsCount = filteredChats.length;
   
-  const todayDate = new Date().toISOString().split('T')[0];
-  const yesterdayDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const projNow = getProjectDate();
+  const todayDate = projNow.dateStr;
+  const yesterdayProj = getProjectDate(new Date(Date.now() - 24 * 60 * 60 * 1000));
+  const yesterdayDate = yesterdayProj.dateStr;
   
   const today = statsHistory.find(s => s.date === todayDate) || { msgs: 0, chatStats: {}, joins: 0, leaves: 0, totalMembers: totalMembers };
   const yesterday = statsHistory.find(s => s.date === yesterdayDate);
@@ -1087,14 +1298,14 @@ app.get('/api/stats', authenticateToken, (req, res) => {
   } else if (endDate) {
     filteredStatsHistory = statsHistory.filter(s => s.date <= endDate);
   } else {
-    // Continuous 7 calendar days ending today
+    // Continuous 7 calendar days ending today in project timezone
     const days: any[] = [];
-    const nowMs = Date.now();
+    const projTimeMs = projNow.dateObj.getTime();
     for (let i = 6; i >= 0; i--) {
-      const d = new Date(nowMs - i * 24 * 60 * 60 * 1000);
-      const isoDate = d.toISOString().split('T')[0];
-      const [y, m, dayNum] = isoDate.split('-');
-      const displayName = `${dayNum}.${m}.${y}`;
+      const d = new Date(projTimeMs - i * 24 * 60 * 60 * 1000);
+      const projD = getProjectDate(d);
+      const isoDate = projD.dateStr;
+      const displayName = projD.formatted;
       const found = statsHistory.find(s => s.date === isoDate);
       if (found) {
         days.push(found);
@@ -1155,6 +1366,7 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     }
     
     return {
+      date: point.date,
       name: point.name,
       joins: filteredJoins,
       leaves: filteredLeaves,
@@ -1387,10 +1599,9 @@ app.get('/api/stats', authenticateToken, (req, res) => {
     }
 
     try {
-      const d = new Date(msg.timestamp);
-      const jsDay = d.getDay();
-      const dayIndex = (jsDay + 6) % 7;
-      const msgHour = d.getHours();
+      const proj = getProjectDate(msg.timestamp);
+      const dayIndex = proj.dayIndex;
+      const msgHour = proj.hour;
       if (msgHour >= 0 && msgHour < 24) {
         if (hourlyMsgsCount[msgHour] === 0) {
           hourlyMsgsCount[msgHour]++;
@@ -1418,10 +1629,9 @@ app.get('/api/stats', authenticateToken, (req, res) => {
       if (!chat || !allowedChatIds.includes(String(chat.id))) return;
     }
     try {
-      const d = new Date(l.timestamp);
-      const jsDay = d.getDay();
-      const dayIndex = (jsDay + 6) % 7;
-      const logHour = d.getHours();
+      const proj = getProjectDate(l.timestamp);
+      const dayIndex = proj.dayIndex;
+      const logHour = proj.hour;
       if (logHour >= 0 && logHour < 24) {
         if (hourlyJoinsCount[logHour] === 0) {
           hourlyJoinsCount[logHour]++;
@@ -4346,6 +4556,7 @@ let settings = {
   disableCloudflare: false,
   adminTelegramUsername: 'bookray',
   telegramApiRoot: process.env.TELEGRAM_API_ROOT || '',
+  webAppUrl: '',
   aiProvider: 'gemini' as 'gemini' | 'openrouter' | 'custom',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
   geminiModel: 'gemini-2.0-flash',
@@ -4429,18 +4640,6 @@ async function syncData() {
       console.log(`Loaded ${logs.length} logs`);
     });
 
-    await safeLoad('stats', async () => {
-      const snap = await db.collection('stats').orderBy('date', 'asc').get();
-      statsHistory = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      console.log(`Loaded ${statsHistory.length} stats history entries`);
-    });
-
-    await safeLoad('active_mutes', async () => {
-      const snap = await db.collection('active_mutes').get();
-      activeMutes = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
-      console.log(`Loaded ${activeMutes.length} active mutes`);
-    });
-
     await safeLoad('config/moderation', async () => {
       const filtersDoc = await db.collection('config').doc('moderation').get();
       if (filtersDoc.exists) {
@@ -4455,6 +4654,36 @@ async function syncData() {
         settings = { ...settings, ...settingsDoc.data() as any };
         console.log('Loaded settings');
       }
+    });
+
+    await safeLoad('stats', async () => {
+      const snap = await db.collection('stats').orderBy('date', 'asc').get();
+      const tzOffset = typeof settings?.timezoneOffset === 'number' ? settings.timezoneOffset : 3;
+      statsHistory = snap.docs.map(d => {
+        const item = { id: d.id, ...d.data() } as any;
+        if (!item.tzAdjusted) {
+          if (item.hourly) {
+            item.hourly = shiftHourlyStats(item.hourly, tzOffset);
+          }
+          if (item.chatStats) {
+            Object.keys(item.chatStats).forEach(cId => {
+              if (item.chatStats[cId]?.hourly) {
+                item.chatStats[cId].hourly = shiftHourlyStats(item.chatStats[cId].hourly, tzOffset);
+              }
+            });
+          }
+          item.tzAdjusted = true;
+          queueWrite('stats', item.date, cleanData(item));
+        }
+        return item;
+      });
+      console.log(`Loaded ${statsHistory.length} stats history entries (timezone adjusted: ${tzOffset >= 0 ? '+' : ''}${tzOffset}h)`);
+    });
+
+    await safeLoad('active_mutes', async () => {
+      const snap = await db.collection('active_mutes').get();
+      activeMutes = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${activeMutes.length} active mutes`);
     });
 
     await safeLoad('config/broadcast', async () => {
@@ -4852,22 +5081,23 @@ async function updateStats(point: any) {
 }
 
 async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'msgs', amount: number = 1, userId?: string) {
-  const todayDate = new Date().toISOString().split('T')[0];
-  const currentHour = new Date().getHours();
+  const { dateStr: todayDate, hour: currentHour, formatted: nameFormatted } = getProjectDate();
   let today = statsHistory.find(s => s.date === todayDate);
   if (!today) {
-    const [y, m, d] = todayDate.split('-');
     today = { 
       date: todayDate, 
-      name: `${d}.${m}.${y}`, 
+      name: nameFormatted, 
       joins: 0, 
       leaves: 0, 
       msgs: 0, 
       chatStats: {},
       hourly: {},
       activeUsers: [],
-      onlineUsers: []
+      onlineUsers: [],
+      tzAdjusted: true
     };
+  } else {
+    today.tzAdjusted = true;
   }
 
   if (type === 'joins') today.joins = (today.joins || 0) + amount;
@@ -5128,6 +5358,21 @@ async function initBot(token: string) {
       } else if (memberships.length < initialCount) {
         console.log(`Removed bot (${me.id}) from in-memory memberships (${initialCount - memberships.length} entries)`);
       }
+
+      // Configure Telegram Chat Menu Button with Mini App URL
+      try {
+        const defaultAppUrl = getEffectiveWebAppUrl();
+        await (bot.telegram as any).setChatMenuButton({
+          menu_button: {
+            type: 'web_app',
+            text: '📱 Панель',
+            web_app: { url: defaultAppUrl }
+          }
+        });
+        console.log(`[Bot] Initialized Chat Menu Button with WebApp URL: ${defaultAppUrl}`);
+      } catch (errMenu) {
+        console.warn('[Bot] Note: could not set chat menu button on bot init:', errMenu);
+      }
     } catch (e) {
       console.error('Failed to get bot info directly from Telegram (likely due to sandbox environment connection timeout):', e);
       if (!botInfo) {
@@ -5172,10 +5417,11 @@ async function initBot(token: string) {
           if (isCurrentAdmin) {
             process.env.BOOKRAY_CHAT_ID = ctx.chat.id.toString();
             const activeChatsCount = chats.filter(c => c.active).length;
-            const todayDate = new Date().toISOString().split('T')[0];
+            const todayDate = getProjectDate().dateStr;
             const todayStat = statsHistory.find(s => s.date === todayDate);
             const todayMsgs = todayStat?.msgs || 0;
 
+            const appUrl = getEffectiveWebAppUrl();
             const text = `👋 <b>Здравствуйте, Администратор (@${username})!</b>\n\n` +
               `🤖 <b>TeleGuard Bot</b> активен и работает в штатном режиме.\n\n` +
               `📊 <b>Текущее состояние:</b>\n` +
@@ -5183,20 +5429,37 @@ async function initBot(token: string) {
               `• Сообщений сегодня: <b>${todayMsgs}</b>\n` +
               `• Режим связи: <b>${isPollingMode ? 'Long Polling (активен)' : 'Webhook (активен)'}</b>\n` +
               `• Ваш Telegram ID: <code>${userId}</code>\n\n` +
+              `📱 <b>Мини-приложение:</b> Нажмите кнопку ниже или меню слева для открытия панели управления прямо внутри Telegram!\n\n` +
               `⚙️ <b>Команды:</b>\n` +
+              `• /app или /panel — открыть мини-приложение TeleGuard\n` +
               `• /status — подробная статистика и статус бота\n` +
               `• /id — узнать ID текущего чата и пользователя\n` +
               `• /setinfo — назначить этот чат для логов входов/выходов\n` +
               `• /digest — ручной запуск ИИ-суммаризации\n` +
               `• /help — справка`;
 
-            await ctx.reply(text, { parse_mode: 'HTML' });
+            await ctx.reply(text, { 
+              parse_mode: 'HTML',
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '🚀 Открыть веб-панель TeleGuard', web_app: { url: appUrl } }]
+                ]
+              }
+            });
           } else {
             const session = captchaSessions.get(userId);
             if (session) {
               await ctx.reply(`🛡 <b>Проверка Captcha:</b>\n\nПожалуйста, отправьте правильный ответ на капчу в ответном сообщении, чтобы подтвердить заявку на вступление в группу.`, { parse_mode: 'HTML' });
             } else {
-              await ctx.reply(`👋 <b>Привет! Я TeleGuard Bot.</b>\n\nЯ защищаю группы и чаты от спама, нежелательных ссылок, мата и собираю аналитику активности.\n\n🆔 Ваш Telegram ID: <code>${userId}</code>`, { parse_mode: 'HTML' });
+              const appUrl = getEffectiveWebAppUrl();
+              await ctx.reply(`👋 <b>Привет! Я TeleGuard Bot.</b>\n\nЯ защищаю группы и чаты от спама, нежелательных ссылок, мата и собираю аналитику активности.\n\n🆔 Ваш Telegram ID: <code>${userId}</code>`, { 
+                parse_mode: 'HTML',
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: '📱 Открыть панель TeleGuard', web_app: { url: appUrl } }]
+                  ]
+                }
+              });
             }
           }
         } else {
@@ -5208,17 +5471,47 @@ async function initBot(token: string) {
       }
     });
 
+    const sendPanelCommand = async (ctx: any) => {
+      try {
+        const appUrl = getEffectiveWebAppUrl();
+        await ctx.reply('📱 <b>Панель управления TeleGuard</b>\n\nНажмите кнопку ниже, чтобы открыть веб-панель прямо в Telegram:', {
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🚀 Открыть веб-панель TeleGuard', web_app: { url: appUrl } }]
+            ]
+          }
+        });
+      } catch (e: any) {
+        ctx.reply('Ошибка: ' + (e?.message || e)).catch(() => {});
+      }
+    };
+
+    bot.command('app', sendPanelCommand);
+    bot.command('panel', sendPanelCommand);
+    bot.command('admin', sendPanelCommand);
+    bot.command('webapp', sendPanelCommand);
+
     bot.command('help', async (ctx) => {
       try {
+        const appUrl = getEffectiveWebAppUrl();
         const text = `📖 <b>Справка по командам TeleGuard:</b>\n\n` +
           `• /start — Запуск и главное меню бота\n` +
+          `• /app, /panel — Открыть мини-приложение TeleGuard прямо в Telegram\n` +
           `• /status — Проверка статуса, аптайма и сегодняшней статистики\n` +
           `• /id — Показать ID чата и ваш ID\n` +
           `• /ping — Проверка отклика бота\n` +
           `• /setinfo — Назначить чат для уведомлений (только для администратора)\n` +
           `• /digest или /summary — Сформировать ИИ-сводку за 24 часа\n\n` +
-          `Управление фильтрами, списками и расписанием доступно в веб-панели.`;
-        await ctx.reply(text, { parse_mode: 'HTML' });
+          `Управление фильтрами, списками, рассылками и аналитикой доступно в веб-панели.`;
+        await ctx.reply(text, { 
+          parse_mode: 'HTML',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📱 Открыть панель управления', web_app: { url: appUrl } }]
+            ]
+          }
+        });
       } catch (e) {
         ctx.reply('TeleGuard Bot: справка доступна в панели управления.').catch(() => {});
       }
@@ -5228,7 +5521,7 @@ async function initBot(token: string) {
       try {
         const activeChats = chats.filter(c => c.active);
         const totalMembers = activeChats.reduce((acc, c) => acc + (c.members || 0), 0);
-        const todayDate = new Date().toISOString().split('T')[0];
+        const todayDate = getProjectDate().dateStr;
         const todayStat = statsHistory.find(s => s.date === todayDate);
         const todayMsgs = todayStat?.msgs || 0;
         const todayJoins = todayStat?.joins || 0;
@@ -7908,8 +8201,8 @@ async function generatePublicChatsStats(forceRefresh = false) {
   }
 
   const twentyFourHoursAgo = now - ONE_DAY_MS;
-  const todayDateStr = new Date().toISOString().split('T')[0];
-  const yesterdayDate = new Date(now - ONE_DAY_MS).toISOString().split('T')[0];
+  const todayDateStr = getProjectDate().dateStr;
+  const yesterdayDate = getProjectDate(new Date(now - ONE_DAY_MS)).dateStr;
 
   const todayStats = statsHistory.find(s => s.date === todayDateStr);
   const yesterdayStats = statsHistory.find(s => s.date === yesterdayDate);

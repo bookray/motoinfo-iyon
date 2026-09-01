@@ -240,6 +240,7 @@ export interface BotSettings {
   disableCloudflare?: boolean;
   adminTelegramUsername?: string;
   telegramApiRoot?: string;
+  webAppUrl?: string;
   // AI Provider & API Key Settings
   aiProvider?: 'gemini' | 'openrouter' | 'custom';
   geminiApiKey?: string;

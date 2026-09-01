@@ -20,7 +20,10 @@ import {
   ExternalLink,
   Zap,
   Clock,
-  Calendar
+  Calendar,
+  Smartphone,
+  Copy,
+  Check
 } from 'lucide-react';
 
 interface SettingsProps {
@@ -55,6 +58,49 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
 
   const [isTestingAi, setIsTestingAi] = useState(false);
   const [aiTestResult, setAiTestResult] = useState<any>(null);
+
+  const [isUpdatingMenuButton, setIsUpdatingMenuButton] = useState(false);
+  const [menuButtonResult, setMenuButtonResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [copiedAppUrl, setCopiedAppUrl] = useState(false);
+
+  const handleUpdateMenuButton = async () => {
+    setIsUpdatingMenuButton(true);
+    setMenuButtonResult(null);
+    try {
+      const token = localStorage.getItem('token');
+      const targetUrl = (localSettings.webAppUrl && localSettings.webAppUrl.trim()) 
+        ? localSettings.webAppUrl.trim() 
+        : window.location.origin;
+
+      const res = await fetch('/api/telegram-menu-button', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ webAppUrl: targetUrl })
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setMenuButtonResult({ success: true, message: data.message || 'Кнопка меню бота успешно обновлена в Telegram!' });
+      } else {
+        setMenuButtonResult({ success: false, message: data.error || 'Ошибка настройки кнопки меню' });
+      }
+    } catch (e: any) {
+      setMenuButtonResult({ success: false, message: e.message || 'Ошибка запроса к серверу' });
+    } finally {
+      setIsUpdatingMenuButton(false);
+    }
+  };
+
+  const handleCopyAppUrl = () => {
+    const url = (localSettings.webAppUrl && localSettings.webAppUrl.trim()) 
+      ? localSettings.webAppUrl.trim() 
+      : window.location.origin;
+    navigator.clipboard.writeText(url);
+    setCopiedAppUrl(true);
+    setTimeout(() => setCopiedAppUrl(false), 2000);
+  };
 
   const handleTestAi = async () => {
     setIsTestingAi(true);
@@ -602,6 +648,91 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
               <p className="mt-2 text-[10px] text-slate-500 italic">
                 * Изменение токена потребует перезапуска бота
               </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Telegram Mini App (TMA) Settings */}
+        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
+              <Smartphone className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-white">Telegram Mini App (TMA)</h3>
+              <p className="text-xs text-slate-400">Доступ к веб-панели прямо внутри Telegram</p>
+            </div>
+          </div>
+
+          <div className="space-y-5">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                URL мини-приложения (WebApp URL)
+              </label>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={localSettings.webAppUrl || ''}
+                  onChange={(e) => setLocalSettings({ ...localSettings, webAppUrl: e.target.value })}
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-xs"
+                  placeholder={typeof window !== 'undefined' ? window.location.origin : 'https://ваш-домен.app'}
+                />
+                <button
+                  type="button"
+                  onClick={handleCopyAppUrl}
+                  className="px-3.5 py-3 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl border border-slate-700 text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer shrink-0"
+                  title="Скопировать ссылку"
+                >
+                  {copiedAppUrl ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                  <span>{copiedAppUrl ? 'Скопировано!' : 'Копировать'}</span>
+                </button>
+              </div>
+              <p className="mt-1.5 text-[10px] text-slate-500 leading-normal">
+                Если поле не заполнено, бот использует текущий домен сервера (<code className="text-emerald-400 bg-slate-950 px-1 py-0.5 rounded font-mono">{typeof window !== 'undefined' ? window.location.origin : 'https://...'}</code>).
+              </p>
+            </div>
+
+            <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800/80 space-y-3">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-bold text-slate-200">Кнопка меню в диалоге с ботом</p>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Устанавливает кнопку «📱 Панель» в левом нижнем углу чата с ботом.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleUpdateMenuButton}
+                  disabled={isUpdatingMenuButton || !localSettings.botToken}
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-800 disabled:text-slate-600 disabled:cursor-not-allowed text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-emerald-950/30 flex items-center gap-2 cursor-pointer shrink-0"
+                >
+                  {isUpdatingMenuButton ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                  <span>Обновить меню в Telegram</span>
+                </button>
+              </div>
+
+              {menuButtonResult && (
+                <div className={`p-3 rounded-lg text-xs flex items-center gap-2 border animate-in fade-in duration-200 ${
+                  menuButtonResult.success 
+                    ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' 
+                    : 'bg-rose-500/10 text-rose-300 border-rose-500/20'
+                }`}>
+                  {menuButtonResult.success ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+                  <span>{menuButtonResult.message}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 bg-blue-500/5 border border-blue-500/20 rounded-xl space-y-2 text-xs">
+              <div className="flex items-center gap-2 font-bold text-blue-400">
+                <Sparkles className="w-4 h-4" />
+                <span>Возможности Telegram Mini App:</span>
+              </div>
+              <ul className="space-y-1.5 text-slate-300 text-[11px] list-disc list-inside">
+                <li><b>Бесшовная авторизация:</b> Администратор Telegram (@{localSettings.adminTelegramUsername || 'bookray'}) входит в панель автоматически без ввода логина и пароля.</li>
+                <li><b>Команды в боте:</b> Команды <code className="text-blue-300 bg-slate-900 px-1 rounded">/app</code>, <code className="text-blue-300 bg-slate-900 px-1 rounded">/panel</code> и <code className="text-blue-300 bg-slate-900 px-1 rounded">/start</code> присылают кнопку быстрого открытия приложения.</li>
+                <li><b>100% функционал:</b> Все вкладки (Статистика, Чаты, ИИ-Суммаризация, Модерация, Анти-мошенники, Репутация, Планировщик, Рассылки, Логи, Настройки) работают прямо в мобильном Telegram.</li>
+              </ul>
             </div>
           </div>
         </div>
