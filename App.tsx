@@ -823,6 +823,8 @@ const App: React.FC = () => {
                   onWhitelist={handleWhitelist}
                   onRemoveFromWhitelist={handleRemoveFromWhitelist}
                   chats={filteredChats}
+                  authenticatedFetch={authenticatedFetch}
+                  currentUser={currentUser}
                 />
               )}
               {activeTab === Tab.SCHEDULER && (

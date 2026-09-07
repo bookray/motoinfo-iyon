@@ -1143,6 +1143,116 @@ app.get('/api/memberships/multi-chat', (req, res) => {
   res.json(multiChatUsersResult);
 });
 
+// Anti-Scam Keywords & Alert Endpoints
+app.get('/api/antiscam/keywords', authenticateToken, (req, res) => {
+  const detectedAdminChatId = antiScamKeywordsConfig.notifyChatId || process.env.BOOKRAY_CHAT_ID || settings.infoChatId || '';
+  res.json({
+    config: antiScamKeywordsConfig,
+    logs: scamAlertLogs,
+    detectedAdminChatId,
+    adminTelegramUsername: settings.adminTelegramUsername || 'bookray',
+    infoChatId: settings.infoChatId || ''
+  });
+});
+
+app.post('/api/antiscam/keywords', authenticateToken, async (req, res) => {
+  try {
+    const { enabled, keywords, notifyChatId, deleteMessage, notifyInGroup, cooldownSeconds } = req.body;
+    
+    let cleanedKeywords: string[] = [];
+    if (Array.isArray(keywords)) {
+      cleanedKeywords = Array.from(new Set(
+        keywords.map((k: any) => String(k || '').trim()).filter(k => k.length > 0)
+      ));
+    } else {
+      cleanedKeywords = antiScamKeywordsConfig.keywords;
+    }
+
+    antiScamKeywordsConfig = {
+      enabled: enabled !== undefined ? Boolean(enabled) : antiScamKeywordsConfig.enabled,
+      keywords: cleanedKeywords,
+      notifyChatId: notifyChatId !== undefined ? String(notifyChatId).trim() : (antiScamKeywordsConfig.notifyChatId || ''),
+      deleteMessage: deleteMessage !== undefined ? Boolean(deleteMessage) : antiScamKeywordsConfig.deleteMessage,
+      notifyInGroup: notifyInGroup !== undefined ? Boolean(notifyInGroup) : antiScamKeywordsConfig.notifyInGroup,
+      cooldownSeconds: typeof cooldownSeconds === 'number' && cooldownSeconds >= 0 ? cooldownSeconds : (antiScamKeywordsConfig.cooldownSeconds || 60)
+    };
+
+    await db.collection('config').doc('antiscam_keywords').set(cleanData(antiScamKeywordsConfig));
+    console.log(`[AntiScam] Updated keywords: ${antiScamKeywordsConfig.keywords.length} words, enabled=${antiScamKeywordsConfig.enabled}`);
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SETTINGS',
+      user: (req as any).user?.username || 'Admin',
+      chat: 'Система',
+      details: `Обновлены ключевые слова анти-мошенник: ${antiScamKeywordsConfig.keywords.length} слов, статус: ${antiScamKeywordsConfig.enabled ? 'ВКЛ' : 'ВЫКЛ'}`
+    });
+
+    res.json({ success: true, config: antiScamKeywordsConfig });
+  } catch (err: any) {
+    console.error('Failed to update anti-scam keywords config:', err);
+    res.status(500).json({ error: err.message || 'Ошибка сохранения настроек' });
+  }
+});
+
+app.post('/api/antiscam/test-alert', authenticateToken, async (req, res) => {
+  try {
+    if (!bot) {
+      return res.status(503).json({ error: 'Telegram бот не запущен' });
+    }
+
+    const customTarget = req.body.chatId ? String(req.body.chatId).trim() : '';
+    const targetChatId = customTarget || antiScamKeywordsConfig.notifyChatId || process.env.BOOKRAY_CHAT_ID || settings.infoChatId;
+
+    if (!targetChatId) {
+      return res.status(400).json({ 
+        error: 'Не указан получатель оповещений. Укажите Telegram ID в поле «Telegram ID для оповещений» или напишите боту в личные сообщения.' 
+      });
+    }
+
+    const testText = 
+      `🧪 <b>ТЕСТОВОЕ ОПОВЕЩЕНИЕ: АНТИ-МОШЕННИК</b>\n\n` +
+      `✅ Система мониторинга ключевых слов успешно подключена к вашему Telegram!\n\n` +
+      `🔍 <b>Активных ключевых слов:</b> ${antiScamKeywordsConfig.keywords.length}\n` +
+      `🛡 <b>Статус мониторинга:</b> ${antiScamKeywordsConfig.enabled ? '🟢 Включен' : '🔴 Отключен'}\n` +
+      `🗑 <b>Авто-удаление сообщений:</b> ${antiScamKeywordsConfig.deleteMessage ? 'Да' : 'Нет'}\n` +
+      `💬 <b>Предупреждение в чате:</b> ${antiScamKeywordsConfig.notifyInGroup ? 'Да' : 'Нет'}\n\n` +
+      `<i>При обнаружении любого из ключевых слов вам мгновенно поступит такое же оповещение с кнопками быстрой блокировки.</i>`;
+
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: '🛡 Проверено, работает отлично!', callback_data: 'test_alert_ack' }
+        ]
+      ]
+    };
+
+    await bot.telegram.sendMessage(targetChatId, testText, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    });
+
+    res.json({ success: true, sentTo: targetChatId });
+  } catch (err: any) {
+    console.error('Failed to send test alert:', err);
+    res.status(500).json({ error: `Не удалось отправить сообщение: ${err.message || err}` });
+  }
+});
+
+app.delete('/api/antiscam/logs', authenticateToken, async (req, res) => {
+  try {
+    scamAlertLogs = [];
+    const snap = await db.collection('scam_alert_logs').limit(200).get();
+    const batch = db.batch();
+    snap.docs.forEach(doc => batch.delete(doc.ref));
+    await batch.commit().catch(() => {});
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/stats', authenticateToken, (req, res) => {
   const user = (req as any).user;
   const queryChatIds = req.query.chatIds ? (req.query.chatIds as string).split(',') : null;
@@ -3831,6 +3941,38 @@ let chatDigests: any[] = [];
 let digestConfigs: any[] = [];
 let chatMessages: any[] = [];
 let pinnedMessages: any[] = [];
+let antiScamKeywordsConfig: {
+  enabled: boolean;
+  keywords: string[];
+  notifyChatId?: string;
+  deleteMessage?: boolean;
+  notifyInGroup?: boolean;
+  cooldownSeconds?: number;
+} = {
+  enabled: true,
+  keywords: [
+    'предоплата',
+    'скинь на карту',
+    'переведи на карту',
+    'номер карты',
+    'гарант сделки',
+    'быстрый заработок',
+    'схема заработка',
+    'инвестиции',
+    'доход без вложений',
+    'крипта',
+    'сид фраза',
+    'seed phrase',
+    'писать в лс для заказа',
+    'работа на дому высокий доход'
+  ],
+  notifyChatId: '',
+  deleteMessage: false,
+  notifyInGroup: false,
+  cooldownSeconds: 60
+};
+let scamAlertLogs: any[] = [];
+const lastScamAlertCache = new Map<string, number>();
 let isBotPollingActive = false;
 let lastTelegramUpdateAt = Date.now();
 let botReconnectTimer: any = null;
@@ -4750,6 +4892,27 @@ async function syncData() {
         scheduledUnpins = (unpinsDoc.data() as any).items || [];
         console.log(`Loaded ${scheduledUnpins.length} scheduled unpins`);
       }
+    });
+
+    await safeLoad('config/antiscam_keywords', async () => {
+      const doc = await db.collection('config').doc('antiscam_keywords').get();
+      if (doc.exists) {
+        const data = doc.data() as any;
+        antiScamKeywordsConfig = {
+          ...antiScamKeywordsConfig,
+          ...data,
+          keywords: Array.isArray(data.keywords) ? data.keywords : antiScamKeywordsConfig.keywords
+        };
+        console.log(`Loaded anti-scam keywords config with ${antiScamKeywordsConfig.keywords.length} keywords`);
+      } else {
+        await db.collection('config').doc('antiscam_keywords').set(cleanData(antiScamKeywordsConfig));
+      }
+    });
+
+    await safeLoad('scam_alert_logs', async () => {
+      const snap = await db.collection('scam_alert_logs').orderBy('timestamp', 'desc').limit(100).get();
+      scamAlertLogs = snap.docs.map(d => ({ id: d.id, ...d.data() } as any));
+      console.log(`Loaded ${scamAlertLogs.length} scam alert logs`);
     });
 
     await safeLoad('chat_digests', async () => {
@@ -6597,6 +6760,126 @@ async function initBot(token: string) {
             violation = 'Команды запрещены';
           }
 
+          // Anti-Scam Keywords Detection & Admin Alert
+          if (!isWhitelisted && !isCurrentAdmin && antiScamKeywordsConfig.enabled && text && antiScamKeywordsConfig.keywords && antiScamKeywordsConfig.keywords.length > 0) {
+            const textLower = text.toLowerCase();
+            let matchedKeyword: string | null = null;
+
+            for (const kw of antiScamKeywordsConfig.keywords) {
+              const trimmed = kw.trim();
+              if (!trimmed) continue;
+              try {
+                if (trimmed.startsWith('/') && trimmed.endsWith('/') && trimmed.length > 2) {
+                  const re = new RegExp(trimmed.slice(1, -1), 'i');
+                  if (re.test(text)) {
+                    matchedKeyword = trimmed;
+                    break;
+                  }
+                } else {
+                  if (textLower.includes(trimmed.toLowerCase())) {
+                    matchedKeyword = trimmed;
+                    break;
+                  }
+                }
+              } catch (e) {
+                if (textLower.includes(trimmed.toLowerCase())) {
+                  matchedKeyword = trimmed;
+                  break;
+                }
+              }
+            }
+
+            if (matchedKeyword) {
+              console.log(`[AntiScam] Matched keyword "${matchedKeyword}" in chat ${chatId} from user ${userId}`);
+              const cooldownMs = (antiScamKeywordsConfig.cooldownSeconds || 60) * 1000;
+              const alertKey = `${chatId}_${userId}_${matchedKeyword}`;
+              const now = Date.now();
+              const lastAlert = lastScamAlertCache.get(alertKey) || 0;
+
+              const userFullName = `${ctx.from.first_name || ''}${ctx.from.last_name ? ' ' + ctx.from.last_name : ''}`.trim() || 'Пользователь';
+              const userHandle = ctx.from.username ? `@${ctx.from.username}` : `ID: ${userId}`;
+              const currentChatTitle = chat ? chat.title : ('title' in ctx.chat ? ctx.chat.title : chatId);
+
+              // 1. Log alert event
+              const alertLogEntry = {
+                id: Math.random().toString(36).substr(2, 9),
+                timestamp: new Date().toISOString(),
+                chatId,
+                chatTitle: currentChatTitle,
+                userId,
+                username: ctx.from.username,
+                firstName: ctx.from.first_name,
+                lastName: ctx.from.last_name,
+                matchedKeyword,
+                messageText: text,
+                messageId: ctx.message.message_id,
+                messageDeleted: Boolean(antiScamKeywordsConfig.deleteMessage)
+              };
+              scamAlertLogs.unshift(alertLogEntry);
+              if (scamAlertLogs.length > 200) scamAlertLogs.pop();
+              queueWrite('scam_alert_logs', alertLogEntry.id, cleanData(alertLogEntry));
+
+              await addLog({
+                id: Math.random().toString(36).substr(2, 9),
+                timestamp: new Date().toISOString(),
+                type: 'WARN',
+                user: userFullName,
+                chat: currentChatTitle,
+                details: `🚨 Анти-мошенник: обнаружено слово «${matchedKeyword}» от ${userHandle}`
+              });
+
+              // 2. Send Telegram Notification to Admin
+              if (now - lastAlert >= cooldownMs) {
+                lastScamAlertCache.set(alertKey, now);
+
+                const targetAlertChat = antiScamKeywordsConfig.notifyChatId || process.env.BOOKRAY_CHAT_ID || settings.infoChatId;
+                if (targetAlertChat && bot) {
+                  const snippet = text.length > 350 ? text.substring(0, 350) + '...' : text;
+                  const alertMsg = 
+                    `🚨 <b>СИГНАЛ АНТИ-МОШЕННИК</b>\n\n` +
+                    `📍 <b>Чат:</b> ${escapeHtml(currentChatTitle)} (<code>${chatId}</code>)\n` +
+                    `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(userFullName)}</a> (${userHandle})\n` +
+                    `🔑 <b>Ключевое слово:</b> <code>${escapeHtml(matchedKeyword)}</code>\n\n` +
+                    `💬 <b>Текст сообщения:</b>\n<blockquote>${escapeHtml(snippet)}</blockquote>\n\n` +
+                    `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
+
+                  const keyboard = {
+                    inline_keyboard: [
+                      [
+                        { text: '🚫 Забанить в чате', callback_data: `chat_ban_${chatId}_${userId}` },
+                        { text: '⛔️ Глобальный бан', callback_data: `mc_ban_${userId}` }
+                      ],
+                      [
+                        { text: '🗑 Удалить сообщение', callback_data: `del_msg_${chatId}_${ctx.message.message_id}` },
+                        { text: '👤 Профиль', url: `tg://user?id=${userId}` }
+                      ]
+                    ]
+                  };
+
+                  bot.telegram.sendMessage(targetAlertChat, alertMsg, {
+                    parse_mode: 'HTML',
+                    reply_markup: keyboard
+                  }).catch(e => console.error('[AntiScam] Failed to send telegram alert:', e));
+                }
+              }
+
+              // 3. Optional actions: delete message or warn in group
+              if (antiScamKeywordsConfig.deleteMessage) {
+                violation = `Анти-мошенник: обнаружено слово «${matchedKeyword}»`;
+              } else if (antiScamKeywordsConfig.notifyInGroup) {
+                try {
+                  const warnInGroup = await ctx.reply(
+                    `⚠️ <b>Внимание:</b> Сообщение содержит признаки подозрительного предложения. Будьте осторожны, не переводите средства незнакомцам!`,
+                    { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } }
+                  );
+                  setTimeout(() => {
+                    ctx.telegram.deleteMessage(chatId, warnInGroup.message_id).catch(() => {});
+                  }, 90000);
+                } catch (e) {}
+              }
+            }
+          }
+
           if (violation) {
             console.log(`Violation found: ${violation}. Deleting message...`);
             try {
@@ -7401,6 +7684,75 @@ async function initBot(token: string) {
 
       if (data.startsWith('mc_info_')) {
         return ctx.answerCbQuery('Текущий статус пользователя уже применен.');
+      }
+
+      if (data.startsWith('chat_ban_')) {
+        const parts = data.split('_');
+        const cId = parts[2];
+        const uId = parts[3];
+
+        if (cId && uId) {
+          try {
+            await ctx.telegram.banChatMember(cId, Number(uId));
+            await ctx.answerCbQuery('✅ Пользователь заблокирован в этом чате!');
+            
+            const newChatBan = {
+              id: `${cId}_${uId}_${Date.now()}`,
+              userId: uId,
+              chatId: cId,
+              chatTitle: chats.find(c => String(c.id) === String(cId))?.title || cId,
+              reason: 'Анти-мошенник (подозрительное сообщение)',
+              type: 'BAN',
+              untilDate: new Date(Date.now() + 365 * 24 * 3600 * 1000).toISOString(),
+              createdAt: new Date().toISOString()
+            };
+            chatBans.push(newChatBan);
+            queueWrite('chat_bans', newChatBan.id, cleanData(newChatBan));
+
+            try {
+              const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
+              await ctx.editMessageText(`${currentText}\n\n🚫 <b>СТАТУС:</b> Заблокирован в чате администратором.`, {
+                parse_mode: 'HTML',
+                reply_markup: {
+                  inline_keyboard: [[
+                    { text: '⛔️ Глобальный бан во всех чатах', callback_data: `mc_ban_${uId}` },
+                    { text: '👤 Профиль', url: `tg://user?id=${uId}` }
+                  ]]
+                }
+              });
+            } catch (e) {}
+          } catch (err: any) {
+            await ctx.answerCbQuery(`❌ Ошибка бана: ${err.message || err}`, { show_alert: true });
+          }
+        }
+        return;
+      }
+
+      if (data.startsWith('del_msg_')) {
+        const parts = data.split('_');
+        const cId = parts[2];
+        const mId = Number(parts[3]);
+
+        if (cId && mId) {
+          try {
+            await ctx.telegram.deleteMessage(cId, mId);
+            await ctx.answerCbQuery('✅ Сообщение удалено из чата!');
+            try {
+              const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
+              await ctx.editMessageText(`${currentText}\n\n🗑 <b>СТАТУС:</b> Сообщение удалено из чата.`, {
+                parse_mode: 'HTML'
+              });
+            } catch (e) {}
+          } catch (err: any) {
+            await ctx.answerCbQuery(`⚠️ Не удалось удалить: ${err.message || 'возможно, уже удалено'}`, { show_alert: true });
+          }
+        }
+        return;
+      }
+
+      if (data === 'test_alert_ack') {
+        await ctx.answerCbQuery('✅ Тест подтвержден! Система оповещений работает в штатном режиме.', { show_alert: true });
+        return;
       }
 
       const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();

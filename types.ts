@@ -97,6 +97,30 @@ export interface MultiChatUser {
   isBanned?: boolean;
 }
 
+export interface AntiScamKeywordConfig {
+  enabled: boolean;
+  keywords: string[];
+  notifyChatId?: string;
+  deleteMessage?: boolean;
+  notifyInGroup?: boolean;
+  cooldownSeconds?: number;
+}
+
+export interface AntiScamTriggerLog {
+  id: string;
+  timestamp: string;
+  chatId: string;
+  chatTitle: string;
+  userId: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  matchedKeyword: string;
+  messageText: string;
+  messageId?: number;
+  messageDeleted?: boolean;
+}
+
 export interface FilterSettings {
   blockLinks: boolean;
   blockTelegramLinks: boolean;
@@ -223,6 +247,8 @@ export interface User {
   canPin?: boolean;
   createdAt: string;
   expiresAt?: string;
+  telegramId?: string | number;
+  telegramUser?: { id: number; username?: string; firstName?: string; first_name?: string };
 }
 
 export interface BotSettings {

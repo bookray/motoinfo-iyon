@@ -170,6 +170,37 @@
         "link": { "type": "string", "description": "Link to Telegram message" }
       },
       "required": ["id", "messageId", "chatId", "date"]
+    },
+    "AntiScamConfig": {
+      "title": "AntiScamConfig",
+      "description": "Anti-scam keyword monitoring and notification configuration",
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "keywords": { "type": "array", "items": { "type": "string" } },
+        "notifyChatId": { "type": "string" },
+        "deleteMessage": { "type": "boolean" },
+        "notifyInGroup": { "type": "boolean" },
+        "cooldownSeconds": { "type": "number" }
+      }
+    },
+    "ScamAlertLog": {
+      "title": "ScamAlertLog",
+      "description": "Log of anti-scam keywords detected in chats",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "chatId": { "type": "string" },
+        "chatTitle": { "type": "string" },
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "firstName": { "type": "string" },
+        "matchedKeyword": { "type": "string" },
+        "messageText": { "type": "string" },
+        "messageId": { "type": "number" }
+      },
+      "required": ["id", "timestamp", "chatId", "userId", "matchedKeyword"]
     }
   },
   "firestore": {
@@ -179,6 +210,8 @@
     "/logs/{logId}": { "schema": "Log", "description": "System logs" },
     "/config/moderation": { "schema": "Settings", "description": "Moderation settings" },
     "/config/settings": { "schema": "BotConfig", "description": "Global bot and database configuration" },
+    "/config/antiscam_keywords": { "schema": "AntiScamConfig", "description": "Anti-scam keywords alert configuration" },
+    "/scam_alert_logs/{logId}": { "schema": "ScamAlertLog", "description": "Anti-scam keyword detection trigger logs" },
     "/stats/{date}": { "schema": "StatsPoint", "description": "Historical stats" },
     "/users/{userId}": { "schema": "User", "description": "Dashboard users" },
     "/reputations/{userId}": { "schema": "Reputation", "description": "User reputation rankings" },
