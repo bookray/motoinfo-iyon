@@ -768,11 +768,23 @@ export function parseDigestSummaryToTopics(rawHtml: string): { dayLabel: string;
 
 // Convert Firestore chat_digests document into ChatDailySummary
 export function convertDbDigestToSummary(docData: any, chatSlug: string): ChatDailySummary {
-  const rawHtml = docData.summary || '';
-  const parsed = parseDigestSummaryToTopics(rawHtml);
+  let rawHtml = docData.summary || '';
   const createdDate = docData.createdAt ? new Date(docData.createdAt) : new Date();
   const dateStr = createdDate.toISOString().split('T')[0];
-  const dayLabel = parsed.dayLabel || new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(createdDate);
+  const realDayLabel = new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' }).format(createdDate);
+
+  // Guarantee that rawHtml header reflects the actual creation date instead of model hallucination (e.g. 24 мая 2024 г.)
+  if (rawHtml) {
+    if (/(?:📅|🗓️)/i.test(rawHtml)) {
+      rawHtml = rawHtml.replace(/(?:📅|🗓️)\s*(?:<i>)?[^\n]*(?:<\/i>)?/i, `📅 <i>${realDayLabel}</i>`);
+    } else if (/📊\s*<b>?Суточный дайджест/i.test(rawHtml)) {
+      rawHtml = rawHtml.replace(/(📊\s*<b>?Суточный дайджест[^\n]*<\/b>?\s*\n?)/i, `$1📅 <i>${realDayLabel}</i>\n\n`);
+    }
+  }
+
+  const parsed = parseDigestSummaryToTopics(rawHtml);
+  // Always use the true creation date label
+  const dayLabel = realDayLabel;
 
   const topics = parsed.topics.length > 0 ? parsed.topics : [
     { emoji: '🔥', title: 'Главные темы и обсуждения', description: rawHtml.replace(/<[^>]*>/g, '').substring(0, 300) + '...' },
