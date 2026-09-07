@@ -423,6 +423,8 @@ export interface ChatDigestConfig {
   lastWaveSummarizedAt?: string;
   status?: 'idle' | 'generating' | 'success' | 'error';
   lastError?: string;
+  retryCount?: number;
+  nextRetryAt?: string;
 }
 
 export interface ChatDigestEntry {

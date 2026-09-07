@@ -259,7 +259,7 @@ async function generateAIResponse(promptText: string, options?: { model?: string
         body: JSON.stringify({
           contents: [{ parts: [{ text: promptText }] }]
         }),
-        signal: AbortSignal.timeout(45000)
+        signal: AbortSignal.timeout(60000)
       });
       if (!response.ok) {
         const errText = await response.text();
@@ -300,6 +300,9 @@ async function generateAIResponse(promptText: string, options?: { model?: string
       const msg = err?.message || String(err);
       const is404 = err?.status === 404 || msg.includes('404') || msg.includes('is no longer available') || msg.includes('not found');
       const is429 = err?.status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota exceeded');
+      const is503 = err?.status === 503 || msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('Service Unavailable');
+      const isTimeout = msg.includes('timeout') || msg.includes('aborted');
+      const isFetchFailed = msg.includes('fetch failed') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') || msg.includes('socket hang up');
       const isRegionError = !effectiveBaseUrl && (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION'));
 
       // If region blocked and proxy available, try proxy for this model immediately
@@ -315,9 +318,12 @@ async function generateAIResponse(promptText: string, options?: { model?: string
         }
       }
 
-      // If 404 or 429 and we have fallback models left, log and try next model
-      if ((is404 || is429) && i < candidateModels.length - 1) {
-        console.warn(`[Gemini] Model ${currentModel} returned ${is429 ? '429 (Rate Limit/Quota)' : '404 (Not Found)'}. Trying fallback model ${candidateModels[i + 1]}...`);
+      // If transient error (503 high demand, 429 rate limit, 404, timeout, fetch failure) and we have fallback models left, try next model
+      const isTransient = is404 || is429 || is503 || isTimeout || isFetchFailed;
+      if (isTransient && i < candidateModels.length - 1) {
+        const reasonLabel = is503 ? '503 (Высокая нагрузка Google/High Demand)' : is429 ? '429 (Лимит запросов)' : isTimeout ? 'Таймаут ответа' : isFetchFailed ? 'Сбой соединения' : '404';
+        console.warn(`[Gemini] Модель ${currentModel} вернула ${reasonLabel}. Пробуем резервную модель ${candidateModels[i + 1]} через 2.5 сек...`);
+        await new Promise(r => setTimeout(r, 2500));
         continue;
       }
 
@@ -328,6 +334,9 @@ async function generateAIResponse(promptText: string, options?: { model?: string
 
   // Handle final error formatting
   const finalMsg = lastErr?.message || String(lastErr);
+  if (finalMsg.includes('503') || finalMsg.includes('high demand') || finalMsg.includes('UNAVAILABLE')) {
+    throw new Error(`❌ Сервис Google Gemini временно перегружен (HTTP 503 UNAVAILABLE / High Demand).\n\n💡 Модель испытывает пиковую нагрузку. Система автоматически повторит попытку через 15 минут, либо переключитесь на OpenRouter в настройках.`);
+  }
   if (finalMsg.includes('429') || finalMsg.includes('RESOURCE_EXHAUSTED') || finalMsg.includes('Quota exceeded')) {
     const retryMatch = finalMsg.match(/retry in\s+([0-9.]+\s*s(?:econds?)?)/i);
     const retryTime = retryMatch ? retryMatch[1] : '20-30 секунд';
@@ -2978,7 +2987,11 @@ app.post('/api/digests/configs', authenticateToken, async (req, res) => {
       minMessageThreshold: Number(configData.minMessageThreshold) || existingConfig?.minMessageThreshold || 10,
       lastGeneratedAt: configData.lastGeneratedAt !== undefined ? configData.lastGeneratedAt : (existingConfig?.lastGeneratedAt || null),
       lastSentAt: configData.lastSentAt !== undefined ? configData.lastSentAt : (existingConfig?.lastSentAt || null),
-      lastWaveSummarizedAt: configData.lastWaveSummarizedAt !== undefined ? configData.lastWaveSummarizedAt : (existingConfig?.lastWaveSummarizedAt || null)
+      lastWaveSummarizedAt: configData.lastWaveSummarizedAt !== undefined ? configData.lastWaveSummarizedAt : (existingConfig?.lastWaveSummarizedAt || null),
+      retryCount: configData.retryCount !== undefined ? Number(configData.retryCount) : (existingConfig?.retryCount || 0),
+      nextRetryAt: configData.nextRetryAt !== undefined ? configData.nextRetryAt : (existingConfig?.nextRetryAt || null),
+      status: configData.status !== undefined ? configData.status : (existingConfig?.status || 'idle'),
+      lastError: configData.lastError !== undefined ? configData.lastError : (existingConfig?.lastError || null)
     };
 
     if (configIndex >= 0) {
@@ -8686,55 +8699,118 @@ async function startServer() {
       updateStats(newTodayPoint).catch(() => {});
     }
 
-    // Handle scheduled daily AI digests using sequential queue
+    // Handle scheduled daily AI digests using sequential queue (with automatic 15-minute retry on transient errors)
     for (const config of digestConfigs) {
       if (!config.enabled) continue;
-      if (config.scheduleTime === localHHmm || config.scheduleTime === currentHHmm) {
+
+      const isScheduledMinute = (config.scheduleTime === localHHmm || config.scheduleTime === currentHHmm);
+      const isRetryDue = !!config.nextRetryAt && new Date(config.nextRetryAt).getTime() <= now.getTime();
+
+      if (!isScheduledMinute && !isRetryDue) {
+        continue;
+      }
+
+      // If regular scheduled minute (not a retry), skip if already sent or attempted today
+      if (isScheduledMinute && !isRetryDue) {
         if (config.lastAttemptedDate === todayDateStr || (config.lastSentAt && config.lastSentAt.startsWith(todayDateStr))) {
           continue;
         }
+      }
 
-        // Mark attempt today to prevent double enqueueing in the same minute
-        config.lastAttemptedDate = todayDateStr;
+      const wasRetry = isRetryDue;
+      const attemptNum = wasRetry ? (config.retryCount || 1) : 0;
+
+      // Mark attempt today to prevent double enqueueing in the same minute
+      config.lastAttemptedDate = todayDateStr;
+      config.nextRetryAt = undefined; // Clear pending flag while in queue
+      config.status = 'generating';
+      await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs }));
+
+      console.log(`[AI Digest] 📥 Enqueueing ${wasRetry ? `RETRY #${attemptNum}` : 'scheduled'} daily summary for chat ${config.chatId} (${config.chatTitle}) into sequential queue`);
+      const hours = config.hoursBack || 24;
+
+      enqueueDigest({
+        id: Math.random().toString(36).substr(2, 9),
+        chatId: config.chatId,
+        hoursBack: hours,
+        customPrompt: config.customPrompt,
+        sendImmediately: config.autoSendTelegram !== false,
+        targetChatId: config.targetChatId,
+        toneStyle: config.toneStyle || 'default',
+        isScheduled: true
+      }).then(async () => {
+        config.lastGeneratedAt = new Date().toISOString();
+        config.lastSentAt = new Date().toISOString();
+        config.status = 'success';
+        config.lastError = undefined;
+        config.retryCount = 0;
+        config.nextRetryAt = undefined;
         await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs }));
+        console.log(`[AI Digest] ✅ Sequential queue completed ${wasRetry ? 'retry' : 'scheduled'} digest for chat ${config.chatId}`);
 
-        console.log(`[AI Digest] 📥 Enqueueing scheduled daily summary for chat ${config.chatId} (${config.chatTitle}) into sequential queue`);
-        const hours = config.hoursBack || 24;
+        if (wasRetry) {
+          addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'DIGEST',
+            user: 'AI Summarizer',
+            chat: config.chatTitle || config.chatId,
+            details: `✅ [Дайджест опубликован после повтора] Успешно сформирован и отправлен (попытка ${attemptNum}) после временной ошибки ИИ.`
+          }).catch(() => {});
+        }
+      }).catch(async (digestErr: any) => {
+        if (digestErr?.isSkipped || digestErr?.name === 'DigestSkippedError' || digestErr?.message?.includes('минимум') || digestErr?.message?.includes('волны')) {
+          console.log(`[AI Digest] ℹ️ Skipped chat ${config.chatId} (${config.chatTitle || 'chat'}): ${digestErr.message}`);
+          config.status = 'idle';
+          config.retryCount = 0;
+          config.nextRetryAt = undefined;
+          await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs })).catch(() => {});
+        } else {
+          console.error(`[AI Digest] ❌ Failed scheduled digest in queue for chat ${config.chatId}:`, digestErr);
 
-        enqueueDigest({
-          id: Math.random().toString(36).substr(2, 9),
-          chatId: config.chatId,
-          hoursBack: hours,
-          customPrompt: config.customPrompt,
-          sendImmediately: config.autoSendTelegram !== false,
-          targetChatId: config.targetChatId,
-          toneStyle: config.toneStyle || 'default',
-          isScheduled: true
-        }).then(async () => {
-          config.lastGeneratedAt = new Date().toISOString();
-          config.lastSentAt = new Date().toISOString();
-          await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs }));
-          console.log(`[AI Digest] ✅ Sequential queue completed scheduled digest for chat ${config.chatId}`);
-        }).catch(async (digestErr: any) => {
-          if (digestErr?.isSkipped || digestErr?.name === 'DigestSkippedError' || digestErr?.message?.includes('минимум') || digestErr?.message?.includes('волны')) {
-            console.log(`[AI Digest] ℹ️ Skipped chat ${config.chatId} (${config.chatTitle || 'chat'}): ${digestErr.message}`);
-          } else {
-            console.error(`[AI Digest] ❌ Failed scheduled digest in queue for chat ${config.chatId}:`, digestErr);
-            // Allow retry on next tick if transient error occurred
-            config.lastAttemptedDate = undefined;
+          const maxRetries = 3;
+          const retryMinutes = 15;
+          const nextAttempt = (config.retryCount || 0) + 1;
+
+          if (nextAttempt <= maxRetries) {
+            config.retryCount = nextAttempt;
+            const retryDate = new Date(Date.now() + retryMinutes * 60 * 1000);
+            config.nextRetryAt = retryDate.toISOString();
+            config.status = 'error';
+            config.lastError = digestErr?.message || String(digestErr);
+
+            const { dateObj: retryLocalObj } = getProjectDate(retryDate);
+            const retryTimeStr = new Intl.DateTimeFormat('ru-RU', { hour: '2-digit', minute: '2-digit' }).format(retryLocalObj);
+
             await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs })).catch(() => {});
-            
+
+            addLog({
+              id: Math.random().toString(36).substr(2, 9),
+              timestamp: new Date().toISOString(),
+              type: 'WARN',
+              user: 'AI Summarizer',
+              chat: config.chatTitle || config.chatId,
+              details: `⚠️ [Сбой ИИ: автоповтор через ${retryMinutes} мин] Ошибка при формировании (${digestErr?.message || digestErr}). Попытка ${nextAttempt}/${maxRetries} запланирована на ~${retryTimeStr}.`
+            }).catch(() => {});
+          } else {
+            // Max retries reached
+            config.status = 'error';
+            config.lastError = digestErr?.message || String(digestErr);
+            config.retryCount = 0;
+            config.nextRetryAt = undefined;
+            await db.collection('config').doc('digest_configs').set(cleanData({ configs: digestConfigs })).catch(() => {});
+
             addLog({
               id: Math.random().toString(36).substr(2, 9),
               timestamp: new Date().toISOString(),
               type: 'ERROR',
               user: 'AI Summarizer',
               chat: config.chatTitle || config.chatId,
-              details: `❌ [Сбой расписания дайджеста] ${digestErr?.message || digestErr}`
+              details: `❌ [Сбой расписания: все попытки исчерпаны] Не удалось сформировать дайджест после ${maxRetries} повторов (с паузами по ${retryMinutes} мин). Причина: ${digestErr?.message || digestErr}`
             }).catch(() => {});
           }
-        });
-      }
+        }
+      });
     }
 
     for (const task of tasks) {

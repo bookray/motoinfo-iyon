@@ -877,7 +877,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
           </div>
 
           {/* Key System Rules Banner */}
-          <div className="p-4 bg-slate-900/90 border border-slate-800 rounded-2xl grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div className="p-4 bg-slate-900/90 border border-slate-800 rounded-2xl grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 text-xs">
             <div className="flex items-start gap-2.5">
               <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-400 border border-blue-500/20 shrink-0">
                 <Clock className="w-4 h-4" />
@@ -886,6 +886,18 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                 <span className="font-bold text-slate-200">Разбег 5 минут (Защита 429)</span>
                 <p className="text-slate-400 leading-relaxed">
                   Каждый чат занимает отдельный слот. Одно и то же время нельзя выбрать двум чатам одновременно.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-start gap-2.5">
+              <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-400 border border-amber-500/20 shrink-0">
+                <RefreshCw className="w-4 h-4" />
+              </div>
+              <div className="space-y-0.5">
+                <span className="font-bold text-slate-200">Автоповтор через 15 мин</span>
+                <p className="text-slate-400 leading-relaxed">
+                  При перегрузке модели (503 / Timeout / сбой сети) бот повторяет попытку до 3 раз каждые 15 мин.
                 </p>
               </div>
             </div>
@@ -1062,6 +1074,44 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                         <span className="text-slate-500 text-[10px]">Ожидает первой волны</span>
                       )}
                     </div>
+
+                    {/* Auto-retry pending notification banner */}
+                    {config.nextRetryAt && new Date(config.nextRetryAt).getTime() > Date.now() && (
+                      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-2.5 text-xs text-amber-300 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <Clock className="w-4 h-4 text-amber-400 shrink-0 animate-pulse" />
+                          <div className="truncate">
+                            <div className="font-semibold text-amber-200 flex items-center gap-1.5">
+                              <span>Автоповтор через {Math.max(1, Math.ceil((new Date(config.nextRetryAt).getTime() - Date.now()) / 60000))} мин</span>
+                              <span className="px-1.5 py-0.5 bg-amber-500/20 text-amber-300 rounded text-[10px] font-mono">
+                                попытка {config.retryCount || 1}/3
+                              </span>
+                            </div>
+                            {config.lastError && (
+                              <div className="text-[11px] text-amber-400/80 truncate mt-0.5" title={config.lastError}>
+                                {config.lastError.replace(/\n.*/s, '')}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            onClick={() => handleGenerateNow(chat.id, config.hoursBack, undefined, true, config.toneStyle)}
+                            className="px-2 py-1 bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-200 rounded-lg text-[11px] font-medium"
+                            title="Повторить генерацию прямо сейчас"
+                          >
+                            Повторить
+                          </button>
+                          <button
+                            onClick={() => handleUpdateConfig(chat.id, { nextRetryAt: null, retryCount: 0, status: 'idle' })}
+                            className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-400 rounded-lg text-[11px]"
+                            title="Отменить запланированный повтор"
+                          >
+                            Отмена
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-xs">
                       <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
