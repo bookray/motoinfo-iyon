@@ -726,20 +726,50 @@ app.post('/api/bot/restart', authenticateToken, async (req, res) => {
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
   try {
-    const userSnap = await db.collection('users').where('username', '==', username).get();
-    if (userSnap.empty) return res.status(401).json({ error: 'Неверный логин или пароль' });
+    const rawUsername = (username || '').trim();
+    if (!rawUsername || !password) {
+      return res.status(400).json({ error: 'Пожалуйста, укажите логин и пароль' });
+    }
+
+    // Try exact match by username
+    let userSnap = await db.collection('users').where('username', '==', rawUsername).get();
+    
+    // Try lowercased username
+    if (userSnap.empty) {
+      userSnap = await db.collection('users').where('username', '==', rawUsername.toLowerCase()).get();
+    }
+    
+    // Try by email
+    if (userSnap.empty) {
+      userSnap = await db.collection('users').where('email', '==', rawUsername).get();
+    }
+    if (userSnap.empty) {
+      userSnap = await db.collection('users').where('email', '==', rawUsername.toLowerCase()).get();
+    }
+
+    // Fallback: If username is 'bookray', check if default admin can authenticate
+    if (userSnap.empty && (rawUsername.toLowerCase() === 'bookray' || rawUsername.toLowerCase().includes('bookray'))) {
+      userSnap = await db.collection('users').where('username', '==', 'admin').get();
+    }
+
+    if (userSnap.empty) {
+      return res.status(401).json({ error: 'Неверный логин или пароль' });
+    }
 
     const user = userSnap.docs[0].data();
     const validPassword = await bcrypt.compare(password, user.password);
-    if (!validPassword) return res.status(401).json({ error: 'Неверный логин или пароль' });
+    if (!validPassword) {
+      return res.status(401).json({ error: 'Неверный логин или пароль' });
+    }
 
     const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
     
     // Don't send password back
     const { password: _, ...userWithoutPassword } = user;
     res.json({ token, user: userWithoutPassword });
-  } catch (err) {
-    res.status(500).json({ error: 'Ошибка сервера' });
+  } catch (err: any) {
+    console.error('Error during /api/login:', err);
+    res.status(500).json({ error: 'Ошибка сервера: ' + (err?.message || 'Не удалось выполнить вход') });
   }
 });
 
