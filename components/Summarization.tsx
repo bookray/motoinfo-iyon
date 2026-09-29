@@ -197,12 +197,12 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   const [aiForm, setAiForm] = useState({
     aiProvider: 'gemini' as 'gemini' | 'openrouter' | 'custom',
     geminiApiKey: '',
-    geminiModel: 'gemini-2.5-flash',
+    geminiModel: 'gemini-3.1-flash-lite',
     geminiBaseUrl: '',
     geminiUseProxy: true,
     geminiProxySource: 'auto' as 'auto' | 'tg_proxy' | 'cf_worker' | 'custom' | 'direct',
     openRouterApiKey: '',
-    openRouterModel: 'google/gemini-2.5-flash',
+    openRouterModel: 'google/gemini-2.0-flash-001',
     customAiEndpoint: '',
     customAiApiKey: '',
     customAiModel: 'gpt-4o-mini'
@@ -248,12 +248,12 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
             ...prev,
             aiProvider: data.settings.aiProvider || 'gemini',
             geminiApiKey: data.settings.geminiApiKey || '',
-            geminiModel: data.settings.geminiModel || 'gemini-2.5-flash',
+            geminiModel: data.settings.geminiModel || 'gemini-3.1-flash-lite',
             geminiBaseUrl: data.settings.geminiBaseUrl || '',
             geminiUseProxy: data.settings.geminiUseProxy !== false,
             geminiProxySource: data.settings.geminiProxySource || 'auto',
             openRouterApiKey: data.settings.openRouterApiKey || '',
-            openRouterModel: data.settings.openRouterModel || 'google/gemini-2.5-flash',
+            openRouterModel: data.settings.openRouterModel || 'google/gemini-2.0-flash-001',
             customAiEndpoint: data.settings.customAiEndpoint || '',
             customAiApiKey: data.settings.customAiApiKey || '',
             customAiModel: data.settings.customAiModel || 'gpt-4o-mini'
@@ -1688,13 +1688,14 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                       onChange={(e) => setAiForm({ ...aiForm, geminiModel: e.target.value })}
                       className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-slate-200 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-blue-500/50"
                     >
-                      <option value="gemini-2.0-flash">⚡ gemini-2.0-flash (Рекомендуется: быстрая и стабильная)</option>
-                      <option value="gemini-2.0-flash-lite">🚀 gemini-2.0-flash-lite (Минимальная задержка и высокая квота)</option>
-                      <option value="gemini-1.5-flash">🛡️ gemini-1.5-flash (Проверенная базовая модель)</option>
-                      <option value="gemini-1.5-pro">🧠 gemini-1.5-pro (Глубокий анализ контекста)</option>
-                      <option value="gemini-2.5-pro">💎 gemini-2.5-pro (Флагманская модель)</option>
-                      <option value="gemini-3.7-flash">✨ gemini-3.7-flash (Gemini 3.7 Flash)</option>
-                      <option value="gemini-3.6-flash">✨ gemini-3.6-flash (Gemini 3.6 Flash)</option>
+                      <option value="gemini-3.1-flash-lite">⚡ gemini-3.1-flash-lite (Рекомендуется: максимальная скорость и стабильность)</option>
+                      <option value="gemini-flash-lite-latest">🚀 gemini-flash-lite-latest (Всегда актуальный Flash-Lite)</option>
+                      <option value="gemini-3.5-flash-lite">⚡ gemini-3.5-flash-lite (Высокая скорость и квота)</option>
+                      <option value="gemini-3.8-flash">✨ gemini-3.8-flash (Флагманский Gemini 3.8 Flash)</option>
+                      <option value="gemini-flash-latest">🌟 gemini-flash-latest (Всегда актуальный Flash)</option>
+                      <option value="gemini-3.7-flash">💫 gemini-3.7-flash (Gemini 3.7 Flash)</option>
+                      <option value="gemini-3.6-flash">🔮 gemini-3.6-flash (Gemini 3.6 Flash)</option>
+                      <option value="gemini-3.1-pro-preview">🧠 gemini-3.1-pro-preview (Глубокий анализ контекста)</option>
                     </select>
                   </div>
 

@@ -899,17 +899,18 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
                     Модель Gemini
                   </label>
                   <select
-                    value={localSettings.geminiModel || 'gemini-2.0-flash'}
+                    value={localSettings.geminiModel || 'gemini-3.1-flash-lite'}
                     onChange={(e) => setLocalSettings({ ...localSettings, geminiModel: e.target.value })}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all text-sm font-medium"
                   >
-                    <option value="gemini-2.0-flash">⚡ gemini-2.0-flash (Рекомендуется: быстрая, стабильная, высокая квота)</option>
-                    <option value="gemini-2.0-flash-lite">🚀 gemini-2.0-flash-lite (Минимальная задержка и экономия квоты)</option>
-                    <option value="gemini-1.5-flash">🛡️ gemini-1.5-flash (Проверенная базовая модель)</option>
-                    <option value="gemini-1.5-pro">🧠 gemini-1.5-pro (Глубокий анализ контекста)</option>
-                    <option value="gemini-2.5-pro">💎 gemini-2.5-pro (Флагманская модель)</option>
-                    <option value="gemini-3.7-flash">✨ gemini-3.7-flash (Gemini 3.7 Flash)</option>
-                    <option value="gemini-3.6-flash">✨ gemini-3.6-flash (Gemini 3.6 Flash)</option>
+                    <option value="gemini-3.1-flash-lite">⚡ gemini-3.1-flash-lite (Рекомендуется: максимальная скорость и стабильность)</option>
+                    <option value="gemini-flash-lite-latest">🚀 gemini-flash-lite-latest (Всегда актуальный Flash-Lite)</option>
+                    <option value="gemini-3.5-flash-lite">⚡ gemini-3.5-flash-lite (Высокая скорость и квота)</option>
+                    <option value="gemini-3.8-flash">✨ gemini-3.8-flash (Флагманский Gemini 3.8 Flash)</option>
+                    <option value="gemini-flash-latest">🌟 gemini-flash-latest (Всегда актуальный Flash)</option>
+                    <option value="gemini-3.7-flash">💫 gemini-3.7-flash (Gemini 3.7 Flash)</option>
+                    <option value="gemini-3.6-flash">🔮 gemini-3.6-flash (Gemini 3.6 Flash)</option>
+                    <option value="gemini-3.1-pro-preview">🧠 gemini-3.1-pro-preview (Глубокий анализ контекста)</option>
                   </select>
                 </div>
 

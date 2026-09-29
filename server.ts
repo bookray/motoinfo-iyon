@@ -18,6 +18,27 @@ const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'teleguard-secret-key-2026';
 
+const DEPRECATED_GEMINI_MODELS = new Set([
+  'gemini-1.5-flash',
+  'gemini-1.5-pro',
+  'gemini-pro',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-2.0-pro',
+  'gemini-2.0-flash-thinking',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-pro'
+]);
+
+function sanitizeGeminiModel(model?: string): string {
+  const trimmed = (model || '').trim();
+  if (!trimmed || DEPRECATED_GEMINI_MODELS.has(trimmed)) {
+    return 'gemini-3.1-flash-lite';
+  }
+  return trimmed;
+}
+
 let geminiClient: GoogleGenAI | null = null;
 let lastGeminiKey: string | null = null;
 
@@ -27,7 +48,14 @@ function getGeminiClient(): GoogleGenAI {
     throw new Error('Ключ GEMINI_API_KEY не настроен. Укажите ключ в панели управления (ИИ-Суммаризация -> Настройки ИИ).');
   }
   if (!geminiClient || lastGeminiKey !== apiKey) {
-    geminiClient = new GoogleGenAI({ apiKey });
+    geminiClient = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build'
+        }
+      }
+    });
     lastGeminiKey = apiKey;
   }
   return geminiClient;
@@ -234,17 +262,16 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     throw new Error('Ключ Google Gemini API не задан. Введите ключ в панели управления в разделе «ИИ-Суммаризация» или «Настройки».');
   }
 
-  let initialModel = options?.model || settings?.geminiModel || 'gemini-2.0-flash';
-  // Sanitize deprecated models that return 404 from Google
-  if (initialModel === 'gemini-2.5-flash') {
-    initialModel = 'gemini-2.0-flash';
-  }
+  const initialModel = sanitizeGeminiModel(options?.model || settings?.geminiModel || 'gemini-3.1-flash-lite');
 
+  // Fallback to active, verified models in Google API (prioritize flash-lite for speed and stability)
   const candidateModels = Array.from(new Set([
     initialModel,
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-    'gemini-1.5-flash'
+    'gemini-3.1-flash-lite',
+    'gemini-flash-lite-latest',
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-flash-latest'
   ]));
 
   const effectiveBaseUrl = getGeminiEffectiveBaseUrl();
@@ -321,9 +348,9 @@ async function generateAIResponse(promptText: string, options?: { model?: string
       // If transient error (503 high demand, 429 rate limit, 404, timeout, fetch failure) and we have fallback models left, try next model
       const isTransient = is404 || is429 || is503 || isTimeout || isFetchFailed;
       if (isTransient && i < candidateModels.length - 1) {
-        const reasonLabel = is503 ? '503 (Высокая нагрузка Google/High Demand)' : is429 ? '429 (Лимит запросов)' : isTimeout ? 'Таймаут ответа' : isFetchFailed ? 'Сбой соединения' : '404';
-        console.warn(`[Gemini] Модель ${currentModel} вернула ${reasonLabel}. Пробуем резервную модель ${candidateModels[i + 1]} через 2.5 сек...`);
-        await new Promise(r => setTimeout(r, 2500));
+        const reasonLabel = is503 ? '503 (Высокая нагрузка Google / High Demand)' : is429 ? '429 (Лимит запросов)' : isTimeout ? 'Таймаут ответа' : isFetchFailed ? 'Сбой соединения' : '404';
+        console.warn(`[Gemini] Модель ${currentModel} вернула ${reasonLabel}. Пробуем резервную активную модель ${candidateModels[i + 1]} через 1.5 сек...`);
+        await new Promise(r => setTimeout(r, 1500));
         continue;
       }
 
@@ -335,16 +362,16 @@ async function generateAIResponse(promptText: string, options?: { model?: string
   // Handle final error formatting
   const finalMsg = lastErr?.message || String(lastErr);
   if (finalMsg.includes('503') || finalMsg.includes('high demand') || finalMsg.includes('UNAVAILABLE')) {
-    throw new Error(`❌ Сервис Google Gemini временно перегружен (HTTP 503 UNAVAILABLE / High Demand).\n\n💡 Модель испытывает пиковую нагрузку. Система автоматически повторит попытку через 15 минут, либо переключитесь на OpenRouter в настройках.`);
+    throw new Error(`❌ Сервис Google Gemini временно перегружен (HTTP 503 UNAVAILABLE / High Demand).\n\n💡 Модель испытывает пиковую нагрузку. Рекомендуем в «Настройках ИИ» выбрать стабильную модель gemini-3.1-flash-lite или gemini-flash-lite-latest, либо переключиться на OpenRouter.`);
   }
   if (finalMsg.includes('429') || finalMsg.includes('RESOURCE_EXHAUSTED') || finalMsg.includes('Quota exceeded')) {
     const retryMatch = finalMsg.match(/retry in\s+([0-9.]+\s*s(?:econds?)?)/i);
     const retryTime = retryMatch ? retryMatch[1] : '20-30 секунд';
-    throw new Error(`❌ Превышен лимит запросов Google Gemini (HTTP 429 RESOURCE_EXHAUSTED).\n\n💡 Google API Free Tier временно ограничил запросы (квота 15-20 req/min). Пожалуйста, подождите ${retryTime} перед повторной генерацией, либо переключитесь на OpenRouter в настройках ИИ.`);
+    throw new Error(`❌ Превышен лимит запросов Google Gemini (HTTP 429 RESOURCE_EXHAUSTED).\n\n💡 Google API Free Tier временно ограничил запросы (квота 15-20 req/min). Пожалуйста, подождите ${retryTime} перед повторной генерацией, либо выберите модель gemini-3.1-flash-lite / OpenRouter в настройках ИИ.`);
   }
 
   if (finalMsg.includes('is no longer available') || (finalMsg.includes('404') && finalMsg.includes('models/'))) {
-    throw new Error(`❌ Модель устарела или недоступна в Google API (HTTP 404).\n\n💡 Решение: В разделе «Настройки ИИ» выберите поддерживаемую модель (например, gemini-2.0-flash или gemini-1.5-flash).`);
+    throw new Error(`❌ Выбранная модель устарела или недоступна в Google API (HTTP 404).\n\n💡 Решение: В разделе «Настройки ИИ» выберите актуальную модель: gemini-3.1-flash-lite (рекомендуется), gemini-3.8-flash или gemini-flash-lite-latest.`);
   }
 
   if (finalMsg.includes('User location is not supported') || finalMsg.includes('FAILED_PRECONDITION')) {
@@ -2751,8 +2778,8 @@ app.get(['/api/gemini/status', '/api/ai/status'], authenticateToken, (req, res) 
   }
 
   const model = provider === 'openrouter'
-    ? (settings?.openRouterModel || 'google/gemini-2.5-flash')
-    : (provider === 'custom' ? (settings?.customAiModel || 'gpt-4o-mini') : (settings?.geminiModel || 'gemini-2.5-flash'));
+    ? (settings?.openRouterModel || 'google/gemini-2.0-flash-001')
+    : (provider === 'custom' ? (settings?.customAiModel || 'gpt-4o-mini') : sanitizeGeminiModel(settings?.geminiModel || 'gemini-3.1-flash-lite'));
 
   const detectedTelegramProxy = settings?.telegramApiRoot || '';
   const detectedCfWorker = (settings?.cfWorkerUrl && !settings.disableCloudflare) ? settings.cfWorkerUrl : '';
@@ -2775,7 +2802,7 @@ app.get(['/api/gemini/status', '/api/ai/status'], authenticateToken, (req, res) 
     settings: {
       aiProvider: settings?.aiProvider || 'gemini',
       geminiApiKey: settings?.geminiApiKey ? (settings.geminiApiKey.slice(0, 6) + '...' + settings.geminiApiKey.slice(-4)) : (process.env.GEMINI_API_KEY ? 'Настроен в .env' : ''),
-      geminiModel: settings?.geminiModel || 'gemini-2.0-flash',
+      geminiModel: sanitizeGeminiModel(settings?.geminiModel || 'gemini-3.1-flash-lite'),
       geminiBaseUrl: settings?.geminiBaseUrl || '',
       geminiUseProxy: settings?.geminiUseProxy !== false,
       geminiProxySource: settings?.geminiProxySource || 'auto',
@@ -2817,7 +2844,7 @@ app.post('/api/ai/settings', authenticateToken, async (req, res) => {
         updatedAiSettings.geminiApiKey = geminiApiKey.trim();
       }
     }
-    if (geminiModel !== undefined) updatedAiSettings.geminiModel = geminiModel;
+    if (geminiModel !== undefined) updatedAiSettings.geminiModel = sanitizeGeminiModel(geminiModel);
     if (geminiBaseUrl !== undefined) updatedAiSettings.geminiBaseUrl = geminiBaseUrl.trim();
     if (geminiUseProxy !== undefined) updatedAiSettings.geminiUseProxy = geminiUseProxy;
     if (geminiProxySource !== undefined) updatedAiSettings.geminiProxySource = geminiProxySource;
@@ -2933,9 +2960,9 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
         : (settings?.geminiApiKey || process.env.GEMINI_API_KEY);
 
       if (!key) throw new Error('API-ключ Google Gemini не указан.');
-      let model = testModel || settings?.geminiModel || 'gemini-2.0-flash';
-      if (model === 'gemini-2.5-flash') {
-        model = 'gemini-2.0-flash';
+      let model = sanitizeGeminiModel(testModel || settings?.geminiModel || 'gemini-3.1-flash-lite');
+      if (testModel && !DEPRECATED_GEMINI_MODELS.has(testModel.trim())) {
+        model = testModel.trim();
       }
       
       let effectiveBase = getGeminiEffectiveBaseUrl({
@@ -2963,7 +2990,14 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
         resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
       } else {
         try {
-          const client = new GoogleGenAI({ apiKey: key.trim() });
+          const client = new GoogleGenAI({
+            apiKey: key.trim(),
+            httpOptions: {
+              headers: {
+                'User-Agent': 'aistudio-build'
+              }
+            }
+          });
           const resp = await client.models.generateContent({
             model,
             contents: [{ role: 'user', parts: [{ text: testPrompt }] }]
@@ -3017,15 +3051,17 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
     if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota exceeded')) {
       const retryMatch = msg.match(/retry in\s+([0-9.]+\s*s(?:econds?)?)/i);
       const retryTime = retryMatch ? retryMatch[1] : '20-30 секунд';
-      hint = `Превышен лимит запросов Google Gemini Free Tier (HTTP 429). Подождите ${retryTime}, либо выберите модель gemini-2.0-flash / OpenRouter.`;
+      hint = `Превышен лимит запросов Google Gemini Free Tier (HTTP 429). Подождите ${retryTime}, либо выберите сверхбыструю модель gemini-3.1-flash-lite / OpenRouter.`;
+    } else if (msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE')) {
+      hint = 'Сервис Google Gemini испытывает временную пиковую нагрузку (HTTP 503 High Demand). Рекомендуем выбрать сверхбыструю стабильную модель gemini-3.1-flash-lite или gemini-flash-lite-latest.';
     } else if (msg.includes('Access denied by security policy')) {
       hint = 'OpenRouter отклонил запрос политикой безопасности ключа. Решение: 1) В кабинете openrouter.ai/keys создайте ключ без ограничений (Default). 2) Если баланс $0, укажите бесплатную модель. 3) В настройках аккаунта openrouter.ai/settings/privacy проверьте правила доступа.';
     } else if (msg.includes('is no longer available') || (msg.includes('404') && msg.includes('models/'))) {
-      hint = 'Выбранная модель устарела в Google API. В настройках ИИ выберите актуальную модель: gemini-2.0-flash, gemini-1.5-flash или gemini-3.7-flash.';
+      hint = 'Выбранная модель устарела или недоступна в Google API (HTTP 404). В настройках ИИ выберите актуальную модель: gemini-3.1-flash-lite (рекомендуется), gemini-3.8-flash или gemini-flash-lite-latest.';
     } else if (msg.includes('524') || msg.includes('A timeout occurred') || msg.includes('timeout')) {
-      hint = 'Cloudflare Worker вернул ошибку 524 (Timeout). Решение: обновите код Worker в Cloudflare Dashboard, добавив заголовок Host: generativelanguage.googleapis.com, либо выберите модель gemini-2.0-flash.';
+      hint = 'Cloudflare Worker вернул ошибку 524 (Timeout). Решение: в настройках ИИ выберите быструю модель gemini-3.1-flash-lite, либо обновите код Worker в Cloudflare Dashboard.';
     } else if (msg.includes('404') && (msg.includes('Proxy') || msg.includes('description":"Not Found"'))) {
-      hint = 'Указанный прокси вернул 404 Not Found. Обратите внимание: Telegram API Proxy (telegram-bot-api) предназначен исключительно для Telegram и не умеет обрабатывать запросы к Google Gemini. Для Gemini используйте Cloudflare Worker или переключитесь на OpenRouter.';
+      hint = 'Указанный прокси вернул 404 Not Found. Обратите внимание: Telegram API Proxy предназначен исключительно для Telegram и не умеет обрабатывать запросы к Google Gemini. Для Gemini используйте Cloudflare Worker или переключитесь на OpenRouter.';
     } else if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
       hint = 'Геолокация сервера ограничена Google. Решение: разверните Cloudflare Worker по инструкции и укажите его в Настройках, либо переключитесь на OpenRouter.';
     } else if (msg.includes('API_KEY_INVALID') || msg.includes('invalid api key') || msg.includes('401')) {
@@ -4769,7 +4805,7 @@ let settings = {
   webAppUrl: '',
   aiProvider: 'gemini' as 'gemini' | 'openrouter' | 'custom',
   geminiApiKey: process.env.GEMINI_API_KEY || '',
-  geminiModel: 'gemini-2.0-flash',
+  geminiModel: 'gemini-3.1-flash-lite',
   geminiBaseUrl: '',
   geminiUseProxy: true,
   geminiProxySource: 'auto' as 'auto' | 'tg_proxy' | 'cf_worker' | 'custom' | 'direct',
@@ -4862,7 +4898,10 @@ async function syncData() {
       const settingsDoc = await db.collection('config').doc('settings').get();
       if (settingsDoc.exists) {
         settings = { ...settings, ...settingsDoc.data() as any };
-        console.log('Loaded settings');
+        if (settings.geminiModel) {
+          settings.geminiModel = sanitizeGeminiModel(settings.geminiModel);
+        }
+        console.log('Loaded settings (geminiModel:', settings.geminiModel, ')');
       }
     });
 
