@@ -1152,7 +1152,7 @@ app.delete('/api/bans/chat/:id', async (req, res) => {
 app.get('/api/memberships/multi-chat', (req, res) => {
   const userMap = new Map<string, any>();
   
-  console.log(`Calculating multi-chat users. Memberships: ${memberships.length}, Chats: ${chats.length}`);
+  console.log(`Calculating multi-chat users. Memberships: ${memberships.length}, Chats: ${chats.length}, ChatMessages: ${chatMessages.length}`);
   
   // Sort memberships by lastSeen or joinedAt to get the freshest info first
   const sortedMemberships = [...memberships].sort((a, b) => {
@@ -1175,18 +1175,91 @@ app.get('/api/memberships/multi-chat', (req, res) => {
         username: m.username,
         firstName: m.firstName,
         lastName: m.lastName,
-        chats: []
+        chats: [],
+        messageCount: 0,
+        lastSeen: m.lastSeen || m.joinedAt,
+        hasRecentSpam: false,
+        hasForwards: false
       });
     }
     const user = userMap.get(userId);
-    const chat = chats.find(c => String(c.id) === String(m.chatId));
-    if (chat) {
-      // Avoid duplicate chats for the same user
-      if (!user.chats.some((c: any) => String(c.id) === String(chat.id))) {
-        user.chats.push({ id: chat.id, title: chat.title });
-      }
+    if (m.msgCount) user.messageCount = (user.messageCount || 0) + m.msgCount;
+    
+    const chatIdStr = String(m.chatId);
+    const chat = chats.find(c => String(c.id) === chatIdStr);
+    const chatTitle = chat ? chat.title : ((m as any).chatTitle || `Чат ${chatIdStr}`);
+    
+    if (!user.chats.some((c: any) => String(c.id) === chatIdStr)) {
+      user.chats.push({ id: chatIdStr, title: chatTitle });
     }
   });
+
+  // Also merge users and chats from recorded chat messages
+  for (const cm of chatMessages) {
+    const userId = String(cm.userId);
+    if (!userId || userId === 'undefined') continue;
+    if (botInfo && userId === botInfo.id.toString()) continue;
+    if (cm.username && cm.username.toLowerCase().replace(/^@/, '') === 'motoinformbot') continue;
+
+    if (!userMap.has(userId)) {
+      userMap.set(userId, {
+        userId,
+        username: cm.username ? (cm.username.startsWith('@') ? cm.username : `@${cm.username}`) : undefined,
+        firstName: cm.firstName,
+        lastName: cm.lastName,
+        chats: [],
+        messageCount: 0,
+        lastSeen: cm.timestamp,
+        hasRecentSpam: false,
+        hasForwards: false
+      });
+    }
+
+    const user = userMap.get(userId);
+    const chatIdStr = String(cm.chatId);
+    const chat = chats.find(c => String(c.id) === chatIdStr);
+    const chatTitle = chat ? chat.title : `Чат ${chatIdStr}`;
+
+    if (!user.chats.some((c: any) => String(c.id) === chatIdStr)) {
+      user.chats.push({ id: chatIdStr, title: chatTitle });
+    }
+    user.messageCount = (user.messageCount || 0) + 1;
+    if (cm.isForward) user.hasForwards = true;
+    if (!user.lastMessageTime || cm.timestamp > user.lastMessageTime) {
+      user.lastMessageTime = cm.timestamp;
+    }
+  }
+
+  // Mark users who have active cross-chat spam activity in sliding window
+  for (const [uId, recentList] of userRecentCrossChatMessages.entries()) {
+    const uniqueRecentChats = new Set(recentList.map(r => r.chatId));
+    if (uniqueRecentChats.size >= 2) {
+      let u = userMap.get(uId);
+      if (!u && recentList.length > 0) {
+        // Create user entry if not already present
+        const sample = recentList[0];
+        u = {
+          userId: uId,
+          chats: [],
+          messageCount: recentList.length,
+          lastSeen: new Date(sample.timestamp).toISOString(),
+          hasRecentSpam: true,
+          hasForwards: recentList.some(r => r.isForward)
+        };
+        userMap.set(uId, u);
+      }
+      if (u) {
+        u.hasRecentSpam = true;
+        if (recentList.some(r => r.isForward)) u.hasForwards = true;
+        for (const r of recentList) {
+          if (!u.chats.some((c: any) => String(c.id) === r.chatId)) {
+            const chat = chats.find(c => String(c.id) === r.chatId);
+            u.chats.push({ id: r.chatId, title: chat ? chat.title : `Чат ${r.chatId}` });
+          }
+        }
+      }
+    }
+  }
 
   const multiChatUsersResult = Array.from(userMap.values())
     .filter(u => u.chats.length > 1)
@@ -1196,7 +1269,7 @@ app.get('/api/memberships/multi-chat', (req, res) => {
       isBanned: bans.some(b => String(b.userId) === String(u.userId) || String(b.id) === String(u.userId))
     }));
 
-  console.log(`Found ${multiChatUsersResult.length} users in multiple chats`);
+  console.log(`Found ${multiChatUsersResult.length} users in multiple chats (including active message senders)`);
   res.json(multiChatUsersResult);
 });
 
@@ -2045,8 +2118,8 @@ app.post('/api/bans', authenticateToken, async (req, res) => {
     if (bot) {
       for (const chat of chats.filter(c => c.active)) {
         try {
-          // Telegram API expects a number for userId
-          await bot.telegram.banChatMember(chat.id, Number(ban.userId));
+          // Telegram API expects a number for userId; pass revoke_messages: true to delete recent messages on Telegram server
+          await bot.telegram.banChatMember(chat.id, Number(ban.userId), { revoke_messages: true } as any);
           console.log(`Global ban applied for ${ban.userId} in chat ${chat.id} (${chat.title})`);
         } catch (e) {
           const errorMessage = (e as Error).message;
@@ -2062,11 +2135,56 @@ app.post('/api/bans', authenticateToken, async (req, res) => {
         }
       }
     }
+
+    // If requested to clean messages, run comprehensive message purge
+    let cleanResult = null;
+    if (ban.cleanMessages) {
+      try {
+        cleanResult = await cleanUserMessages(ban.userId, false);
+      } catch (cleanErr) {
+        console.error('Failed to purge messages during ban:', cleanErr);
+      }
+    }
     
-    res.json(ban);
+    res.json({ ...ban, cleanResult });
   } catch (err) {
     console.error('Failed to create global ban:', err);
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// Message Cleaner Endpoints
+app.post('/api/moderation/clean-user-messages', authenticateToken, async (req, res) => {
+  try {
+    const { userId, alsoBan, banReason } = req.body;
+    if (!userId) {
+      return res.status(400).json({ error: 'Параметр userId обязателен' });
+    }
+
+    const result = await cleanUserMessages(
+      String(userId),
+      Boolean(alsoBan),
+      banReason || 'Массовый спам в нескольких чатах'
+    );
+    res.json(result);
+  } catch (err: any) {
+    console.error('Error in /api/moderation/clean-user-messages:', err);
+    res.status(500).json({ error: err?.message || 'Не удалось очистить сообщения' });
+  }
+});
+
+app.get('/api/moderation/user-messages-stats/:userId', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId) {
+      return res.status(400).json({ error: 'Параметр userId обязателен' });
+    }
+
+    const stats = await getUserMessagesStats(userId);
+    res.json(stats);
+  } catch (err: any) {
+    console.error('Error in /api/moderation/user-messages-stats:', err);
+    res.status(500).json({ error: err?.message || 'Не удалось получить статистику' });
   }
 });
 
@@ -2574,20 +2692,23 @@ app.get('/api/reputation', authenticateToken, async (req, res) => {
   }
 });
 
-app.post('/api/reputation/:userId/adjust', authenticateToken, async (req, res) => {
+app.post(['/api/reputation', '/api/reputation/:userId/adjust'], authenticateToken, async (req, res) => {
   try {
+    const targetUserId = req.params.userId || req.body.userId;
+    if (!targetUserId) {
+      return res.status(400).json({ error: 'Не указан ID пользователя' });
+    }
     const { delta, reason, chatId } = req.body;
     const user = (req as any).user;
-    const targetUserId = req.params.userId;
     
     const rep = await adjustUserReputation(
-      targetUserId,
+      String(targetUserId),
       Number(delta) || 1,
       reason || 'Корректировка администратором',
-      `admin_${user.id}`,
-      user.username || 'Admin',
+      `admin_${user?.id || 'panel'}`,
+      user?.username || 'Admin',
       chatId || 'global',
-      chatId ? (chats.find(c => c.id === chatId)?.title || 'Chat') : 'Глобально'
+      chatId ? (chats.find(c => String(c.id) === String(chatId))?.title || `Чат ${chatId}`) : 'Глобально'
     );
 
     res.json(rep);
@@ -2596,7 +2717,7 @@ app.post('/api/reputation/:userId/adjust', authenticateToken, async (req, res) =
   }
 });
 
-app.delete('/api/reputation/:userId/reset', authenticateToken, async (req, res) => {
+app.delete(['/api/reputation/:userId', '/api/reputation/:userId/reset'], authenticateToken, async (req, res) => {
   try {
     const targetUserId = req.params.userId;
     await db.collection('reputations').doc(targetUserId).delete();
@@ -4043,6 +4164,9 @@ let isBotPollingActive = false;
 let lastTelegramUpdateAt = Date.now();
 let botReconnectTimer: any = null;
 const messageAuthorCache = new Map<string, { userId: string, username?: string, firstName?: string, lastName?: string }>();
+const userRecentCrossChatMessages = new Map<string, Array<{ chatId: string; messageId: number; timestamp: number; isForward: boolean; forwardSource?: string; text: string }>>();
+const lastCrossChatAlertTime = new Map<string, number>();
+const reputationCooldownMap = new Map<string, number>();
 
 function parsePinnedMessageData(chatId: string, pinned: any, chatUsername?: string) {
   let mediaType: 'photo' | 'video' | 'document' | 'audio' | 'voice' | 'poll' | 'other' | undefined;
@@ -4151,6 +4275,7 @@ async function recordPinnedMessage(chatId: string, pinned: any, unpinned = false
 
 async function recordChatMessage(record: {
   id: string;
+  messageId?: number;
   chatId: string;
   userId: string;
   username?: string;
@@ -4158,16 +4283,397 @@ async function recordChatMessage(record: {
   lastName?: string;
   text: string;
   timestamp: string;
+  isForward?: boolean;
+  forwardSource?: string;
 }) {
-  if (!record.text || record.text.trim().length === 0) return;
-  
+  const normText = (record.text || '').trim();
+  const fallbackText = record.isForward ? '[Пересланное сообщение/медиа]' : '[Медиа/Стикер/Файл]';
+  const cleanRecord = {
+    ...record,
+    text: normText.length > 0 ? normText : fallbackText,
+    messageId: record.messageId || Number(record.id.split('_')[1]) || 0
+  };
+
+  // Prevent duplicate insertion in memory
+  const existingIdx = chatMessages.findIndex(m => m.id === cleanRecord.id);
+  if (existingIdx !== -1) {
+    chatMessages[existingIdx] = { ...chatMessages[existingIdx], ...cleanRecord };
+    return;
+  }
+
   // 48-hour retention in memory: prune messages older than 48 hours
   const cutoff48h = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
   chatMessages = chatMessages.filter(m => m.timestamp >= cutoff48h);
 
-  chatMessages.unshift(record);
+  chatMessages.unshift(cleanRecord);
   if (chatMessages.length > 5000) chatMessages.pop();
-  queueWrite('chat_messages', record.id, cleanData(record));
+  queueWrite('chat_messages', cleanRecord.id, cleanData(cleanRecord));
+}
+
+async function checkCrossChatActivity(
+  chatId: string,
+  user: { id: number; username?: string; first_name?: string; last_name?: string },
+  msgInfo: { messageId: number; text: string; isForward: boolean; forwardSource?: string }
+) {
+  const userId = String(user.id);
+  // Exclude bot itself and admin
+  if (botInfo && user.id === botInfo.id) return;
+  if (user.username && user.username.toLowerCase() === 'motoinformbot') return;
+  const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
+  if (user.username && user.username.toLowerCase() === adminUsername) return;
+  if (whitelist.some(w => String(w.userId) === userId || (user.username && w.username && w.username.toLowerCase() === `@${user.username.toLowerCase()}`))) return;
+
+  const now = Date.now();
+  // 2-hour window for cross-chat activity tracking
+  const windowMs = 2 * 3600 * 1000;
+
+  let userMsgs = userRecentCrossChatMessages.get(userId) || [];
+  userMsgs = userMsgs.filter(m => now - m.timestamp < windowMs);
+  userMsgs.push({
+    chatId: String(chatId),
+    messageId: msgInfo.messageId,
+    timestamp: now,
+    isForward: Boolean(msgInfo.isForward),
+    forwardSource: msgInfo.forwardSource,
+    text: msgInfo.text
+  });
+  userRecentCrossChatMessages.set(userId, userMsgs);
+
+  // Distinct chats where user sent/forwarded messages recently
+  const uniqueChatIds = Array.from(new Set(userMsgs.map(m => m.chatId)));
+  const hasForwards = userMsgs.some(m => m.isForward);
+
+  // Alert threshold: notify if user posted into >= 2 chats in recent window
+  if (uniqueChatIds.length >= 2) {
+    const lastAlert = lastCrossChatAlertTime.get(userId) || 0;
+    // 5-minute cooldown between alerts for same user
+    if (now - lastAlert >= 5 * 60 * 1000) {
+      lastCrossChatAlertTime.set(userId, now);
+
+      const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
+      if (targetChatId && bot) {
+        const chatNames = uniqueChatIds.map(cId => {
+          const c = chats.find(ch => String(ch.id) === String(cId));
+          return c ? c.title : cId;
+        }).join(', ');
+
+        const userFullName = [user.first_name, user.last_name].filter(Boolean).join(' ') || `Пользователь ${userId}`;
+        const userHandle = user.username ? `@${user.username}` : `ID: ${userId}`;
+        const snippet = msgInfo.text 
+          ? (msgInfo.text.length > 250 ? msgInfo.text.substring(0, 250) + '...' : msgInfo.text) 
+          : (msgInfo.isForward ? '[Пересланное сообщение/медиа]' : '[Медиа]');
+
+        const forwardNotice = hasForwards 
+          ? `\n↪️ <b>Тип:</b> Пересылка сообщений (Forward)` + (msgInfo.forwardSource ? ` (Откуда: <code>${escapeHtml(msgInfo.forwardSource)}</code>)` : '')
+          : '';
+
+        const alertMsg = 
+          `🚨 <b>ОБНАРУЖЕН СПАМ / РАССЫЛКА В НЕСКОЛЬКИХ ЧАТАХ!</b>\n\n` +
+          `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(userFullName)}</a> (${userHandle})\n` +
+          `🆔 <b>ID:</b> <code>${userId}</code>\n` +
+          `📊 <b>Разослано в ${uniqueChatIds.length} чат(-ов):</b>\n` +
+          `📍 <i>${escapeHtml(chatNames)}</i>${forwardNotice}\n\n` +
+          `💬 <b>Последнее сообщение:</b>\n<blockquote>${escapeHtml(snippet)}</blockquote>\n\n` +
+          `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
+
+        const keyboard = {
+          inline_keyboard: [
+            [
+              { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
+            ],
+            [
+              { text: '🗑 Удалить все сообщения', callback_data: `mc_clean_${userId}` },
+              { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
+            ],
+            [
+              { text: '✅ В белый список', callback_data: `mc_wl_${userId}` },
+              { text: '👤 Профиль', url: `tg://user?id=${userId}` }
+            ]
+          ]
+        };
+
+        bot.telegram.sendMessage(targetChatId, alertMsg, {
+          parse_mode: 'HTML',
+          reply_markup: keyboard
+        }).catch(e => console.error('[CrossChatAlert] Failed to send telegram alert:', e));
+
+        await addLog({
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().toISOString(),
+          type: 'WARN',
+          user: userFullName,
+          chat: `${uniqueChatIds.length} чатов`,
+          details: `🚨 Рассылка по чатам: пользователь ${userHandle} отправил сообщения в ${uniqueChatIds.length} чатов.${hasForwards ? ' [пересылка]' : ''}`
+        });
+      }
+    }
+  }
+}
+
+async function getUserMessagesStats(targetUserId: string): Promise<{
+  userId: string;
+  username?: string;
+  firstName?: string;
+  totalMessages: number;
+  chats: Array<{ chatId: string; chatTitle: string; count: number; lastMessageDate?: string; lastText?: string }>;
+}> {
+  const normUserId = String(targetUserId).trim().replace(/^@/, '');
+  const chatStatsMap = new Map<string, { count: number; lastMessageDate?: string; lastText?: string }>();
+  let username: string | undefined;
+  let firstName: string | undefined;
+
+  // Search memory
+  for (const m of chatMessages) {
+    const isMatch = String(m.userId) === normUserId || 
+      (m.username && m.username.toLowerCase().replace(/^@/, '') === normUserId.toLowerCase());
+    if (isMatch) {
+      if (!username && m.username) username = m.username;
+      if (!firstName && m.firstName) firstName = m.firstName;
+      const cId = String(m.chatId);
+      const curr = chatStatsMap.get(cId) || { count: 0 };
+      curr.count++;
+      if (!curr.lastMessageDate || m.timestamp > curr.lastMessageDate) {
+        curr.lastMessageDate = m.timestamp;
+        curr.lastText = m.text;
+      }
+      chatStatsMap.set(cId, curr);
+    }
+  }
+
+  // Also query Firestore chat_messages
+  try {
+    const snap = await db.collection('chat_messages').where('userId', '==', normUserId).limit(300).get();
+    snap.docs.forEach(doc => {
+      const data = doc.data();
+      if (!username && data.username) username = data.username;
+      if (!firstName && data.firstName) firstName = data.firstName;
+      const cId = String(data.chatId);
+      const curr = chatStatsMap.get(cId) || { count: 0 };
+      // avoid double counting if already counted in memory
+      if (!chatMessages.some(cm => cm.id === doc.id)) {
+        curr.count++;
+        if (!curr.lastMessageDate || data.timestamp > curr.lastMessageDate) {
+          curr.lastMessageDate = data.timestamp;
+          curr.lastText = data.text;
+        }
+        chatStatsMap.set(cId, curr);
+      }
+    });
+  } catch (e) {
+    console.warn('[UserStats] Error reading Firestore chat_messages:', e);
+  }
+
+  // Also include memberships chats if user is recorded there
+  const userMemberships = memberships.filter(m => String(m.userId) === normUserId);
+  for (const m of userMemberships) {
+    const cId = String(m.chatId);
+    if (!chatStatsMap.has(cId)) {
+      chatStatsMap.set(cId, { count: m.msgCount || 0, lastMessageDate: m.lastSeen || m.joinedAt });
+    }
+    if (!username && m.username) username = m.username.replace(/^@/, '');
+    if (!firstName && m.firstName) firstName = m.firstName;
+  }
+
+  let total = 0;
+  const chatList = Array.from(chatStatsMap.entries()).map(([cId, stat]) => {
+    const chatObj = chats.find(c => String(c.id) === cId);
+    total += stat.count;
+    return {
+      chatId: cId,
+      chatTitle: chatObj ? chatObj.title : `Чат ${cId}`,
+      count: stat.count,
+      lastMessageDate: stat.lastMessageDate,
+      lastText: stat.lastText
+    };
+  });
+
+  return {
+    userId: normUserId,
+    username,
+    firstName,
+    totalMessages: total,
+    chats: chatList
+  };
+}
+
+async function cleanUserMessages(targetUserId: string, alsoBan = false, banReason = 'Массовый спам в нескольких чатах'): Promise<{
+  success: boolean;
+  userId: string;
+  deletedCount: number;
+  chatsCount: number;
+  chatDetails: Array<{ chatId: string; chatTitle: string; deletedCount: number; error?: string }>;
+  bannedGlobally?: boolean;
+}> {
+  const normUserId = String(targetUserId).trim().replace(/^@/, '');
+  console.log(`[Cleaner] Purging messages for user ${normUserId} (alsoBan: ${alsoBan})...`);
+
+  // 1. Gather all message IDs to delete
+  const matchingMessages: Array<{ chatId: string; messageId: number; id: string }> = [];
+
+  // Memory chatMessages
+  for (const m of chatMessages) {
+    const isMatch = String(m.userId) === normUserId || 
+      (m.username && m.username.toLowerCase().replace(/^@/, '') === normUserId.toLowerCase());
+    if (isMatch) {
+      const msgId = (m as any).messageId || Number(m.id.split('_')[1]);
+      if (msgId && m.chatId) {
+        matchingMessages.push({ chatId: String(m.chatId), messageId: msgId, id: m.id });
+      }
+    }
+  }
+
+  // Firestore chat_messages
+  try {
+    const snap = await db.collection('chat_messages').where('userId', '==', normUserId).get();
+    snap.docs.forEach(doc => {
+      const data = doc.data();
+      const msgId = data.messageId || Number(doc.id.split('_')[1]);
+      if (msgId && data.chatId) {
+        if (!matchingMessages.some(m => m.chatId === String(data.chatId) && m.messageId === msgId)) {
+          matchingMessages.push({ chatId: String(data.chatId), messageId: msgId, id: doc.id });
+        }
+      }
+    });
+  } catch (e) {
+    console.warn('[Cleaner] Error reading Firestore chat_messages:', e);
+  }
+
+  // Recent cross-chat messages
+  const recentList = userRecentCrossChatMessages.get(normUserId) || [];
+  for (const r of recentList) {
+    if (!matchingMessages.some(m => m.chatId === String(r.chatId) && m.messageId === r.messageId)) {
+      matchingMessages.push({ chatId: String(r.chatId), messageId: r.messageId, id: `${r.chatId}_${r.messageId}` });
+    }
+  }
+
+  // Scam alert logs
+  for (const s of scamAlertLogs) {
+    if (String(s.userId) === normUserId && s.messageId && s.chatId) {
+      if (!matchingMessages.some(m => m.chatId === String(s.chatId) && m.messageId === s.messageId)) {
+        matchingMessages.push({ chatId: String(s.chatId), messageId: s.messageId, id: `${s.chatId}_${s.messageId}` });
+      }
+    }
+  }
+
+  // Group by chatId
+  const byChat = new Map<string, number[]>();
+  for (const item of matchingMessages) {
+    if (!byChat.has(item.chatId)) byChat.set(item.chatId, []);
+    if (!byChat.get(item.chatId)!.includes(item.messageId)) {
+      byChat.get(item.chatId)!.push(item.messageId);
+    }
+  }
+
+  // Also include any active chat where user has a membership
+  const userMemberships = memberships.filter(m => String(m.userId) === normUserId);
+  for (const m of userMemberships) {
+    if (!byChat.has(String(m.chatId))) {
+      byChat.set(String(m.chatId), []);
+    }
+  }
+
+  let totalDeleted = 0;
+  const chatDetails: Array<{ chatId: string; chatTitle: string; deletedCount: number; error?: string }> = [];
+
+  for (const [chatId, messageIds] of byChat.entries()) {
+    const chatObj = chats.find(c => String(c.id) === chatId);
+    const chatTitle = chatObj ? chatObj.title : `Чат ${chatId}`;
+    let chatDeleted = 0;
+    let chatError: string | undefined;
+
+    if (bot) {
+      // 1. Delete individual known messages in this chat
+      for (const msgId of messageIds) {
+        try {
+          await bot.telegram.deleteMessage(chatId, msgId);
+          chatDeleted++;
+        } catch (delErr: any) {
+          const errMsg = delErr?.message || String(delErr);
+          if (!errMsg.includes('message to delete not found')) {
+            console.warn(`[Cleaner] Telegram deleteMessage error in ${chatId} (msg ${msgId}):`, errMsg);
+          }
+        }
+      }
+
+      // 2. If user is to be banned (or already banned), call banChatMember with revoke_messages: true
+      // Telegram's server will natively purge ALL recent messages for this user in supergroups!
+      if (alsoBan || bans.some(b => String(b.userId) === normUserId)) {
+        try {
+          await bot.telegram.banChatMember(chatId, Number(normUserId), { revoke_messages: true } as any);
+        } catch (banErr: any) {
+          // ignore already banned or not in chat
+        }
+      }
+    }
+
+    totalDeleted += chatDeleted;
+    chatDetails.push({
+      chatId,
+      chatTitle,
+      deletedCount: chatDeleted,
+      error: chatError
+    });
+  }
+
+  // 3. Remove deleted messages from in-memory cache
+  chatMessages = chatMessages.filter(m => {
+    const isMatch = String(m.userId) === normUserId || 
+      (m.username && m.username.toLowerCase().replace(/^@/, '') === normUserId.toLowerCase());
+    return !isMatch;
+  });
+
+  // Clear from recent cross-chat sliding window
+  userRecentCrossChatMessages.delete(normUserId);
+
+  // 4. Delete Firestore records
+  for (const m of matchingMessages) {
+    queueDelete('chat_messages', m.id);
+  }
+
+  // 5. Global ban if requested
+  let bannedGlobally = false;
+  if (alsoBan) {
+    const existingBanIndex = bans.findIndex(b => String(b.userId) === normUserId);
+    if (existingBanIndex === -1) {
+      const newBan = {
+        id: normUserId,
+        userId: normUserId,
+        reason: banReason,
+        createdAt: new Date().toISOString()
+      };
+      bans.push(newBan);
+      queueWrite('bans', normUserId, cleanData(newBan));
+      bannedGlobally = true;
+    }
+    // Also ban across all other active chats
+    if (bot) {
+      for (const chat of chats.filter(c => c.active)) {
+        if (!byChat.has(String(chat.id))) {
+          try {
+            await bot.telegram.banChatMember(chat.id, Number(normUserId), { revoke_messages: true } as any);
+          } catch (e) {}
+        }
+      }
+    }
+  }
+
+  await addLog({
+    id: Math.random().toString(36).substr(2, 9),
+    timestamp: new Date().toISOString(),
+    type: 'SYSTEM',
+    user: `ID ${normUserId}`,
+    chat: 'Cleaner',
+    details: `🧹 Чистильщик: удалено ${totalDeleted} сообщ. в ${chatDetails.length} чатах.${alsoBan ? ' Пользователь заблокирован во всех чатах.' : ''}`
+  });
+
+  return {
+    success: true,
+    userId: normUserId,
+    deletedCount: totalDeleted,
+    chatsCount: chatDetails.length,
+    chatDetails,
+    bannedGlobally
+  };
 }
 
 let lastCleanupTime = 0;
@@ -5253,6 +5759,43 @@ async function adjustUserReputation(
   }
 
   queueWrite('reputations', targetUserId, cleanData(rep));
+
+  // 1. Add entry to Admin Panel activity logs
+  const targetFullName = [rep.firstName, rep.lastName].filter(Boolean).join(' ') || (rep.username ? `@${rep.username}` : `ID ${targetUserId}`);
+  const deltaLabel = delta > 0 ? `+${delta}` : `${delta}`;
+  const actionEmoji = delta > 0 ? '⭐️' : '🔻';
+  const scoreFormatted = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
+
+  await addLog({
+    id: Math.random().toString(36).substr(2, 9),
+    timestamp: new Date().toISOString(),
+    type: 'SYSTEM',
+    user: fromName,
+    chat: chatTitle,
+    details: `${actionEmoji} Репутация (${deltaLabel}) для ${targetFullName}. Причина: ${reason}. Рейтинг: ${scoreFormatted}`
+  });
+
+  // 2. Send Telegram notification to Info Chat
+  const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
+  if (targetChatId && bot) {
+    const userHandle = rep.username ? `@${rep.username}` : `ID: ${targetUserId}`;
+    const fromHandle = fromUserId.startsWith('admin_') 
+      ? `Администратор (${escapeHtml(fromName)})` 
+      : `<a href="tg://user?id=${fromUserId}">${escapeHtml(fromName)}</a>`;
+
+    const alertText = 
+      `${actionEmoji} <b>Изменение репутации: ${deltaLabel}</b>\n\n` +
+      `👤 <b>Кому:</b> <a href="tg://user?id=${targetUserId}">${escapeHtml(targetFullName)}</a> (${userHandle})\n` +
+      `✍️ <b>От кого:</b> ${fromHandle}\n` +
+      `📍 <b>Чат:</b> <i>${escapeHtml(chatTitle)}</i>\n` +
+      `💬 <b>Причина:</b> ${escapeHtml(reason)}\n` +
+      `📈 <b>Текущий рейтинг:</b> <code>${scoreFormatted}</code>\n` +
+      `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
+
+    bot.telegram.sendMessage(targetChatId, alertText, { parse_mode: 'HTML' })
+      .catch(e => console.error('[Reputation] Failed to send info chat alert:', e));
+  }
+
   return rep;
 }
 
@@ -5546,27 +6089,6 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
         last_name: user.last_name,
         username: user.username
       });
-
-      // Check for multi-chat join notification
-      const userMemberships = memberships.filter(m => m.userId === userId);
-      if (filters.notifyMultiChat && userMemberships.length >= filters.multiChatThreshold) {
-        const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
-        if (targetChatId && bot) {
-          const chatTitles = userMemberships.map(m => {
-            const c = chats.find(ch => ch.id === m.chatId);
-            return c ? c.title : m.chatId;
-          }).join(', ');
-          
-          const alertMsg = `⚠️ *Внимание!* Пользователь [${user.first_name || userId}](tg://user?id=${userId}) вступил в ${userMemberships.length} чатов.\n\n*Чаты:* ${chatTitles}`;
-          const keyboard = {
-            inline_keyboard: [[
-              { text: '🚫 Блокировать', callback_data: `mc_ban_${userId}` },
-              { text: '✅ В белый список', callback_data: `mc_wl_${userId}` }
-            ]]
-          };
-          bot.telegram.sendMessage(targetChatId, alertMsg, { parse_mode: 'Markdown', reply_markup: keyboard }).catch(e => console.error('Failed to send multi-chat alert:', e));
-        }
-      }
     } else {
       const currentMembership = memberships[existingIdx];
       const updated = { 
@@ -5583,6 +6105,47 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
         queueWrite('memberships', membershipId, cleanData(updated));
         membershipLastWrite.set(membershipId, Date.now());
       }
+    }
+
+    // Check for multi-chat membership notification (for both new joins and active messages)
+    const userMemberships = memberships.filter(m => String(m.userId) === String(userId));
+    if (filters.notifyMultiChat && userMemberships.length >= filters.multiChatThreshold) {
+      const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
+      const alertCacheKey = `mc_member_alert_${userId}_${userMemberships.length}`;
+      const now = Date.now();
+      const lastAlert = lastCrossChatAlertTime.get(alertCacheKey) || 0;
+
+      if (targetChatId && bot && (now - lastAlert > 30 * 60 * 1000)) {
+        lastCrossChatAlertTime.set(alertCacheKey, now);
+        const chatTitles = userMemberships.map(m => {
+          const c = chats.find(ch => String(ch.id) === String(m.chatId));
+          return c ? c.title : m.chatId;
+        }).join(', ');
+        
+        const alertMsg = 
+          `⚠️ <b>Внимание!</b> Пользователь <a href="tg://user?id=${userId}">${escapeHtml(user.first_name || userId)}</a> ` +
+          `состоит в <b>${userMemberships.length} чатах</b>.\n\n` +
+          `📍 <b>Чаты:</b> ${escapeHtml(chatTitles)}`;
+        
+        const keyboard = {
+          inline_keyboard: [
+            [
+              { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
+            ],
+            [
+              { text: '🗑 Удалить сообщения', callback_data: `mc_clean_${userId}` },
+              { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
+            ],
+            [
+              { text: '✅ В белый список', callback_data: `mc_wl_${userId}` },
+              { text: '👤 Профиль', url: `tg://user?id=${userId}` }
+            ]
+          ]
+        };
+        bot.telegram.sendMessage(targetChatId, alertMsg, { parse_mode: 'HTML', reply_markup: keyboard })
+          .catch(e => console.error('Failed to send multi-chat alert:', e));
+      }
+    }
 
       // Count message or just update online status
       if (isMessage) {
@@ -5591,7 +6154,6 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
         // Just update online status without incrementing msg count
         await incrementDailyStats(chatId, 'msgs', 0, userId); 
       }
-    }
   } catch (e) {
     console.error('Failed to save membership:', e);
   }
@@ -6016,7 +6578,28 @@ async function initBot(token: string) {
 
         // If it's a command, handle it normally. 
         if (ctx.message && 'text' in ctx.message && ctx.message.text.startsWith('/')) {
-           // allow commands to pass through
+          const cmd = ctx.message.text.trim();
+          if (cmd.startsWith('/clean ') || cmd.startsWith('/purge ')) {
+            const target = cmd.replace(/^\/(clean|purge)\s+/, '').trim().replace(/^@/, '');
+            const waitReply = await ctx.reply(`🧹 Начинаю очистку всех сообщений пользователя <code>${target}</code> во всех чатах...`, { parse_mode: 'HTML' });
+            const cleanRes = await cleanUserMessages(target, false);
+            await ctx.telegram.editMessageText(chatId, waitReply.message_id, undefined,
+              `✅ <b>Очистка завершена!</b>\n\n👤 Пользователь: <code>${target}</code>\n🗑 Удалено сообщений: <b>${cleanRes.deletedCount}</b>\n📍 Затронуто чатов: <b>${cleanRes.chatsCount}</b>`,
+              { parse_mode: 'HTML' }
+            );
+            return;
+          }
+          if (cmd.startsWith('/cleanban ')) {
+            const target = cmd.replace(/^\/cleanban\s+/, '').trim().replace(/^@/, '');
+            const waitReply = await ctx.reply(`🚫🧹 Блокирую и очищаю все сообщения пользователя <code>${target}</code> во всех чатах...`, { parse_mode: 'HTML' });
+            const cleanRes = await cleanUserMessages(target, true, 'Бан и удаление через /cleanban');
+            await ctx.telegram.editMessageText(chatId, waitReply.message_id, undefined,
+              `✅ <b>Бан и очистка завершены!</b>\n\n👤 Пользователь: <code>${target}</code> заблокирован глобально.\n🗑 Удалено сообщений: <b>${cleanRes.deletedCount}</b>\n📍 Затронуто чатов: <b>${cleanRes.chatsCount}</b>`,
+              { parse_mode: 'HTML' }
+            );
+            return;
+          }
+          // allow other commands to pass through
         } else if (ctx.message) {
           const mediaGroupId = (ctx.message as any).media_group_id;
 
@@ -6175,6 +6758,71 @@ async function initBot(token: string) {
           last_name: ctx.from.last_name
         }, true);
 
+        // Detect if forward and extract text / caption
+        const msg = ctx.message as any;
+        const isForward = Boolean(
+          msg?.forward_origin ||
+          msg?.forward_from ||
+          msg?.forward_from_chat ||
+          msg?.forward_date ||
+          msg?.forward_sender_name
+        );
+        let forwardSource = '';
+        if (msg?.forward_origin) {
+          const origin = msg.forward_origin;
+          if (origin.type === 'user' && origin.sender_user) {
+            forwardSource = origin.sender_user.username ? `@${origin.sender_user.username}` : (origin.sender_user.first_name || `User ${origin.sender_user.id}`);
+          } else if (origin.type === 'channel' && origin.chat) {
+            forwardSource = origin.chat.title || origin.chat.username || `Channel ${origin.chat.id}`;
+          } else if (origin.type === 'chat' && origin.sender_chat) {
+            forwardSource = origin.sender_chat.title || `Chat ${origin.sender_chat.id}`;
+          } else if (origin.type === 'hidden_user') {
+            forwardSource = origin.sender_user_name || 'Скрытый пользователь';
+          }
+        } else if (msg?.forward_from) {
+          forwardSource = msg.forward_from.username ? `@${msg.forward_from.username}` : (msg.forward_from.first_name || `User ${msg.forward_from.id}`);
+        } else if (msg?.forward_from_chat) {
+          forwardSource = msg.forward_from_chat.title || msg.forward_from_chat.username || `Chat ${msg.forward_from_chat.id}`;
+        } else if (msg?.forward_sender_name) {
+          forwardSource = msg.forward_sender_name;
+        }
+
+        const rawText = ('text' in ctx.message ? ctx.message.text : ('caption' in ctx.message ? ctx.message.caption : '')) || '';
+
+        // Record message in storage so cleaner can purge it across all chats if needed
+        if (ctx.message && ctx.message.message_id) {
+          await recordChatMessage({
+            id: `${chatId}_${ctx.message.message_id}`,
+            messageId: ctx.message.message_id,
+            chatId,
+            userId: String(userId),
+            username: ctx.from.username,
+            firstName: ctx.from.first_name,
+            lastName: ctx.from.last_name,
+            text: rawText,
+            timestamp: new Date().toISOString(),
+            isForward,
+            forwardSource
+          });
+
+          // Check real-time cross-chat spam activity
+          await checkCrossChatActivity(
+            chatId,
+            {
+              id: Number(userId),
+              username: ctx.from.username,
+              first_name: ctx.from.first_name,
+              last_name: ctx.from.last_name
+            },
+            {
+              messageId: ctx.message.message_id,
+              text: rawText,
+              isForward,
+              forwardSource
+            }
+          );
+        }
+
         // Cache message author for reactions
         if (ctx.message && ctx.message.message_id) {
           messageAuthorCache.set(`${chatId}_${ctx.message.message_id}`, {
@@ -6213,8 +6861,8 @@ async function initBot(token: string) {
             }
           }
 
-          // Reputation Trigger: Gratitude replies / quotes
-          if (filters.reputationEnabled !== false && ctx.message && 'text' in ctx.message) {
+          // Reputation Trigger: Gratitude / Rating replies & quotes
+          if (filters.reputationEnabled !== false && ctx.message && ('text' in ctx.message || 'caption' in ctx.message)) {
             const replyTo = ctx.message.reply_to_message;
             const threadId = (ctx.message as any).message_thread_id;
             
@@ -6235,40 +6883,93 @@ async function initBot(token: string) {
               (replyTo as any).audio || (replyTo as any).sticker
             );
 
-            if (replyTo && replyTo.from && !replyTo.from.is_bot && replyTo.from.id !== ctx.from.id && !isAutomaticOrSystem && hasRepliedContent) {
-              const textRaw = ctx.message.text.trim();
-              const textLower = textRaw.toLowerCase();
-              const gratitudeRegex = /(^|\s)(спасибо|спс|благодарю|благодарствую|от души|сяп|спасибки|thx|thanks|thank you)([\s!?.,]|$)/i;
-              
-              // Only trigger if message is concise (<= 80 chars) and represents gratitude, or is a plus/thumbs up
-              const isGratitude = textRaw.length <= 80 && (
-                gratitudeRegex.test(textLower) || 
-                textRaw === '+' || textRaw === '+1' || textRaw === '👍' || textRaw === '🤝' || textRaw === '❤️' || textRaw === '🔥'
-              );
+            if (replyTo && replyTo.from && !replyTo.from.is_bot && !isAutomaticOrSystem && hasRepliedContent) {
+              const textRaw = ('text' in ctx.message ? ctx.message.text : ('caption' in ctx.message ? ctx.message.caption : ''))?.trim() || '';
+              const trimmed = textRaw.trim();
+              const lower = trimmed.toLowerCase();
 
-              if (isGratitude) {
-                const rep = await adjustUserReputation(
-                  String(replyTo.from.id),
-                  1,
-                  'Благодарность в сообщении',
-                  String(ctx.from.id),
-                  ctx.from.first_name || ctx.from.username || 'Пользователь',
-                  chatId,
-                  chat.title
-                );
+              // Positive reputation expressions
+              const posExact = new Set([
+                '+', '++', '+++', '+1', '+ 1', '+rep', '+ rep', '+реп', '+ реп', 
+                '+репутация', '+ репутация', '+карма', '+ карма', '+респект', '+ респект',
+                'респект', 'уважуха', 'красава', 'молодец', 'лайк', 'плюсую', 'плюс',
+                '👍', '🤝', '❤️', '🔥', '👏', '🏆', '💎', '⚡️'
+              ]);
+              const posRegex = /(^|\s)(спасибо|спс|благодарю|благодарствую|от души|сяп|спасибки|thx|thanks|thank you|дякую|сенкс|благодарочка)(\s|$|[!.,:;])/i;
+              const posPrefixRegex = /^(\+|плюс)(\s|rep|реп|респект|карма|1)/i;
 
-                const targetName = replyTo.from.first_name || (replyTo.from.username ? `@${replyTo.from.username}` : `User ${replyTo.from.id}`);
-                const scoreStr = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
+              // Negative reputation expressions
+              const negExact = new Set([
+                '-', '--', '---', '-1', '- 1', '-rep', '- rep', '-реп', '- реп', 
+                '-репутация', '- репутация', '-карма', '- карма', '-респект',
+                'дизлайк', 'фу', '👎', '💩', '🤡'
+              ]);
+              const negPrefixRegex = /^(\-|минус)(\s|rep|реп|диз|карма|1)/i;
 
-                try {
-                  await ctx.reply(
-                    `⭐️ *Репутация повышена!*\n` +
-                    `[${ctx.from.first_name}](tg://user?id=${ctx.from.id}) поблагодарил(а) [${targetName}](tg://user?id=${replyTo.from.id}) *(+1)*\n` +
-                    `📈 Текущая репутация: *${scoreStr}*`,
-                    { parse_mode: 'Markdown', reply_parameters: { message_id: ctx.message.message_id } }
-                  );
-                } catch (e) {
-                  console.error('Failed to send reputation gratitude reply:', e);
+              let repDelta = 0;
+              let repReason = '';
+
+              if (posExact.has(lower) || posPrefixRegex.test(lower) || (trimmed.length <= 80 && posRegex.test(lower))) {
+                repDelta = 1;
+                repReason = posRegex.test(lower) ? 'Благодарность в сообщении' : 'Повышение репутации (+1)';
+              } else if (negExact.has(lower) || negPrefixRegex.test(lower)) {
+                repDelta = -1;
+                repReason = 'Снижение репутации (-1)';
+              }
+
+              if (repDelta !== 0) {
+                // Prevent self-reputation
+                if (replyTo.from.id === ctx.from.id) {
+                  try {
+                    await ctx.reply('⚠️ Вы не можете изменять репутацию самому себе!', {
+                      reply_parameters: { message_id: ctx.message.message_id }
+                    });
+                  } catch (e) {}
+                } else {
+                  // Cooldown check (15 seconds between same pair)
+                  const repCooldownKey = `${ctx.from.id}_${replyTo.from.id}`;
+                  const lastRepTime = reputationCooldownMap.get(repCooldownKey) || 0;
+                  const now = Date.now();
+
+                  if (now - lastRepTime >= 15 * 1000) {
+                    reputationCooldownMap.set(repCooldownKey, now);
+
+                    const rep = await adjustUserReputation(
+                      String(replyTo.from.id),
+                      repDelta,
+                      repReason,
+                      String(ctx.from.id),
+                      ctx.from.first_name || ctx.from.username || 'Пользователь',
+                      chatId,
+                      chat.title
+                    );
+
+                    const targetName = replyTo.from.first_name || (replyTo.from.username ? `@${replyTo.from.username}` : `User ${replyTo.from.id}`);
+                    const scoreStr = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
+                    const deltaEmoji = repDelta > 0 ? '⭐️' : '🔻';
+                    const actionWord = repDelta > 0 ? 'повышена' : 'снижена';
+                    const deltaStr = repDelta > 0 ? `+${repDelta}` : `${repDelta}`;
+                    const verb = repDelta > 0 ? 'поблагодарил(а)' : 'поставил(а) минус';
+
+                    const replyHtml = 
+                      `${deltaEmoji} <b>Репутация ${actionWord}!</b> (<code>${deltaStr}</code>)\n` +
+                      `<a href="tg://user?id=${ctx.from.id}">${escapeHtml(ctx.from.first_name || 'Участник')}</a> ${verb} ` +
+                      `<a href="tg://user?id=${replyTo.from.id}">${escapeHtml(targetName)}</a>\n` +
+                      `📈 Текущая репутация: <b>${scoreStr}</b>`;
+
+                    try {
+                      await ctx.reply(replyHtml, {
+                        parse_mode: 'HTML',
+                        reply_parameters: { message_id: ctx.message.message_id }
+                      });
+                    } catch (replyErr) {
+                      try {
+                        await ctx.reply(replyHtml, { parse_mode: 'HTML' });
+                      } catch (e) {
+                        console.error('Failed to send reputation reply:', e);
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -6794,7 +7495,13 @@ async function initBot(token: string) {
               return false;
             });
             if (hasTelegramLink) violation = 'Telegram-ссылки запрещены';
-          } else if (!violation && effectiveFilters.blockForwards && ((ctx.message as any).forward_from || (ctx.message as any).forward_from_chat || (ctx.message as any).forward_date)) {
+          } else if (!violation && effectiveFilters.blockForwards && (
+            (ctx.message as any).forward_origin || 
+            (ctx.message as any).forward_from || 
+            (ctx.message as any).forward_from_chat || 
+            (ctx.message as any).forward_date || 
+            (ctx.message as any).forward_sender_name
+          )) {
             violation = 'Пересылки запрещены';
           } else if (!violation && effectiveFilters.blockMedia && (
             (ctx.message as any).photo || 
@@ -7598,16 +8305,41 @@ async function initBot(token: string) {
         return;
       }
 
-      if (data.startsWith('mc_ban_')) {
-        const targetUserId = data.replace('mc_ban_', '');
+      if (data.startsWith('mc_ban_clean_') || data.startsWith('mc_clean_') || data.startsWith('mc_ban_')) {
+        const isCleanOnly = data.startsWith('mc_clean_');
+        const isBanAndClean = data.startsWith('mc_ban_clean_');
+        const targetUserId = data.replace('mc_ban_clean_', '').replace('mc_clean_', '').replace('mc_ban_', '');
+        const adminTag = username ? `@${username}` : (ctx.from.first_name || 'Админ');
 
-        // Add user to global ban list
+        if (isCleanOnly) {
+          // Clean messages only without banning
+          const cleanRes = await cleanUserMessages(targetUserId, false);
+          await ctx.answerCbQuery(`🗑 Сообщения удалены (${cleanRes.deletedCount} сообщ. в ${cleanRes.chatsCount} чатах)!`);
+
+          const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
+          const updatedText = `${currentText}\n\n🧹 *СТАТУС:* Все сообщения удалены во всех чатах (${cleanRes.deletedCount} сообщ., ${adminTag}).`;
+
+          try {
+            await ctx.editMessageText(updatedText, {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '🚫 Заблокировать глобально', callback_data: `mc_ban_${targetUserId}` }],
+                  [{ text: '✅ В белый список', callback_data: `mc_wl_${targetUserId}` }]
+                ]
+              }
+            });
+          } catch (e) {}
+          return;
+        }
+
+        // Banning or Ban+Clean: Add user to global ban list
         const existingBanIndex = bans.findIndex(b => String(b.userId) === String(targetUserId));
         if (existingBanIndex === -1) {
           const newBan = {
             id: targetUserId,
             userId: targetUserId,
-            reason: 'Мультичат бан (через кнопку в Telegram)',
+            reason: isBanAndClean ? 'Спам в нескольких чатах (Бан + Очистка)' : 'Мультичат бан (через кнопку в Telegram)',
             createdAt: new Date().toISOString()
           };
           bans.push(newBan);
@@ -7621,12 +8353,12 @@ async function initBot(token: string) {
           queueDelete('whitelist', targetUserId);
         }
 
-        // Ban user in all active managed chats
+        // Ban user in all active managed chats with revoke_messages: true
         let bannedInChatsCount = 0;
         const userMembershipsList = memberships.filter(m => String(m.userId) === String(targetUserId));
         for (const m of userMembershipsList) {
           try {
-            await ctx.telegram.banChatMember(m.chatId, Number(targetUserId));
+            await ctx.telegram.banChatMember(m.chatId, Number(targetUserId), { revoke_messages: true } as any);
             bannedInChatsCount++;
           } catch (e) {
             console.error(`Failed to ban user ${targetUserId} in chat ${m.chatId}:`, e);
@@ -7634,11 +8366,21 @@ async function initBot(token: string) {
         }
 
         for (const chat of chats.filter(c => c.active)) {
-          if (!userMembershipsList.some(m => m.chatId === chat.id)) {
+          if (!userMembershipsList.some(m => String(m.chatId) === String(chat.id))) {
             try {
-              await ctx.telegram.banChatMember(chat.id, Number(targetUserId));
+              await ctx.telegram.banChatMember(chat.id, Number(targetUserId), { revoke_messages: true } as any);
               bannedInChatsCount++;
             } catch (e) {}
+          }
+        }
+
+        // Also purge tracked messages from database and memory
+        let cleanRes = null;
+        if (isBanAndClean) {
+          try {
+            cleanRes = await cleanUserMessages(targetUserId, false);
+          } catch (e) {
+            console.error('Failed to clean messages during mc_ban_clean:', e);
           }
         }
 
@@ -7648,14 +8390,14 @@ async function initBot(token: string) {
           type: 'BAN',
           user: `ID ${targetUserId}`,
           chat: 'MultiChat',
-          details: `Пользователь заблокирован во всех чатах (${bannedInChatsCount}) и добавлен в глобальный бан-лист.`
+          details: `Пользователь заблокирован во всех чатах (${bannedInChatsCount})${isBanAndClean ? ` и удалено ${cleanRes?.deletedCount || 0} сообщений` : ''} (${adminTag}).`
         });
 
-        await ctx.answerCbQuery('🚫 Пользователь заблокирован во всех чатах!');
+        await ctx.answerCbQuery(isBanAndClean ? '🚫 Пользователь забанен, все сообщения удалены!' : '🚫 Пользователь заблокирован во всех чатах!');
 
         const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
-        const adminTag = username ? `@${username}` : (ctx.from.first_name || 'Админ');
-        const updatedText = `${currentText}\n\n🛑 *СТАТУС:* Заблокирован в бан-листе (${adminTag}).`;
+        const cleanNotice = isBanAndClean ? ` + удалено ${cleanRes?.deletedCount || 0} сообщ.` : '';
+        const updatedText = `${currentText}\n\n🛑 *СТАТУС:* Заблокирован во всех чатах${cleanNotice} (${adminTag}).`;
 
         try {
           await ctx.editMessageText(updatedText, {
@@ -8211,7 +8953,36 @@ async function initBot(token: string) {
         const reactor = mr.user;
         if (!reactor || reactor.is_bot) return;
 
-        const cachedAuthor = messageAuthorCache.get(`${chatId}_${msgId}`);
+        let cachedAuthor = messageAuthorCache.get(`${chatId}_${msgId}`);
+        if (!cachedAuthor) {
+          // Fallback to chatMessages in memory
+          const cm = chatMessages.find(m => String(m.chatId) === chatId && Number(m.messageId) === Number(msgId));
+          if (cm) {
+            cachedAuthor = {
+              userId: cm.userId,
+              username: cm.username,
+              firstName: cm.firstName,
+              lastName: cm.lastName
+            };
+            messageAuthorCache.set(`${chatId}_${msgId}`, cachedAuthor);
+          } else {
+            // Fallback to Firestore chat_messages
+            try {
+              const doc = await db.collection('chat_messages').doc(`${chatId}_${msgId}`).get();
+              if (doc.exists) {
+                const data = doc.data()!;
+                cachedAuthor = {
+                  userId: String(data.userId),
+                  username: data.username,
+                  firstName: data.firstName,
+                  lastName: data.lastName
+                };
+                messageAuthorCache.set(`${chatId}_${msgId}`, cachedAuthor);
+              }
+            } catch (e) {}
+          }
+        }
+
         if (!cachedAuthor) return;
         if (String(reactor.id) === String(cachedAuthor.userId)) return; // Cannot react to own message
 

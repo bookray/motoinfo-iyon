@@ -4,16 +4,17 @@ import {
   ShieldAlert, UserX, UserCheck, Search, Filter, 
   ExternalLink, Ban, Trash2, Eye, EyeOff, UserPlus,
   Clock, MessageSquareOff, BellRing, Sparkles, Shield,
-  Layers, ChevronRight
+  Layers, ChevronRight, CheckCircle2, AlertTriangle, AlertCircle,
+  Loader2, X, RefreshCw
 } from 'lucide-react';
-import { GlobalBan, MultiChatUser, WhitelistEntry, LatestMember, Chat, ChatBan } from '../types';
+import { GlobalBan, MultiChatUser, WhitelistEntry, LatestMember, Chat, ChatBan, CleanUserMessagesResult, UserMessagesStats } from '../types';
 import { formatDate, formatDateTime } from '../src/utils/dateUtils';
 import { AntiScamKeywords } from './AntiScamKeywords';
 
 interface AntiScamProps {
   bans: GlobalBan[];
   chatBans: ChatBan[];
-  onBan: (userId: string, reason: string) => void;
+  onBan: (userId: string, reason: string, cleanMessages?: boolean) => void;
   onUnban: (userId: string) => void;
   onUnbanChat: (id: string) => void;
   multiChatUsers: MultiChatUser[];
@@ -30,7 +31,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
   bans, chatBans, onBan, onUnban, onUnbanChat, multiChatUsers, latestMembers, whitelist, onWhitelist, onRemoveFromWhitelist, chats,
   authenticatedFetch, currentUser
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'keywords' | 'chat_bans' | 'multichat' | 'global_bans' | 'latest_members'>('keywords');
+  const [activeSubTab, setActiveSubTab] = useState<'keywords' | 'chat_bans' | 'multichat' | 'cleaner' | 'global_bans' | 'latest_members'>('keywords');
   const [viewAll, setViewAll] = useState(false);
 
   const [banInput, setBanInput] = useState('');
@@ -38,7 +39,26 @@ export const AntiScam: React.FC<AntiScamProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [minChats, setMinChats] = useState(2);
   const [showWhitelisted, setShowWhitelisted] = useState(false);
-  const [hideBanned, setHideBanned] = useState(true);
+  const [hideBanned, setHideBanned] = useState(false);
+
+  // MultiChat Ban Modal state
+  const [banModalUser, setBanModalUser] = useState<MultiChatUser | null>(null);
+  const [banModalReason, setBanModalReason] = useState('Спам в нескольких чатах');
+  const [banModalCleanMessages, setBanModalCleanMessages] = useState(true);
+
+  // Direct Clean Modal state
+  const [cleanModalUser, setCleanModalUser] = useState<{ userId: string; name?: string; chatsCount?: number } | null>(null);
+  const [cleanModalExecuting, setCleanModalExecuting] = useState(false);
+  const [cleanModalResult, setCleanModalResult] = useState<CleanUserMessagesResult | null>(null);
+
+  // Cleaner Tab state
+  const [cleanerInput, setCleanerInput] = useState('');
+  const [cleanerStats, setCleanerStats] = useState<UserMessagesStats | null>(null);
+  const [cleanerLoadingStats, setCleanerLoadingStats] = useState(false);
+  const [cleanerAlsoBan, setCleanerAlsoBan] = useState(true);
+  const [cleanerBanReason, setCleanerBanReason] = useState('Массовый спам в нескольких чатах');
+  const [cleanerExecuting, setCleanerExecuting] = useState(false);
+  const [cleanerResult, setCleanerResult] = useState<CleanUserMessagesResult | null>(null);
 
   // Per-chat ban state
   const [chatBanInput, setChatBanInput] = useState('');
@@ -80,6 +100,89 @@ export const AntiScam: React.FC<AntiScamProps> = ({
       }
     } catch (e) {
       console.error(e);
+    }
+  };
+
+  const handleCleanerSearchStats = async () => {
+    if (!cleanerInput.trim() || !authenticatedFetch) return;
+    setCleanerLoadingStats(true);
+    setCleanerResult(null);
+    try {
+      const res = await authenticatedFetch(`/api/moderation/user-messages-stats/${encodeURIComponent(cleanerInput.trim())}`);
+      if (res.ok) {
+        const data = await res.json();
+        setCleanerStats(data);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Не удалось получить статистику сообщений');
+      }
+    } catch (e: any) {
+      alert(`Ошибка: ${e?.message || e}`);
+    } finally {
+      setCleanerLoadingStats(false);
+    }
+  };
+
+  const handleCleanerExecute = async (targetId?: string, forceAlsoBan?: boolean, reason?: string) => {
+    const target = targetId || cleanerInput.trim();
+    if (!target || !authenticatedFetch) return;
+    setCleanerExecuting(true);
+    try {
+      const res = await authenticatedFetch('/api/moderation/clean-user-messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: target,
+          alsoBan: forceAlsoBan !== undefined ? forceAlsoBan : cleanerAlsoBan,
+          banReason: reason || cleanerBanReason
+        })
+      });
+      if (res.ok) {
+        const data: CleanUserMessagesResult = await res.json();
+        setCleanerResult(data);
+        if (cleanerStats && cleanerStats.userId === data.userId) {
+          setCleanerStats({ ...cleanerStats, totalMessages: 0, chats: [] });
+        }
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Ошибка при очистке сообщений');
+      }
+    } catch (e: any) {
+      alert(`Ошибка: ${e?.message || e}`);
+    } finally {
+      setCleanerExecuting(false);
+    }
+  };
+
+  const handleConfirmBanModal = () => {
+    if (!banModalUser) return;
+    onBan(banModalUser.userId, banModalReason, banModalCleanMessages);
+    setBanModalUser(null);
+  };
+
+  const handleConfirmCleanModal = async () => {
+    if (!cleanModalUser || !authenticatedFetch) return;
+    setCleanModalExecuting(true);
+    try {
+      const res = await authenticatedFetch('/api/moderation/clean-user-messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: cleanModalUser.userId,
+          alsoBan: false
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCleanModalResult(data);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(err.error || 'Ошибка при очистке сообщений');
+      }
+    } catch (e: any) {
+      alert(`Ошибка: ${e?.message || e}`);
+    } finally {
+      setCleanModalExecuting(false);
     }
   };
 
@@ -152,6 +255,19 @@ export const AntiScam: React.FC<AntiScamProps> = ({
             }`}>
               {multiChatUsers.length}
             </span>
+          </button>
+
+          <button 
+            type="button"
+            onClick={() => { setActiveSubTab('cleaner'); setViewAll(false); }}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
+              !viewAll && activeSubTab === 'cleaner'
+                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            <Trash2 className="w-4 h-4 text-rose-300" />
+            <span>Чистильщик</span>
           </button>
 
           <button 
@@ -526,8 +642,23 @@ export const AntiScam: React.FC<AntiScamProps> = ({
                           {user.firstName ? user.firstName[0] : '?'}
                         </div>
                         <div>
-                          <p className="text-sm font-bold text-white">{user.firstName || 'Unknown'}</p>
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <p className="text-sm font-bold text-white">{user.firstName || 'Unknown'}</p>
+                            {user.hasRecentSpam && (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold animate-pulse">
+                                🚨 СПАМ
+                              </span>
+                            )}
+                            {user.hasForwards && (
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px]">
+                                ↪️ Пересылки
+                              </span>
+                            )}
+                          </div>
                           <p className="text-xs font-mono text-blue-400">{user.username || user.userId}</p>
+                          {user.messageCount ? (
+                            <p className="text-[10px] text-slate-500">Сообщений в чатах: {user.messageCount}</p>
+                          ) : null}
                         </div>
                       </div>
                     </td>
@@ -562,13 +693,30 @@ export const AntiScam: React.FC<AntiScamProps> = ({
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex items-center justify-end gap-2">
+                        {/* Quick Cleaner Button */}
+                        <button
+                          onClick={() => {
+                            setCleanModalResult(null);
+                            setCleanModalUser({ userId: user.userId, name: user.firstName, chatsCount: user.chats.length });
+                          }}
+                          className="p-2 text-slate-500 hover:text-amber-400 hover:bg-amber-400/10 rounded-lg transition-all"
+                          title="Очистить все сообщения пользователя во всех чатах"
+                        >
+                          <Trash2 className="w-4 h-4 text-amber-400" />
+                        </button>
+
+                        {/* Ban button - opens confirmation modal with clean option */}
                         {!user.isBanned && (
                           <button 
-                            onClick={() => onBan(user.userId, 'Обнаружен в нескольких чатах')}
+                            onClick={() => {
+                              setBanModalUser(user);
+                              setBanModalReason('Спам в нескольких чатах');
+                              setBanModalCleanMessages(true);
+                            }}
                             className="p-2 text-slate-500 hover:text-rose-400 hover:bg-rose-400/10 rounded-lg transition-all"
-                            title="Забанить глобально"
+                            title="Забанить во всех чатах"
                           >
-                            <Ban className="w-5 h-5" />
+                            <Ban className="w-5 h-5 text-rose-400" />
                           </button>
                         )}
                         
@@ -608,7 +756,182 @@ export const AntiScam: React.FC<AntiScamProps> = ({
       </div>
       )}
 
-      {/* Latest Joined Members Section */}
+      {/* Message Cleaner Section */}
+      {(viewAll || activeSubTab === 'cleaner') && (
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl animate-in slide-in-from-top-4 duration-500">
+        <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-rose-500/20 rounded-xl border border-rose-500/30">
+              <Trash2 className="w-5 h-5 text-rose-400" />
+            </div>
+            <div>
+              <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                Чистильщик сообщений
+                <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-300 border border-rose-500/20">
+                  Все чаты
+                </span>
+              </h3>
+              <p className="text-xs text-slate-400">
+                Быстрое удаление всех сообщений конкретного пользователя во всех подключенных чатах одновременно (при спаме или рейдах).
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="p-6 space-y-6">
+          {/* Input & Form */}
+          <div className="bg-slate-950/70 p-5 rounded-xl border border-slate-800 space-y-4">
+            <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider">
+              ID или @username пользователя для очистки:
+            </label>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <input
+                type="text"
+                value={cleanerInput}
+                onChange={(e) => setCleanerInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') handleCleanerSearchStats(); }}
+                placeholder="Например: 123456789 или @spammer"
+                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-rose-500/50 transition-all font-mono"
+              />
+              <button
+                type="button"
+                onClick={handleCleanerSearchStats}
+                disabled={cleanerLoadingStats || !cleanerInput.trim()}
+                className="px-5 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs flex items-center justify-center gap-2 transition-all disabled:opacity-50"
+              >
+                {cleanerLoadingStats ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4 text-blue-400" />}
+                <span>Найти сообщения</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCleanerExecute()}
+                disabled={cleanerExecuting || !cleanerInput.trim()}
+                className="px-6 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center justify-center gap-2 shadow-lg shadow-rose-600/30 transition-all disabled:opacity-50"
+              >
+                {cleanerExecuting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                <span>Очистить все сообщения</span>
+              </button>
+            </div>
+
+            {/* Options */}
+            <div className="flex flex-wrap items-center gap-6 pt-2 border-t border-slate-800/80">
+              <label className="flex items-center gap-2.5 cursor-pointer text-xs text-slate-300 hover:text-white select-none">
+                <input
+                  type="checkbox"
+                  checked={cleanerAlsoBan}
+                  onChange={(e) => setCleanerAlsoBan(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-900 text-rose-600 focus:ring-rose-500/30 w-4 h-4"
+                />
+                <span className="font-semibold text-rose-300">Также заблокировать пользователя во всех чатах (Глобальный бан)</span>
+              </label>
+
+              {cleanerAlsoBan && (
+                <div className="flex items-center gap-2 flex-1 min-w-[240px]">
+                  <span className="text-xs text-slate-500 shrink-0">Причина:</span>
+                  <input
+                    type="text"
+                    value={cleanerBanReason}
+                    onChange={(e) => setCleanerBanReason(e.target.value)}
+                    placeholder="Причина блокировки"
+                    className="flex-1 bg-slate-900 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-slate-200 focus:outline-none focus:ring-1 focus:ring-rose-500"
+                  />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Cleaner Stats Result (Preview) */}
+          {cleanerStats && (
+            <div className="bg-slate-950 p-5 rounded-xl border border-slate-800 space-y-4 animate-in fade-in duration-300">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-9 h-9 bg-slate-800 rounded-full flex items-center justify-center text-slate-300 font-bold border border-slate-700 text-sm">
+                    {cleanerStats.firstName ? cleanerStats.firstName[0] : '?'}
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-white">
+                      {cleanerStats.firstName || `Пользователь ${cleanerStats.userId}`}
+                      {cleanerStats.username ? ` (@${cleanerStats.username})` : ''}
+                    </h4>
+                    <p className="text-xs text-slate-400 font-mono">ID: {cleanerStats.userId}</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  <span className="px-3 py-1 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-300 text-xs font-bold">
+                    Найдено сообщений: {cleanerStats.totalMessages}
+                  </span>
+                  <span className="px-3 py-1 rounded-lg bg-slate-800 text-slate-300 text-xs font-bold">
+                    Чатов: {cleanerStats.chats.length}
+                  </span>
+                </div>
+              </div>
+
+              {cleanerStats.chats.length > 0 ? (
+                <div className="overflow-x-auto rounded-lg border border-slate-800/80">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-slate-900 text-slate-400 border-b border-slate-800 text-[10px] font-bold uppercase tracking-wider">
+                        <th className="px-4 py-2.5">Чат</th>
+                        <th className="px-4 py-2.5">Кол-во сообщений</th>
+                        <th className="px-4 py-2.5">Последняя активность</th>
+                        <th className="px-4 py-2.5">Пример текста</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/50">
+                      {cleanerStats.chats.map((c) => (
+                        <tr key={c.chatId} className="hover:bg-slate-900/50 transition-colors">
+                          <td className="px-4 py-2.5 font-medium text-slate-200">{c.chatTitle}</td>
+                          <td className="px-4 py-2.5">
+                            <span className="px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-bold">
+                              {c.count} сообщ.
+                            </span>
+                          </td>
+                          <td className="px-4 py-2.5 text-slate-400 text-[11px]">
+                            {c.lastMessageDate ? formatDateTime(c.lastMessageDate) : '—'}
+                          </td>
+                          <td className="px-4 py-2.5 text-slate-400 truncate max-w-[280px] font-mono text-[11px]">
+                            {c.lastText || '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 italic py-2">
+                  Активных сообщений пользователя в базе не обнаружено.
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Cleaner Execution Result */}
+          {cleanerResult && (
+            <div className="p-5 rounded-xl bg-emerald-950/40 border border-emerald-500/40 space-y-3 animate-in fade-in duration-300">
+              <div className="flex items-center gap-2.5 text-emerald-400 font-bold text-sm">
+                <CheckCircle2 className="w-5 h-5 shrink-0" />
+                <span>Очистка сообщений успешно выполнена!</span>
+              </div>
+              <p className="text-xs text-emerald-200">
+                Пользователь <code>{cleanerResult.userId}</code>: удалено <b>{cleanerResult.deletedCount}</b> сообщений в <b>{cleanerResult.chatsCount}</b> чатах.
+                {cleanerResult.bannedGlobally && ' Пользователь также заблокирован во всех подключенных чатах.'}
+              </p>
+              {cleanerResult.chatDetails && cleanerResult.chatDetails.length > 0 && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  {cleanerResult.chatDetails.map((cd) => (
+                    <span key={cd.chatId} className="px-2.5 py-1 rounded bg-slate-900 border border-emerald-500/30 text-[11px] text-emerald-300 flex items-center gap-1.5 font-medium">
+                      <span>{cd.chatTitle}:</span>
+                      <span className="font-bold">{cd.deletedCount} сообщ.</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      )}
       {(viewAll || activeSubTab === 'latest_members') && (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex items-center gap-3">
@@ -686,6 +1009,178 @@ export const AntiScam: React.FC<AntiScamProps> = ({
         </div>
       </div>
       )}
+      {/* Ban with Clean Messages Modal */}
+      {banModalUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-rose-500/20 rounded-xl border border-rose-500/30">
+                  <Ban className="w-5 h-5 text-rose-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Блокировка в нескольких чатах</h3>
+                  <p className="text-xs text-slate-400">Глобальный бан пользователя во всех подключенных группах</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setBanModalUser(null)}
+                className="p-1 text-slate-500 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400">Пользователь:</span>
+                <span className="text-xs font-bold text-white">{banModalUser.firstName || 'Без имени'}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400">Логин / ID:</span>
+                <span className="text-xs font-mono text-blue-400">{banModalUser.username || banModalUser.userId}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-slate-400">Состоит в чатах:</span>
+                <span className="text-xs font-bold text-amber-400">{banModalUser.chats.length} чат(-ов)</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-xs font-bold text-slate-300">Причина блокировки:</label>
+              <input
+                type="text"
+                value={banModalReason}
+                onChange={(e) => setBanModalReason(e.target.value)}
+                placeholder="Причина бана"
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-sm text-slate-200 focus:outline-none focus:ring-2 focus:ring-rose-500/50"
+              />
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30">
+              <label className="flex items-start gap-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={banModalCleanMessages}
+                  onChange={(e) => setBanModalCleanMessages(e.target.checked)}
+                  className="mt-0.5 rounded border-rose-500/40 bg-slate-900 text-rose-600 focus:ring-rose-500/30 w-4 h-4"
+                />
+                <div>
+                  <span className="text-xs font-bold text-rose-300 block">
+                    Очистить все его сообщения во всех чатах?
+                  </span>
+                  <span className="text-[11px] text-slate-400 block mt-0.5">
+                    Удалит отправленные им сообщения из Telegram во всех управляемых чатах (рекомендуется для спамеров).
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setBanModalUser(null)}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs transition-all"
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBanModal}
+                className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all"
+              >
+                <Ban className="w-4 h-4" />
+                <span>{banModalCleanMessages ? 'Заблокировать и очистить' : 'Только заблокировать'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Direct Clean Confirmation Modal */}
+      {cleanModalUser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-amber-500/20 rounded-xl border border-amber-500/30">
+                  <Trash2 className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Очистка сообщений пользователя</h3>
+                  <p className="text-xs text-slate-400">Удаление сообщений во всех чатах</p>
+                </div>
+              </div>
+              <button
+                onClick={() => { setCleanModalUser(null); setCleanModalResult(null); }}
+                className="p-1 text-slate-500 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {!cleanModalResult ? (
+              <>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  Вы уверены, что хотите удалить все сообщения пользователя{' '}
+                  <span className="font-bold text-white">{cleanModalUser.name || `ID: ${cleanModalUser.userId}`}</span>{' '}
+                  во всех подключенных чатах?
+                </p>
+
+                <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs text-slate-400 space-y-1">
+                  <div>ID пользователя: <code className="text-blue-400">{cleanModalUser.userId}</code></div>
+                  {cleanModalUser.chatsCount && (
+                    <div>Подключенных чатов: <span className="text-slate-200 font-bold">{cleanModalUser.chatsCount}</span></div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setCleanModalUser(null)}
+                    disabled={cleanModalExecuting}
+                    className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-semibold text-xs transition-all disabled:opacity-50"
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmCleanModal}
+                    disabled={cleanModalExecuting}
+                    className="px-5 py-2.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-rose-600/30 transition-all disabled:opacity-50"
+                  >
+                    {cleanModalExecuting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                    <span>Удалить все сообщения</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="space-y-4">
+                <div className="p-4 rounded-xl bg-emerald-950/40 border border-emerald-500/40 space-y-2">
+                  <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm">
+                    <CheckCircle2 className="w-5 h-5" />
+                    <span>Сообщения успешно удалены!</span>
+                  </div>
+                  <p className="text-xs text-emerald-200">
+                    Удалено <b>{cleanModalResult.deletedCount}</b> сообщений в <b>{cleanModalResult.chatsCount}</b> чатах.
+                  </p>
+                </div>
+                <div className="flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => { setCleanModalUser(null); setCleanModalResult(null); }}
+                    className="px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-xs transition-all"
+                  >
+                    Закрыть
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
+export default AntiScam;

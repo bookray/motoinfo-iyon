@@ -90,11 +90,44 @@ export interface MultiChatUser {
   username?: string;
   firstName?: string;
   lastName?: string;
-  chatIds: string[];
-  chatCount: number;
-  chats?: string[];
+  chatIds?: string[];
+  chatCount?: number;
+  chats: Array<{ id: string; title: string }>;
   isWhitelisted?: boolean;
   isBanned?: boolean;
+  messageCount?: number;
+  lastMessageTime?: string;
+  lastSeen?: string;
+  hasRecentSpam?: boolean;
+  hasForwards?: boolean;
+}
+
+export interface CleanUserMessagesResult {
+  success: boolean;
+  userId: string;
+  deletedCount: number;
+  chatsCount: number;
+  chatDetails: Array<{
+    chatId: string;
+    chatTitle: string;
+    deletedCount: number;
+    error?: string;
+  }>;
+  bannedGlobally?: boolean;
+}
+
+export interface UserMessagesStats {
+  userId: string;
+  username?: string;
+  firstName?: string;
+  totalMessages: number;
+  chats: Array<{
+    chatId: string;
+    chatTitle: string;
+    count: number;
+    lastMessageDate?: string;
+    lastText?: string;
+  }>;
 }
 
 export interface AntiScamKeywordConfig {

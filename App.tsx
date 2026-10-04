@@ -402,14 +402,19 @@ const App: React.FC = () => {
     } catch (e) { console.error(e); }
   };
 
-  const handleBan = async (userId: string, reason: string) => {
+  const handleBan = async (userId: string, reason: string, cleanMessages = false) => {
     try {
       const res = await authenticatedFetch(`${API_BASE_URL}/bans`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, reason })
+        body: JSON.stringify({ userId, reason, cleanMessages })
       });
-      if (res.ok) setBans([...bans, await res.json()]);
+      if (res.ok) {
+        setBans([...bans, await res.json()]);
+        // Refresh multi-chat users to update their banned status
+        const multiChatRes = await authenticatedFetch(`${API_BASE_URL}/memberships/multi-chat`);
+        if (multiChatRes.ok) setMultiChatUsers(await multiChatRes.json());
+      }
     } catch (e) { console.error(e); }
   };
 

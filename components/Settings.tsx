@@ -23,7 +23,9 @@ import {
   Calendar,
   Smartphone,
   Copy,
-  Check
+  Check,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 
 interface SettingsProps {
@@ -33,6 +35,7 @@ interface SettingsProps {
 
 export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }) => {
   const [localSettings, setLocalSettings] = useState<BotSettings>(settings);
+  const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
@@ -758,12 +761,21 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
               <div className="relative">
                 <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
                 <input
-                  type="password"
+                  type={showAdminPassword ? 'text' : 'password'}
                   value={localSettings.adminPassword || ''}
                   onChange={(e) => setLocalSettings({ ...localSettings, adminPassword: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-11 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all text-sm"
                   placeholder="Оставьте пустым, чтобы не менять"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowAdminPassword(!showAdminPassword)}
+                  className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-400 hover:text-white transition-colors cursor-pointer"
+                  title={showAdminPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                  tabIndex={-1}
+                >
+                  {showAdminPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+                </button>
               </div>
             </div>
 
