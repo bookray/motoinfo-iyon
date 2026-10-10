@@ -181,6 +181,12 @@ export interface FilterSettings {
   warnLimit: number;
   warnAction?: 'BAN' | 'MUTE';
   reputationEnabled?: boolean;
+  reputationNotifyChatId?: string;
+  reputationNotifyInGroup?: boolean;
+  reputationNotifyInAdminChat?: boolean;
+  reputationNotifyInDm?: boolean;
+  muteReputationChangeMessages?: boolean;
+  reputationDailyDigestEnabled?: boolean;
   requireChannelSubscription?: boolean;
   channelSubscriptionTarget?: string;
   channelSubscriptionMessage?: string;
@@ -284,6 +290,24 @@ export interface User {
   telegramUser?: { id: number; username?: string; firstName?: string; first_name?: string };
 }
 
+export interface CompanionBotSettings {
+  enabled: boolean;
+  botToken: string;
+  botUsername?: string;
+  botName?: string;
+  replyProbability: number; // 1..100%
+  replyToDirectMentions: boolean;
+  replyToQuestions: boolean;
+  minDelayBetweenRepliesSeconds: number;
+  humorLevel: 'none' | 'light' | 'high' | 'sarcastic';
+  banterLevel: 'none' | 'friendly' | 'sharp';
+  personaPreset: 'biker_veteran' | 'friendly_mate' | 'witty_expert' | 'provocateur' | 'custom';
+  customSystemPrompt?: string;
+  model: string;
+  enabledChatIds?: string[];
+  useContextCount: number;
+}
+
 export interface BotSettings {
   botToken: string;
   adminPassword?: string;
@@ -313,7 +337,15 @@ export interface BotSettings {
   customAiApiKey?: string;
   customAiModel?: string;
   reputationEnabled?: boolean;
+  reputationNotifyChatId?: string;
+  reputationNotifyInGroup?: boolean;
+  reputationNotifyInAdminChat?: boolean;
+  reputationNotifyInDm?: boolean;
+  muteReputationChangeMessages?: boolean;
+  reputationDailyDigestEnabled?: boolean;
   timezoneOffset?: number;
+  // Second Bot (AI Companion / Chat Assistant)
+  companionBot?: CompanionBotSettings;
 }
 
 export interface ChatBan {

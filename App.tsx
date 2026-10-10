@@ -847,6 +847,7 @@ const App: React.FC = () => {
               {activeTab === Tab.SETTINGS && (
                 <Settings 
                   settings={settings} 
+                  chats={chats}
                   onUpdateSettings={handleUpdateSettings} 
                 />
               )}

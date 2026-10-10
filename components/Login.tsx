@@ -12,6 +12,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin, telegramError }) => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showManualLogin, setShowManualLogin] = useState(false);
   const [error, setError] = useState<string | null>(telegramError || null);
   const [isLoading, setIsLoading] = useState(false);
   const [isTelegramLoading, setIsTelegramLoading] = useState(false);
@@ -186,6 +187,15 @@ export const Login: React.FC<LoginProps> = ({ onLogin, telegramError }) => {
                   </button>
                 </div>
               )}
+
+              <button
+                type="button"
+                onClick={() => setShowManualLogin(!showManualLogin)}
+                className="w-full text-center text-xs text-slate-400 hover:text-slate-200 transition-colors py-1 flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>{showManualLogin ? 'Скрыть вход по логину' : 'Или войти по логину и паролю'}</span>
+              </button>
             </div>
           )}
 
@@ -196,7 +206,7 @@ export const Login: React.FC<LoginProps> = ({ onLogin, telegramError }) => {
             </div>
           )}
 
-          {!hasTgInitData && (
+          {(!hasTgInitData || showManualLogin) && (
             <form onSubmit={handleSubmit} className="space-y-5">
               <div className="relative flex py-1 items-center">
                 <div className="flex-grow border-t border-slate-800"></div>

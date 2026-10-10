@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { UserPlus, Shield, User, Trash2, Key, Mail, CheckCircle2, XCircle, AlertCircle, Loader2, Search, Filter, Plus, X, Edit2, ShieldAlert, ShieldCheck } from 'lucide-react';
+import { UserPlus, Shield, User, Trash2, Key, Mail, CheckCircle2, XCircle, AlertCircle, Loader2, Search, Filter, Plus, X, Edit2, ShieldAlert, ShieldCheck, Eye, EyeOff } from 'lucide-react';
 import { User as UserType, UserRole, Chat } from '../types';
 import { formatDate } from '../src/utils/dateUtils';
 
@@ -16,6 +16,7 @@ export const UserManagement: React.FC<UserManagementProps> = ({ chats }) => {
   const [editingUser, setEditingUser] = useState<UserType | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<UserRole | 'ALL'>('ALL');
+  const [showPassword, setShowPassword] = useState(false);
 
   // Form state
   const [formData, setFormData] = useState({
@@ -324,13 +325,25 @@ export const UserManagement: React.FC<UserManagementProps> = ({ chats }) => {
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-slate-300">Пароль {editingUser && '(оставьте пустым, чтобы не менять)'}</label>
-                  <input 
-                    type="password" 
-                    required={!editingUser}
-                    value={formData.password}
-                    onChange={(e) => setFormData({...formData, password: e.target.value})}
-                    className="w-full px-4 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-600 transition-all"
-                  />
+                  <div className="relative">
+                    <input 
+                      type={showPassword ? 'text' : 'password'} 
+                      required={!editingUser}
+                      value={formData.password}
+                      onChange={(e) => setFormData({...formData, password: e.target.value})}
+                      className="w-full pl-4 pr-10 py-2 bg-slate-950 border border-slate-800 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-blue-600 transition-all text-sm"
+                      placeholder={editingUser ? '••••••••' : 'Введите пароль'}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-white transition-colors cursor-pointer"
+                      title={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                      tabIndex={-1}
+                    >
+                      {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    </button>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-slate-300">Роль</label>

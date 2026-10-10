@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
-import { FilterSettings, Chat, BotSettings, ActiveMuteEntry } from './types';
+import { FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings } from './types';
 import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 import { buildExportXml, saveXmlExportToFile, getLatestExportXml, getExportMetadata } from './xmlExport';
 
@@ -380,6 +380,8 @@ async function generateAIResponse(promptText: string, options?: { model?: string
 
   throw lastErr;
 }
+
+const callAiService = generateAIResponse;
 
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
@@ -904,6 +906,12 @@ app.post('/api/telegram-menu-button', authenticateToken, async (req, res) => {
     }
     const targetUrl = req.body.webAppUrl || getEffectiveWebAppUrl(req.headers.origin);
     
+    const now = Date.now();
+    if (now < menuButtonRetryAfterUntil) {
+      const waitSec = Math.ceil((menuButtonRetryAfterUntil - now) / 1000);
+      return res.status(429).json({ error: `Telegram временно ограничил запросы (429). Попробуйте снова через ${waitSec} сек.` });
+    }
+
     await (bot.telegram as any).setChatMenuButton({
       menu_button: {
         type: 'web_app',
@@ -912,9 +920,23 @@ app.post('/api/telegram-menu-button', authenticateToken, async (req, res) => {
       }
     });
 
+    lastSetMenuButtonUrl = targetUrl;
+    settings.lastSetMenuButtonUrl = targetUrl;
+    db.collection('config').doc('settings').update({ lastSetMenuButtonUrl: targetUrl }).catch(() => {});
+
     console.log(`[Bot] Successfully set Chat Menu Button to: ${targetUrl}`);
     res.json({ success: true, message: 'Кнопка меню бота в Telegram успешно настроена!', webAppUrl: targetUrl });
   } catch (e: any) {
+    const errMsg = String(e?.message || e);
+    const is429 = e?.response?.error_code === 429 || errMsg.includes('429') || errMsg.includes('Too Many Requests');
+    if (is429) {
+      const retrySec = Number(e?.parameters?.retry_after) || 900;
+      menuButtonRetryAfterUntil = Date.now() + (retrySec * 1000);
+      settings.menuButtonRetryAfterUntil = menuButtonRetryAfterUntil;
+      db.collection('config').doc('settings').update({ menuButtonRetryAfterUntil }).catch(() => {});
+      console.log(`[Bot] Chat Menu Button rate-limited by Telegram (429). Backing off for ${retrySec}s.`);
+      return res.status(429).json({ error: `Telegram временно ограничил настройку кнопки (429). Повторите через ${Math.ceil(retrySec / 60)} мин.` });
+    }
     console.error('Failed to set chat menu button in Telegram:', e);
     res.status(500).json({ error: 'Ошибка установки кнопки меню: ' + (e.message || e) });
   }
@@ -1984,6 +2006,11 @@ app.put('/api/settings', authenticateToken, async (req, res) => {
       console.log('Bot token or Telegram API Root updated, auto-reinitializing bot instance...');
       await initBot(newSettings.botToken);
     }
+
+    if (newSettings.companionBot !== undefined) {
+      console.log('Companion bot settings updated, re-evaluating companion bot instance...');
+      await initCompanionBot(newSettings.companionBot);
+    }
     
     await addLog({
       id: Math.random().toString(36).substr(2, 9),
@@ -2726,6 +2753,111 @@ app.delete(['/api/reputation/:userId', '/api/reputation/:userId/reset'], authent
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+// Test Reputation Notification to Telegram Info Chat
+app.post('/api/reputation/test-notify', authenticateToken, async (req, res) => {
+  try {
+    if (!bot) {
+      return res.status(503).json({ error: 'Основной Telegram бот не запущен. Проверьте токен бота в настройках.' });
+    }
+
+    const customTarget = req.body.chatId ? String(req.body.chatId).trim() : '';
+    const targetChatId = customTarget || (settings as any).reputationNotifyChatId || (filters as any).reputationNotifyChatId || settings.infoChatId || antiScamKeywordsConfig.notifyChatId || process.env.BOOKRAY_CHAT_ID;
+
+    if (!targetChatId) {
+      return res.status(400).json({ 
+        error: 'Не указан ID чата для оповещений. Укажите ID в поле «Чат для уведомлений о репутации» или установите infoChatId.' 
+      });
+    }
+
+    const testMsg = 
+      `⭐️ <b>Тестовое уведомление репутации (+1)</b>\n\n` +
+      `👤 <b>Кому:</b> <a href="tg://user?id=12345678">Тестовый Байкер</a> (@test_rider)\n` +
+      `✍️ <b>От кого:</b> Администратор (${escapeHtml((req as any).user?.username || 'Admin')})\n` +
+      `📍 <b>Чат:</b> <i>Тестовый чат</i>\n` +
+      `💬 <b>Причина:</b> Проверка доставки уведомлений из панели управления\n` +
+      `📈 <b>Текущий рейтинг:</b> <code>+10</code>\n` +
+      `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
+
+    const sent = await bot.telegram.sendMessage(targetChatId, testMsg, { parse_mode: 'HTML' });
+    res.json({ success: true, messageId: sent.message_id, targetChatId });
+  } catch (err: any) {
+    console.error('Failed to send test reputation notification:', err);
+    res.status(500).json({ error: err.message || 'Ошибка отправки тестового уведомления' });
+  }
+});
+
+// Companion Bot (Second Bot) API Endpoints
+app.post('/api/companion-bot/verify', authenticateToken, async (req, res) => {
+  try {
+    const { botToken } = req.body;
+    if (!botToken || !String(botToken).trim()) {
+      return res.status(400).json({ error: 'Токен бота не указан' });
+    }
+
+    const token = String(botToken).trim();
+    const apiRoot = settings.telegramApiRoot || process.env.TELEGRAM_API_ROOT;
+    const telegrafOptions: any = { handlerTimeout: 15000 };
+    if (apiRoot) {
+      telegrafOptions.telegram = { apiRoot: apiRoot.replace(/\/$/, '') };
+    }
+
+    const tempBot = new Telegraf(token, telegrafOptions);
+    const me = await tempBot.telegram.getMe();
+    
+    res.json({
+      success: true,
+      bot: {
+        id: me.id,
+        username: me.username,
+        firstName: me.first_name,
+        canJoinGroups: me.can_join_groups,
+        canReadAllGroupMessages: me.can_read_all_group_messages
+      }
+    });
+  } catch (err: any) {
+    console.error('Failed to verify companion bot token:', err);
+    res.status(400).json({ error: err.message || 'Не удалось проверить токен Telegram бота. Проверьте правильность токена.' });
+  }
+});
+
+app.post('/api/companion-bot/test', authenticateToken, async (req, res) => {
+  try {
+    const { prompt, settings: customSettings, chatTitle } = req.body;
+    const targetSettings = customSettings || (settings as any).companionBot || {};
+
+    const dummyMessage = {
+      sender: 'УчастникЧАТА',
+      text: prompt || 'Привет всем! Подскажите, какое масло лучше лить в вилку Honda CBR?'
+    };
+    const dummyHistory = [
+      { sender: 'Михаил', text: 'Здорово мужики, сезон скоро закрывать' },
+      { sender: 'Алексей', text: 'Да еще катаем во всю, погода отличная!' }
+    ];
+
+    const reply = await generateCompanionBotResponse(
+      chatTitle || 'Yamaha & Honda Моточат',
+      dummyMessage,
+      dummyHistory,
+      targetSettings
+    );
+
+    res.json({ success: true, reply, prompt: dummyMessage.text });
+  } catch (err: any) {
+    console.error('Failed to generate companion test response:', err);
+    res.status(500).json({ error: err.message || 'Ошибка генерации ответа через Gemini' });
+  }
+});
+
+app.get('/api/companion-bot/status', authenticateToken, (req, res) => {
+  const cfg = (settings as any).companionBot;
+  res.json({
+    enabled: Boolean(cfg?.enabled),
+    isRunning: Boolean(companionBot && isCompanionBotPollingActive),
+    botInfo: companionBotInfo,
+    repliesCount: companionBotRepliesCount
+  });
 });
 
 // Warnings API Endpoints
@@ -4785,7 +4917,8 @@ function formatSummaryForTelegramHtml(
   text: string, 
   blackListPosts?: BlackListPost[], 
   chatTitle?: string, 
-  expectedDateStr?: string
+  expectedDateStr?: string,
+  reputationSummaryHtml?: string
 ): string {
   if (!text) return '';
   let out = text;
@@ -4843,6 +4976,11 @@ function formatSummaryForTelegramHtml(
   // Safety sweep: replace any residual hallucinated dates (e.g. 2024, 2023, 2025) in calendar lines anywhere in the text
   out = out.replace(/(?:📅|🗓️)\s*(?:<i>)?[^\n]*?(?:202[0-5]|201\d)[^\n]*?(?:<\/i>)?/gi, headerDate);
 
+  // If daily reputation summary is enabled and available for this period
+  if (reputationSummaryHtml && !out.includes('Итоги изменения репутации') && !out.includes('Итоги репутации')) {
+    out += `\n\n${reputationSummaryHtml}`;
+  }
+
   // If MotoBlackList has recent posts and not already mentioned in summary
   if (blackListPosts && blackListPosts.length > 0 && !out.includes('MotoBlackList')) {
     const latestPost = blackListPosts[blackListPosts.length - 1];
@@ -4851,6 +4989,106 @@ function formatSummaryForTelegramHtml(
   }
 
   return out.trim();
+}
+
+function getDailyReputationSummaryHtml(chatIdStr: string, hoursBack = 24): string {
+  const isEnabled = (settings as any).reputationDailyDigestEnabled !== false && (filters as any).reputationDailyDigestEnabled !== false;
+  if (!isEnabled) return '';
+
+  const cutoffTime = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
+  
+  interface RepEvent {
+    userId: string;
+    username?: string;
+    fullName: string;
+    delta: number;
+    reason: string;
+    fromName: string;
+    timestamp: string;
+    currentScore: number;
+  }
+
+  const events: RepEvent[] = [];
+
+  for (const rep of reputations) {
+    if (!rep.history || !Array.isArray(rep.history)) continue;
+    const targetFullName = [rep.firstName, rep.lastName].filter(Boolean).join(' ') || (rep.username ? `@${rep.username}` : `ID ${rep.userId}`);
+    for (const h of rep.history) {
+      if (h.timestamp >= cutoffTime) {
+        const eventChatId = String(h.chatId || '');
+        if (eventChatId === chatIdStr || eventChatId === 'global' || !eventChatId) {
+          events.push({
+            userId: String(rep.userId),
+            username: rep.username,
+            fullName: targetFullName,
+            delta: Number(h.delta) || 0,
+            reason: h.reason || '',
+            fromName: h.fromName || 'Пользователь',
+            timestamp: h.timestamp,
+            currentScore: rep.score || 0
+          });
+        }
+      }
+    }
+  }
+
+  if (events.length === 0) {
+    return '';
+  }
+
+  // Aggregate stats per user
+  const userMap = new Map<string, {
+    fullName: string;
+    username?: string;
+    netDelta: number;
+    posCount: number;
+    negCount: number;
+    reasons: string[];
+    currentScore: number;
+  }>();
+
+  for (const ev of events) {
+    const existing = userMap.get(ev.userId) || {
+      fullName: ev.fullName,
+      username: ev.username,
+      netDelta: 0,
+      posCount: 0,
+      negCount: 0,
+      reasons: [],
+      currentScore: ev.currentScore
+    };
+    existing.netDelta += ev.delta;
+    if (ev.delta > 0) existing.posCount++;
+    else if (ev.delta < 0) existing.negCount++;
+    if (ev.reason && !existing.reasons.includes(ev.reason)) {
+      existing.reasons.push(ev.reason);
+    }
+    userMap.set(ev.userId, existing);
+  }
+
+  const sortedUsers = Array.from(userMap.values()).sort((a, b) => b.netDelta - a.netDelta);
+  const totalPositive = events.filter(e => e.delta > 0).length;
+  const totalNegative = events.filter(e => e.delta < 0).length;
+
+  let block = `⭐️ <b>Итоги изменения репутации за день</b>\n`;
+  block += `<blockquote expandable>`;
+  block += `За прошедшие ${hoursBack}ч зафиксировано изменений репутации: <b>${events.length}</b> ` +
+           `(благодарностей: <b>+${totalPositive}</b>${totalNegative > 0 ? `, снижений: <b>-${totalNegative}</b>` : ''}).\n\n`;
+  block += `🏆 <b>Активность и динамика участников:</b>\n`;
+
+  for (const u of sortedUsers.slice(0, 10)) {
+    const sign = u.netDelta > 0 ? `+${u.netDelta}` : `${u.netDelta}`;
+    const handleStr = u.username ? ` (@${u.username})` : '';
+    const scoreFormatted = u.currentScore > 0 ? `+${u.currentScore}` : `${u.currentScore}`;
+    block += `• <b>${escapeHtml(u.fullName)}</b>${escapeHtml(handleStr)}: <b>${sign}</b> ⭐️ (рейтинг: <code>${scoreFormatted}</code>)\n`;
+    if (u.reasons.length > 0) {
+      const sampleReasons = u.reasons.slice(0, 2).map(r => escapeHtml(r)).join('; ');
+      block += `  <i>Причина: ${sampleReasons}</i>\n`;
+    }
+  }
+
+  block += `</blockquote>`;
+  return block;
 }
 
 async function sendTelegramHtmlMessage(chatId: string | number, text: string) {
@@ -5163,8 +5401,9 @@ ${blackListPosts.length > 0 ? `
     throw aiErr;
   }
 
-  // Format and enhance with HTML tags, strict canonical header and date, and MotoBlackList if needed
-  const summaryText = formatSummaryForTelegramHtml(rawSummaryText, blackListPosts, chatTitle, todayStr);
+  // Format and enhance with HTML tags, strict canonical header and date, daily reputation summary and MotoBlackList if needed
+  const repSummaryHtml = getDailyReputationSummaryHtml(chatIdStr, hoursBack);
+  const summaryText = formatSummaryForTelegramHtml(rawSummaryText, blackListPosts, chatTitle, todayStr, repSummaryHtml);
 
   const digestEntry = {
     id: Math.random().toString(36).substr(2, 9),
@@ -5289,6 +5528,8 @@ let filters: FilterSettings = {
   warnLimit: 3,
   warnAction: 'BAN' as 'BAN' | 'MUTE',
   reputationEnabled: true,
+  muteReputationChangeMessages: false,
+  reputationDailyDigestEnabled: true,
   requireChannelSubscription: false,
   channelSubscriptionTarget: '',
   channelSubscriptionMessage: '',
@@ -5320,7 +5561,32 @@ let settings = {
   customAiEndpoint: '',
   customAiApiKey: '',
   customAiModel: 'gpt-4o-mini',
-  timezoneOffset: 3
+  timezoneOffset: 3,
+  lastSetMenuButtonUrl: '' as string,
+  menuButtonRetryAfterUntil: 0 as number,
+  reputationNotifyChatId: '',
+  reputationNotifyInGroup: true,
+  reputationNotifyInAdminChat: true,
+  reputationNotifyInDm: true,
+  muteReputationChangeMessages: false,
+  reputationDailyDigestEnabled: true,
+  companionBot: {
+    enabled: false,
+    botToken: '',
+    botUsername: '',
+    botName: '',
+    replyProbability: 15,
+    replyToDirectMentions: true,
+    replyToQuestions: true,
+    minDelayBetweenRepliesSeconds: 180,
+    humorLevel: 'high' as 'none' | 'light' | 'high' | 'sarcastic',
+    banterLevel: 'friendly' as 'none' | 'friendly' | 'sharp',
+    personaPreset: 'biker_veteran' as 'biker_veteran' | 'friendly_mate' | 'witty_expert' | 'provocateur' | 'custom',
+    customSystemPrompt: '',
+    model: 'gemini-3.1-flash-lite',
+    enabledChatIds: [] as string[],
+    useContextCount: 10
+  }
 };
 
 // Sync functions
@@ -5404,6 +5670,12 @@ async function syncData() {
       const settingsDoc = await db.collection('config').doc('settings').get();
       if (settingsDoc.exists) {
         settings = { ...settings, ...settingsDoc.data() as any };
+        if (settings.lastSetMenuButtonUrl) {
+          lastSetMenuButtonUrl = settings.lastSetMenuButtonUrl;
+        }
+        if (typeof settings.menuButtonRetryAfterUntil === 'number') {
+          menuButtonRetryAfterUntil = settings.menuButtonRetryAfterUntil;
+        }
         if (settings.geminiModel) {
           settings.geminiModel = sanitizeGeminiModel(settings.geminiModel);
         }
@@ -5775,17 +6047,27 @@ async function adjustUserReputation(
     details: `${actionEmoji} Репутация (${deltaLabel}) для ${targetFullName}. Причина: ${reason}. Рейтинг: ${scoreFormatted}`
   });
 
-  // 2. Send Telegram notification to Info Chat
-  const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
-  if (targetChatId && bot) {
-    const userHandle = rep.username ? `@${rep.username}` : `ID: ${targetUserId}`;
-    const fromHandle = fromUserId.startsWith('admin_') 
-      ? `Администратор (${escapeHtml(fromName)})` 
-      : `<a href="tg://user?id=${fromUserId}">${escapeHtml(fromName)}</a>`;
+  // 2. Send Telegram notification to Admin / Info Chat
+  const targetChatId = (settings as any).reputationNotifyChatId || (filters as any).reputationNotifyChatId || settings.infoChatId || antiScamKeywordsConfig.notifyChatId || process.env.BOOKRAY_CHAT_ID;
+  const notifyInAdminChat = (settings as any).reputationNotifyInAdminChat !== false && (filters as any).reputationNotifyInAdminChat !== false;
 
+  const userHandle = rep.username ? `@${rep.username}` : `ID: ${targetUserId}`;
+  const isTargetDigits = /^\d+$/.test(String(targetUserId));
+  const targetLink = isTargetDigits 
+    ? `<a href="tg://user?id=${targetUserId}">${escapeHtml(targetFullName)}</a>` 
+    : `<b>${escapeHtml(targetFullName)}</b>`;
+
+  const isFromDigits = /^\d+$/.test(String(fromUserId));
+  const fromHandle = fromUserId.startsWith('admin_') 
+    ? `Администратор (${escapeHtml(fromName)})` 
+    : isFromDigits 
+      ? `<a href="tg://user?id=${fromUserId}">${escapeHtml(fromName)}</a>` 
+      : `<b>${escapeHtml(fromName)}</b>`;
+
+  if (targetChatId && bot && notifyInAdminChat) {
     const alertText = 
       `${actionEmoji} <b>Изменение репутации: ${deltaLabel}</b>\n\n` +
-      `👤 <b>Кому:</b> <a href="tg://user?id=${targetUserId}">${escapeHtml(targetFullName)}</a> (${userHandle})\n` +
+      `👤 <b>Кому:</b> ${targetLink} (${escapeHtml(userHandle)})\n` +
       `✍️ <b>От кого:</b> ${fromHandle}\n` +
       `📍 <b>Чат:</b> <i>${escapeHtml(chatTitle)}</i>\n` +
       `💬 <b>Причина:</b> ${escapeHtml(reason)}\n` +
@@ -5793,7 +6075,36 @@ async function adjustUserReputation(
       `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
 
     bot.telegram.sendMessage(targetChatId, alertText, { parse_mode: 'HTML' })
-      .catch(e => console.error('[Reputation] Failed to send info chat alert:', e));
+      .catch(async (htmlErr) => {
+        console.warn('[Reputation] HTML send failed to info chat, trying plain text:', htmlErr?.message || htmlErr);
+        const plainAlert = 
+          `${actionEmoji} Изменение репутации: ${deltaLabel}\n\n` +
+          `👤 Кому: ${targetFullName} (${userHandle})\n` +
+          `✍️ От кого: ${fromName}\n` +
+          `📍 Чат: ${chatTitle}\n` +
+          `💬 Причина: ${reason}\n` +
+          `📈 Текущий рейтинг: ${scoreFormatted}\n` +
+          `⏰ ${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)`;
+        await bot.telegram.sendMessage(targetChatId, plainAlert).catch(e => {
+          console.error('[Reputation] Failed to send info chat alert (plain):', e?.message || e);
+        });
+      });
+  }
+
+  // 3. Optional Personal DM notification to the user
+  const isMuteChangeMessages = !!(settings as any).muteReputationChangeMessages || !!(filters as any).muteReputationChangeMessages;
+  const notifyInDm = !isMuteChangeMessages && (settings as any).reputationNotifyInDm !== false && (filters as any).reputationNotifyInDm !== false;
+  if (notifyInDm && bot && isTargetDigits) {
+    const dmText = 
+      `${actionEmoji} <b>Ваша репутация изменилась! (${deltaLabel})</b>\n\n` +
+      `📍 <b>Чат:</b> <i>${escapeHtml(chatTitle)}</i>\n` +
+      `✍️ <b>От:</b> ${escapeHtml(fromName)}\n` +
+      `💬 <b>Причина:</b> ${escapeHtml(reason)}\n` +
+      `📈 <b>Ваш текущий рейтинг:</b> <code>${scoreFormatted}</code>`;
+    bot.telegram.sendMessage(targetUserId, dmText, { parse_mode: 'HTML' }).catch(async () => {
+      const plainDm = `${actionEmoji} Ваша репутация изменилась: ${deltaLabel} в чате «${chatTitle}». Рейтинг: ${scoreFormatted}`;
+      await bot.telegram.sendMessage(targetUserId, plainDm).catch(() => {});
+    });
   }
 
   return rep;
@@ -6159,15 +6470,282 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
   }
 }
 
+// Second Telegram Bot (AI Companion with Gemini)
+let companionBot: Telegraf | null = null;
+let companionBotInfo: { id: number; username: string; first_name?: string } | null = null;
+let isCompanionBotPollingActive: boolean = false;
+let companionBotRepliesCount: number = 0;
+const companionRecentMessages = new Map<string, Array<{ sender: string; text: string; time: string; isBot: boolean }>>();
+const lastCompanionReplyTime = new Map<string, number>();
+
+async function generateCompanionBotResponse(
+  chatTitle: string,
+  triggerMessage: { sender: string; text: string },
+  recentHistory: Array<{ sender: string; text: string }>,
+  companionConfig?: any
+): Promise<string> {
+  const currentCfg = companionConfig || (settings as any).companionBot || {};
+
+  const humorMap: Record<string, string> = {
+    none: 'Общайся строго по делу, вежливо и информативно, без шуток, сарказма или иронии.',
+    light: 'Общайся дружелюбно и позитивно. Используй легкий, добрый юмор и улыбку.',
+    high: 'Активно используй юмор, байкерские шутки, иронию, остроумные подколки и веселые реплики.',
+    sarcastic: 'Используй едкий сарказм, язвительный юмор, остроумные подколки и дерзкие замечания.'
+  };
+  const humorGuide = humorMap[currentCfg.humorLevel || 'high'] || humorMap.high;
+
+  const banterMap: Record<string, string> = {
+    none: 'Не используй подколок и поддразниваний участников.',
+    friendly: 'Дружеские, безобидные подколки и доброе подтрунивание по-братски разрешены и приветствуются.',
+    sharp: 'Используй острые подколки, едкие панчи и смелые выпады (байкерский роаст), но без мата и прямых оскорблений личности.'
+  };
+  const banterGuide = banterMap[currentCfg.banterLevel || 'friendly'] || banterMap.friendly;
+
+  const personaMap: Record<string, string> = {
+    biker_veteran: 'Ты опытный байкер-старожил. Знаешь всё о мотоциклах, дорогах, поломках в пути, сезонах и мото-братстве. Говоришь уверенно, по-свойски, любишь травить байки.',
+    friendly_mate: 'Ты душевный, компанейский участник чата. Всегда готов поддержать разговор, помочь советом, пошутить и поднять настроение в компании.',
+    witty_expert: 'Ты эрудированный, остроумный эксперт и мотомеханик. Разбираешься в технике до винтика, на вопросы отвечаешь четко, но с фирменной иронией и меткими комментариями.',
+    provocateur: 'Ты задорный трикстер и душа компании. Любишь подлить масла в огонь дискуссии, поддеть кого-то меткой фразой, поднять волну смеха.',
+    custom: currentCfg.customSystemPrompt || 'Ты веселый и остроумный участник мото-чата.'
+  };
+  const personaGuide = personaMap[currentCfg.personaPreset || 'biker_veteran'] || personaMap.biker_veteran;
+
+  const customInstruction = currentCfg.customSystemPrompt?.trim()
+    ? `Дополнительные указания администратора:\n${currentCfg.customSystemPrompt.trim()}`
+    : '';
+
+  const historyFormatted = recentHistory.map(m => `[${m.sender}]: ${m.text}`).join('\n');
+
+  const prompt = `Ты — живой участник Telegram-чата «${chatTitle}». Твоя роль — органично общаться с людьми в чате.
+
+Твой характер и стиль:
+- ${personaGuide}
+- Юмор: ${humorGuide}
+- Подколки: ${banterGuide}
+${customInstruction ? `- ${customInstruction}` : ''}
+
+Правила ответа:
+1. Отвечай кратко и емко (1-3 коротких предложения), как реальный участник чата в Telegram, без длинных эссе и простыней.
+2. Не начинай сообщение с шаблонных "Привет, я бот" или повторения имени собеседника.
+3. Если человек задал вопрос — дай понятный, полезный ответ со своим фирменным стилем и юмором/подколом.
+4. Если человек шутит или делится мнением — поддержи разговор, используй меткую шутку или дружескую подколку.
+5. Без нецензурных ругательств.
+
+Контекст последних сообщений в чате:
+${historyFormatted || '(нет предыдущих сообщений)'}
+
+Текущее сообщение, на которое ты реагируешь:
+[${triggerMessage.sender}]: ${triggerMessage.text}
+
+Твой ответ:`;
+
+  return await callAiService(prompt, { model: currentCfg.model || 'gemini-3.1-flash-lite' });
+}
+
+async function stopCompanionBot() {
+  if (companionBot) {
+    try {
+      console.log('[CompanionBot] Stopping existing companion bot instance...');
+      if ((companionBot as any).polling) {
+        await (companionBot as any).stop();
+      }
+    } catch (e) {}
+    companionBot = null;
+    companionBotInfo = null;
+    isCompanionBotPollingActive = false;
+  }
+}
+
+async function initCompanionBot(companionConfig?: any) {
+  const cfg = companionConfig || (settings as any).companionBot;
+  if (!cfg || !cfg.enabled || !cfg.botToken || !cfg.botToken.trim()) {
+    await stopCompanionBot();
+    return null;
+  }
+
+  await stopCompanionBot();
+
+  try {
+    const token = cfg.botToken.trim();
+    const apiRoot = settings.telegramApiRoot || process.env.TELEGRAM_API_ROOT;
+    const telegrafOptions: any = { handlerTimeout: 180000 };
+    if (apiRoot) {
+      telegrafOptions.telegram = { apiRoot: apiRoot.replace(/\/$/, '') };
+    }
+
+    const newBot = new Telegraf(token, telegrafOptions);
+    const me = await newBot.telegram.getMe();
+    companionBot = newBot;
+    companionBotInfo = { id: me.id, username: me.username, first_name: me.first_name };
+    console.log(`[CompanionBot] Connected as @${me.username} (${me.first_name || 'Бот'})`);
+
+    newBot.on('message', async (ctx) => {
+      try {
+        const msg = ctx.message;
+        if (!msg) return;
+        const chatType = ctx.chat?.type;
+        const isGroup = chatType === 'group' || chatType === 'supergroup';
+        if (!isGroup) return;
+
+        const chatId = String(ctx.chat.id);
+        const fromUser = ctx.from;
+        if (!fromUser || fromUser.is_bot) return; // Do not reply to bots
+
+        const currentCfg = (settings as any).companionBot || cfg;
+        if (!currentCfg.enabled) return;
+        if (Array.isArray(currentCfg.enabledChatIds) && currentCfg.enabledChatIds.length > 0) {
+          if (!currentCfg.enabledChatIds.includes(chatId)) return;
+        }
+
+        const rawText = ('text' in msg ? msg.text : ('caption' in msg ? msg.caption : '')) || '';
+        const senderName = fromUser.first_name || fromUser.username || `User ${fromUser.id}`;
+
+        let history = companionRecentMessages.get(chatId) || [];
+        history.push({
+          sender: senderName,
+          text: rawText,
+          time: new Date().toISOString(),
+          isBot: false
+        });
+        const maxHistory = currentCfg.useContextCount || 10;
+        if (history.length > maxHistory) {
+          history = history.slice(-maxHistory);
+        }
+        companionRecentMessages.set(chatId, history);
+
+        if (!rawText.trim()) return;
+
+        const botUsername = companionBotInfo?.username?.toLowerCase() || '';
+        const textLower = rawText.toLowerCase();
+
+        const isDirectMention = botUsername && (textLower.includes(`@${botUsername}`) || textLower.includes(botUsername));
+        const replyToMsg = (msg as any).reply_to_message;
+        const isReplyToBot = replyToMsg && replyToMsg.from?.id === companionBotInfo?.id;
+        const containsQuestion = rawText.includes('?');
+
+        const now = Date.now();
+        const lastReply = lastCompanionReplyTime.get(chatId) || 0;
+        const cooldownMs = (currentCfg.minDelayBetweenRepliesSeconds || 180) * 1000;
+        const cooldownPassed = (now - lastReply) >= cooldownMs;
+
+        let shouldRespond = false;
+        let responseTrigger = '';
+
+        if (isReplyToBot) {
+          shouldRespond = true;
+          responseTrigger = 'ответ на сообщение бота';
+        } else if (isDirectMention && currentCfg.replyToDirectMentions !== false) {
+          shouldRespond = true;
+          responseTrigger = 'прямое обращение';
+        } else if (cooldownPassed) {
+          if (containsQuestion && currentCfg.replyToQuestions !== false) {
+            const qChance = Math.max(Number(currentCfg.replyProbability) || 15, 35);
+            if (Math.random() * 100 < qChance) {
+              shouldRespond = true;
+              responseTrigger = 'вопрос в чате (?)';
+            }
+          } else {
+            const prob = Number(currentCfg.replyProbability) || 15;
+            if (Math.random() * 100 < prob) {
+              shouldRespond = true;
+              responseTrigger = `случайный ответ (${prob}%)`;
+            }
+          }
+        }
+
+        if (shouldRespond) {
+          console.log(`[CompanionBot] Generating reply in "${ctx.chat.title || chatId}" (${responseTrigger})...`);
+          try {
+            await ctx.sendChatAction('typing');
+          } catch (e) {}
+
+          const replyText = await generateCompanionBotResponse(
+            ctx.chat.title || 'Чат',
+            { sender: senderName, text: rawText },
+            history.slice(0, -1),
+            currentCfg
+          );
+
+          if (replyText && replyText.trim()) {
+            try {
+              await ctx.reply(replyText.trim(), {
+                reply_parameters: { message_id: msg.message_id }
+              });
+            } catch (replyErr) {
+              await ctx.reply(replyText.trim()).catch(e => console.error('[CompanionBot] Reply failed:', e));
+            }
+
+            lastCompanionReplyTime.set(chatId, Date.now());
+            companionBotRepliesCount++;
+
+            history.push({
+              sender: companionBotInfo?.first_name || 'CompanionBot',
+              text: replyText.trim(),
+              time: new Date().toISOString(),
+              isBot: true
+            });
+            companionRecentMessages.set(chatId, history.slice(-maxHistory));
+
+            await addLog({
+              id: Math.random().toString(36).substr(2, 9),
+              timestamp: new Date().toISOString(),
+              type: 'SYSTEM',
+              user: companionBotInfo?.username ? `@${companionBotInfo.username}` : 'CompanionBot',
+              chat: ctx.chat.title || chatId,
+              details: `[ИИ-Собеседник] Ответ на сообщение (${responseTrigger}): "${replyText.substring(0, 90)}${replyText.length > 90 ? '...' : ''}"`
+            });
+          }
+        }
+      } catch (err: any) {
+        console.error('[CompanionBot] Message error:', err?.message || err);
+      }
+    });
+
+    try {
+      await newBot.telegram.deleteWebhook({ drop_pending_updates: false });
+    } catch (e) {}
+
+    isCompanionBotPollingActive = true;
+    console.log(`[CompanionBot] Starting Long Polling as @${me.username}...`);
+
+    newBot.launch({
+      dropPendingUpdates: false,
+      allowedUpdates: ['message', 'edited_message']
+    }).then(() => {
+      isCompanionBotPollingActive = false;
+      console.log(`[CompanionBot] Polling ended for @${me.username}`);
+    }).catch(err => {
+      isCompanionBotPollingActive = false;
+      console.error('[CompanionBot] Launch error:', err?.message || err);
+    });
+
+    return newBot;
+  } catch (err: any) {
+    console.error('[CompanionBot] Failed to start:', err?.message || err);
+    companionBot = null;
+    companionBotInfo = null;
+    return null;
+  }
+}
+
 // Initialize Telegram Bot
 let bot: Telegraf | null = null;
 let botInfo: { id: number; username: string } | null = null;
+let lastSetMenuButtonUrl: string | null = null;
+let menuButtonRetryAfterUntil: number = 0;
+let isInitializingBot = false;
 
 async function initBot(token: string) {
   if (!token) {
     console.warn('Bot token is empty. Bot functionality is disabled.');
     return null;
   }
+
+  if (isInitializingBot) {
+    console.log('[BotSupervisor] Bot initialization already in progress, skipping concurrent duplicate call.');
+    return bot;
+  }
+  isInitializingBot = true;
 
   try {
     if (bot) {
@@ -6228,19 +6806,44 @@ async function initBot(token: string) {
         console.log(`Removed bot (${me.id}) from in-memory memberships (${initialCount - memberships.length} entries)`);
       }
 
-      // Configure Telegram Chat Menu Button with Mini App URL
-      try {
-        const defaultAppUrl = getEffectiveWebAppUrl();
-        await (bot.telegram as any).setChatMenuButton({
-          menu_button: {
-            type: 'web_app',
-            text: '📱 Панель',
-            web_app: { url: defaultAppUrl }
+      // Configure Telegram Chat Menu Button with Mini App URL (with rate-limit protection)
+      const defaultAppUrl = getEffectiveWebAppUrl();
+      const now = Date.now();
+      if (lastSetMenuButtonUrl === defaultAppUrl) {
+        // Already set to this exact URL, no need to touch Telegram API
+      } else if (now < menuButtonRetryAfterUntil) {
+        const waitSec = Math.ceil((menuButtonRetryAfterUntil - now) / 1000);
+        console.log(`[Bot] Skipping Chat Menu Button setup: rate-limit backoff active (${waitSec}s remaining).`);
+      } else {
+        try {
+          await (bot.telegram as any).setChatMenuButton({
+            menu_button: {
+              type: 'web_app',
+              text: '📱 Панель',
+              web_app: { url: defaultAppUrl }
+            }
+          });
+          lastSetMenuButtonUrl = defaultAppUrl;
+          settings.lastSetMenuButtonUrl = defaultAppUrl;
+          db.collection('config').doc('settings').update({ lastSetMenuButtonUrl: defaultAppUrl }).catch(() => {});
+          console.log(`[Bot] Initialized Chat Menu Button with WebApp URL: ${defaultAppUrl}`);
+        } catch (errMenu: any) {
+          const errMsg = String(errMenu?.message || errMenu);
+          const is429 = errMenu?.response?.error_code === 429 || 
+                        errMenu?.parameters?.retry_after !== undefined ||
+                        errMsg.includes('429') || 
+                        errMsg.includes('Too Many Requests');
+          if (is429) {
+            const retryMatch = errMsg.match(/retry after (\d+)/i);
+            const retrySec = Number(errMenu?.parameters?.retry_after) || (retryMatch ? parseInt(retryMatch[1], 10) : 900);
+            menuButtonRetryAfterUntil = Date.now() + (retrySec * 1000);
+            settings.menuButtonRetryAfterUntil = menuButtonRetryAfterUntil;
+            db.collection('config').doc('settings').update({ menuButtonRetryAfterUntil }).catch(() => {});
+            console.log(`[Bot] Chat Menu Button rate-limited by Telegram (429). Backing off for ${retrySec}s.`);
+          } else {
+            console.warn('[Bot] Note: could not set chat menu button on bot init:', errMsg);
           }
-        });
-        console.log(`[Bot] Initialized Chat Menu Button with WebApp URL: ${defaultAppUrl}`);
-      } catch (errMenu) {
-        console.warn('[Bot] Note: could not set chat menu button on bot init:', errMenu);
+        }
       }
     } catch (e) {
       console.error('Failed to get bot info directly from Telegram (likely due to sandbox environment connection timeout):', e);
@@ -6833,7 +7436,417 @@ async function initBot(token: string) {
           });
         }
         
-        // Moderation Logic
+        const effectiveChatTitle = chat?.title || ('title' in ctx.chat ? (ctx.chat as any).title : chatId);
+
+        // Reputation Trigger: Gratitude / Rating replies, quotes & commands (active across all groups when enabled)
+        if (filters.reputationEnabled !== false && ctx.message && ('text' in ctx.message || 'caption' in ctx.message)) {
+          const rawMsgText = ('text' in ctx.message ? ctx.message.text : ('caption' in ctx.message ? ctx.message.caption : ''))?.trim() || '';
+          const replyTo = ctx.message.reply_to_message;
+          
+          // Check that this is a genuine user quote/reply, NOT a system/channel/bot message
+          const isAutomaticOrSystem = replyTo && (
+            Boolean((replyTo as any).is_automatic_forward) ||
+            Boolean((replyTo as any).forum_topic_created) ||
+            Boolean((replyTo as any).pinned_message) ||
+            Boolean((replyTo as any).sender_chat) ||
+            Boolean(replyTo.from && [777000, 1087968824, 136817688].includes(replyTo.from.id))
+          );
+
+          const repCmdMatch = rawMsgText.match(/^([\/!])(rep|реп|reputation|репутация|карма|топ)(?:@\w+)?(?:\s+(.*))?$/i);
+
+          // 1. Command /топ, /rep top or /реп топ: Display top reputation leaders in current chat
+          if (repCmdMatch && (repCmdMatch[2].toLowerCase() === 'топ' || repCmdMatch[3]?.toLowerCase() === 'top' || repCmdMatch[3]?.toLowerCase() === 'топ')) {
+            const chatScoresList = reputations
+              .map(r => ({
+                ...r,
+                chatScore: (r.chatScores && r.chatScores[chatId] !== undefined) ? r.chatScores[chatId] : r.score
+              }))
+              .filter(r => r.chatScore > 0)
+              .sort((a, b) => b.chatScore - a.chatScore)
+              .slice(0, 5);
+
+            let topText = `🏆 <b>Топ репутации в чате «${escapeHtml(effectiveChatTitle)}»:</b>\n\n`;
+            if (chatScoresList.length === 0) {
+              topText += '<i>В этом чате пока никто не заработал рейтинг. Поблагодарите кого-нибудь словом «спасибо» или плюсиком «+» в ответ на полезное сообщение!</i>';
+            } else {
+              const medals = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
+              chatScoresList.forEach((r, idx) => {
+                const name = [r.firstName, r.lastName].filter(Boolean).join(' ') || (r.username ? `@${r.username}` : `User ${r.userId}`);
+                topText += `${medals[idx] || '•'} <b>${escapeHtml(name)}</b> — <code>+${r.chatScore}</code>\n`;
+              });
+            }
+
+            try {
+              await ctx.reply(topText, {
+                parse_mode: 'HTML',
+                reply_parameters: { message_id: ctx.message.message_id }
+              });
+            } catch (e) {
+              await ctx.reply(topText, { parse_mode: 'HTML' }).catch(() => {});
+            }
+          } 
+          // 2. Command /rep or /реп without args & without reply: Show own reputation
+          else if (repCmdMatch && !replyTo && (!repCmdMatch[3] || !repCmdMatch[3].trim())) {
+            const ownRep = reputations.find(r => String(r.userId) === String(ctx.from.id));
+            const globalScore = ownRep?.score || 0;
+            const inChatScore = (ownRep?.chatScores && ownRep.chatScores[chatId] !== undefined) ? ownRep.chatScores[chatId] : globalScore;
+            const scoreSign = inChatScore > 0 ? `+${inChatScore}` : `${inChatScore}`;
+            const globalSign = globalScore > 0 ? `+${globalScore}` : `${globalScore}`;
+
+            const ownText = 
+              `⭐️ <b>Ваша репутация:</b>\n\n` +
+              `📍 В этом чате: <b>${scoreSign}</b>\n` +
+              `🌐 Глобальный рейтинг: <b>${globalSign}</b> (👍 +${ownRep?.positiveCount || 0} / 🔻 -${ownRep?.negativeCount || 0})\n\n` +
+              `<i>Чтобы повысить репутацию другому участнику, ответьте на его сообщение «спасибо» или «+»!</i>`;
+
+            try {
+              await ctx.reply(ownText, {
+                parse_mode: 'HTML',
+                reply_parameters: { message_id: ctx.message.message_id }
+              });
+            } catch (e) {
+              await ctx.reply(ownText, { parse_mode: 'HTML' }).catch(() => {});
+            }
+          }
+          // 3. Command /rep or /реп with @username argument (e.g. /rep @user +1 or /rep @user)
+          else if (repCmdMatch && repCmdMatch[3] && repCmdMatch[3].trim().startsWith('@')) {
+            const parts = repCmdMatch[3].trim().split(/\s+/);
+            const targetU = parts[0].replace(/^@/, '').toLowerCase();
+            const actionArg = (parts[1] || '').toLowerCase();
+            let cmdDelta = 0;
+            if (actionArg === '+' || actionArg === '+1' || actionArg === '++' || actionArg === '+rep' || actionArg === '+реп' || actionArg === 'плюс') {
+              cmdDelta = 1;
+            } else if (actionArg === '-' || actionArg === '-1' || actionArg === '--' || actionArg === '-rep' || actionArg === '-реп' || actionArg === 'минус') {
+              cmdDelta = -1;
+            }
+
+            const targetMember = memberships.find(m => m.username && m.username.replace(/^@/, '').toLowerCase() === targetU);
+            const targetRep = reputations.find(r => (r.username && r.username.toLowerCase() === targetU) || (targetMember && String(r.userId) === String(targetMember.userId)));
+            const targetId = targetMember ? String(targetMember.userId) : (targetRep ? String(targetRep.userId) : null);
+            const targetName = targetMember?.firstName || targetRep?.firstName || `@${targetU}`;
+
+            if (targetId) {
+              if (targetId === String(ctx.from.id)) {
+                await ctx.reply('⚠️ Вы не можете изменять репутацию самому себе!', {
+                  reply_parameters: { message_id: ctx.message.message_id }
+                }).catch(() => {});
+              } else if (cmdDelta !== 0) {
+                const repCooldownKey = `${ctx.from.id}_${targetId}`;
+                const lastRepTime = reputationCooldownMap.get(repCooldownKey) || 0;
+                const now = Date.now();
+                if (now - lastRepTime >= 10 * 1000) {
+                  reputationCooldownMap.set(repCooldownKey, now);
+                  const rep = await adjustUserReputation(
+                    targetId,
+                    cmdDelta,
+                    cmdDelta > 0 ? 'Повышение по команде /rep @username' : 'Снижение по команде /rep @username',
+                    String(ctx.from.id),
+                    ctx.from.first_name || ctx.from.username || 'Пользователь',
+                    chatId,
+                    effectiveChatTitle
+                  );
+                  const scoreStr = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
+                  const deltaEmoji = cmdDelta > 0 ? '⭐️' : '🔻';
+                  const actionWord = cmdDelta > 0 ? 'повышена' : 'снижена';
+                  const deltaStr = cmdDelta > 0 ? `+${cmdDelta}` : `${cmdDelta}`;
+                  const replyHtml = 
+                    `${deltaEmoji} <b>Репутация ${actionWord}!</b> (<code>${deltaStr}</code>)\n` +
+                    `<a href="tg://user?id=${ctx.from.id}">${escapeHtml(ctx.from.first_name || 'Участник')}</a> изменил(а) репутацию ` +
+                    `<a href="tg://user?id=${targetId}">${escapeHtml(targetName)}</a>\n` +
+                    `📈 Текущая репутация: <b>${scoreStr}</b>`;
+                  const isMuteRepMessages = !!(settings as any).muteReputationChangeMessages || !!(filters as any).muteReputationChangeMessages;
+                  const notifyGroup = !isMuteRepMessages && (settings as any).reputationNotifyInGroup !== false && (filters as any).reputationNotifyInGroup !== false;
+                  if (notifyGroup) {
+                    try {
+                      await ctx.reply(replyHtml, { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } });
+                    } catch (e) {
+                      await ctx.reply(replyHtml, { parse_mode: 'HTML' }).catch(() => {});
+                    }
+                  }
+                } else {
+                  const waitSec = Math.ceil((10000 - (now - lastRepTime)) / 1000);
+                  await ctx.reply(`⏳ Вы уже недавно изменяли репутацию этому участнику. Подождите ещё ${waitSec} сек.!`, {
+                    reply_parameters: { message_id: ctx.message.message_id }
+                  }).catch(() => {});
+                }
+              } else {
+                const tScore = targetRep?.score || 0;
+                const inChat = (targetRep?.chatScores && targetRep.chatScores[chatId] !== undefined) ? targetRep.chatScores[chatId] : tScore;
+                const scoreSign = inChat > 0 ? `+${inChat}` : `${inChat}`;
+                const cardText = 
+                  `👤 <b>Репутация пользователя <a href="tg://user?id=${targetId}">${escapeHtml(targetName)}</a>:</b>\n\n` +
+                  `📍 В этом чате: <b>${scoreSign}</b>\n` +
+                  `🌐 Общий рейтинг: <b>${tScore > 0 ? `+${tScore}` : `${tScore}`}</b> (👍 +${targetRep?.positiveCount || 0} / 🔻 -${targetRep?.negativeCount || 0})`;
+                try {
+                  await ctx.reply(cardText, { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } });
+                } catch (e) {
+                  await ctx.reply(cardText, { parse_mode: 'HTML' }).catch(() => {});
+                }
+              }
+            } else {
+              await ctx.reply(`🔍 Пользователь @${targetU} не найден в базе активности чатов.`, {
+                reply_parameters: { message_id: ctx.message.message_id }
+              }).catch(() => {});
+            }
+          }
+          // 4. Command /rep with reply or arguments (+1, -1)
+          else if (repCmdMatch && replyTo && replyTo.from && !replyTo.from.is_bot && !isAutomaticOrSystem) {
+            const arg = (repCmdMatch[3] || '').trim().toLowerCase();
+            let cmdDelta = 0;
+            let cmdReason = '';
+
+            if (arg === '+' || arg === '+1' || arg === '++' || arg === 'плюс' || arg === '+rep' || arg === '+реп') {
+              cmdDelta = 1;
+              cmdReason = 'Повышение через команду /rep';
+            } else if (arg === '-' || arg === '-1' || arg === '--' || arg === 'минус' || arg === '-rep' || arg === '-реп') {
+              cmdDelta = -1;
+              cmdReason = 'Снижение через команду /rep';
+            } else if (!arg) {
+              // Show replied user's reputation card
+              const targetRep = reputations.find(r => String(r.userId) === String(replyTo.from.id));
+              const tScore = targetRep?.score || 0;
+              const tChatScore = (targetRep?.chatScores && targetRep.chatScores[chatId] !== undefined) ? targetRep.chatScores[chatId] : tScore;
+              const tScoreSign = tChatScore > 0 ? `+${tChatScore}` : `${tChatScore}`;
+              const tName = replyTo.from.first_name || (replyTo.from.username ? `@${replyTo.from.username}` : `User ${replyTo.from.id}`);
+
+              const infoText = 
+                `👤 <b>Репутация участника <a href="tg://user?id=${replyTo.from.id}">${escapeHtml(tName)}</a>:</b>\n\n` +
+                `📍 В этом чате: <b>${tScoreSign}</b>\n` +
+                `🌐 Общий рейтинг: <b>${tScore > 0 ? `+${tScore}` : `${tScore}`}</b> (👍 +${targetRep?.positiveCount || 0} / 🔻 -${targetRep?.negativeCount || 0})`;
+
+              try {
+                await ctx.reply(infoText, {
+                  parse_mode: 'HTML',
+                  reply_parameters: { message_id: ctx.message.message_id }
+                });
+              } catch (e) {
+                await ctx.reply(infoText, { parse_mode: 'HTML' }).catch(() => {});
+              }
+            }
+
+            if (cmdDelta !== 0) {
+              if (replyTo.from.id === ctx.from.id) {
+                await ctx.reply('⚠️ Вы не можете изменять репутацию самому себе!', {
+                  reply_parameters: { message_id: ctx.message.message_id }
+                }).catch(() => {});
+              } else {
+                const repCooldownKey = `${ctx.from.id}_${replyTo.from.id}`;
+                const lastRepTime = reputationCooldownMap.get(repCooldownKey) || 0;
+                const now = Date.now();
+
+                if (now - lastRepTime >= 10 * 1000) {
+                  reputationCooldownMap.set(repCooldownKey, now);
+
+                  const rep = await adjustUserReputation(
+                    String(replyTo.from.id),
+                    cmdDelta,
+                    cmdReason,
+                    String(ctx.from.id),
+                    ctx.from.first_name || ctx.from.username || 'Пользователь',
+                    chatId,
+                    effectiveChatTitle
+                  );
+
+                  const targetName = replyTo.from.first_name || (replyTo.from.username ? `@${replyTo.from.username}` : `User ${replyTo.from.id}`);
+                  const scoreStr = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
+                  const deltaEmoji = cmdDelta > 0 ? '⭐️' : '🔻';
+                  const actionWord = cmdDelta > 0 ? 'повышена' : 'снижена';
+                  const deltaStr = cmdDelta > 0 ? `+${cmdDelta}` : `${cmdDelta}`;
+                  const verb = cmdDelta > 0 ? 'повысил(а) репутацию' : 'поставил(а) минус';
+
+                  const replyHtml = 
+                    `${deltaEmoji} <b>Репутация ${actionWord}!</b> (<code>${deltaStr}</code>)\n` +
+                    `<a href="tg://user?id=${ctx.from.id}">${escapeHtml(ctx.from.first_name || 'Участник')}</a> ${verb} ` +
+                    `<a href="tg://user?id=${replyTo.from.id}">${escapeHtml(targetName)}</a>\n` +
+                    `📈 Текущая репутация: <b>${scoreStr}</b>`;
+
+                  const isMuteRepMessages = !!(settings as any).muteReputationChangeMessages || !!(filters as any).muteReputationChangeMessages;
+                  const notifyGroup = !isMuteRepMessages && (settings as any).reputationNotifyInGroup !== false && (filters as any).reputationNotifyInGroup !== false;
+                  if (notifyGroup) {
+                    try {
+                      await ctx.reply(replyHtml, {
+                        parse_mode: 'HTML',
+                        reply_parameters: { message_id: ctx.message.message_id }
+                      });
+                    } catch (e) {
+                      await ctx.reply(replyHtml, { parse_mode: 'HTML' }).catch(() => {});
+                    }
+                  }
+                } else {
+                  const waitSec = Math.ceil((10000 - (now - lastRepTime)) / 1000);
+                  await ctx.reply(`⏳ Вы уже недавно изменяли репутацию этому участнику. Подождите ещё ${waitSec} сек.!`, {
+                    reply_parameters: { message_id: ctx.message.message_id }
+                  }).catch(() => {});
+                }
+              }
+            }
+          }
+          // 5. Natural replies (gratitude, +, +rep, спасибо, etc.)
+          else if (replyTo && replyTo.from && !replyTo.from.is_bot && !isAutomaticOrSystem) {
+            const textRaw = rawMsgText;
+            const trimmed = textRaw.trim();
+            const lower = trimmed.toLowerCase();
+
+            // Positive reputation expressions
+            const posExact = new Set([
+              '+', '++', '+++', '+1', '+ 1', '+rep', '+ rep', '+реп', '+ реп', 
+              '+репутация', '+ репутация', '+карма', '+ карма', '+респект', '+ респект',
+              'респект', 'уважуха', 'красава', 'молодец', 'лайк', 'плюсую', 'плюс',
+              '👍', '🤝', '❤️', '🔥', '👏', '🏆', '💎', '⚡️', '+карму', '+в карму',
+              'благодарочка', 'сенкс', 'дякую', 'благодарен', 'спасибо', 'спс'
+            ]);
+            const posRegex = /(?:^|\s)(?:спасибо|спс|благодарю|благодарствую|от души|сяп|спасибки|thx|thanks|thank you|дякую|сенкс|благодарочка|благодарен|респект|красава|молодец|плюсую)[\s!.,:;]*$/i;
+            const posPrefixRegex = /^(\+|плюс|\+1|\+rep|\+реп|\+карма)[\s!.,:;]?/i;
+
+            // Negative reputation expressions
+            const negExact = new Set([
+              '-', '--', '---', '-1', '- 1', '-rep', '- rep', '-реп', '- реп', 
+              '-репутация', '- репутация', '-карма', '- карма', '-респект',
+              'дизлайк', 'фу', '👎', '💩', '🤡', '-карму', '-в карму'
+            ]);
+            const negPrefixRegex = /^(\-|минус|\-1|\-rep|\-реп|\-карма)[\s!.,:;]?/i;
+
+            let repDelta = 0;
+            let repReason = '';
+
+            if (posExact.has(lower) || posPrefixRegex.test(lower) || (trimmed.length <= 100 && posRegex.test(lower))) {
+              repDelta = 1;
+              repReason = posRegex.test(lower) ? 'Благодарность в сообщении' : 'Повышение репутации (+1)';
+            } else if (negExact.has(lower) || negPrefixRegex.test(lower)) {
+              repDelta = -1;
+              repReason = 'Снижение репутации (-1)';
+            }
+
+            if (repDelta !== 0) {
+              // Prevent self-reputation
+              if (replyTo.from.id === ctx.from.id) {
+                try {
+                  await ctx.reply('⚠️ Вы не можете изменять репутацию самому себе!', {
+                    reply_parameters: { message_id: ctx.message.message_id }
+                  });
+                } catch (e) {}
+              } else {
+                // Cooldown check (10 seconds between same pair)
+                const repCooldownKey = `${ctx.from.id}_${replyTo.from.id}`;
+                const lastRepTime = reputationCooldownMap.get(repCooldownKey) || 0;
+                const now = Date.now();
+
+                if (now - lastRepTime >= 10 * 1000) {
+                  reputationCooldownMap.set(repCooldownKey, now);
+
+                  const rep = await adjustUserReputation(
+                    String(replyTo.from.id),
+                    repDelta,
+                    repReason,
+                    String(ctx.from.id),
+                    ctx.from.first_name || ctx.from.username || 'Пользователь',
+                    chatId,
+                    effectiveChatTitle
+                  );
+
+                  const targetName = replyTo.from.first_name || (replyTo.from.username ? `@${replyTo.from.username}` : `User ${replyTo.from.id}`);
+                  const scoreStr = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
+                  const deltaEmoji = repDelta > 0 ? '⭐️' : '🔻';
+                  const actionWord = repDelta > 0 ? 'повышена' : 'снижена';
+                  const deltaStr = repDelta > 0 ? `+${repDelta}` : `${repDelta}`;
+                  const verb = repDelta > 0 ? 'поблагодарил(а)' : 'поставил(а) минус';
+
+                  const replyHtml = 
+                    `${deltaEmoji} <b>Репутация ${actionWord}!</b> (<code>${deltaStr}</code>)\n` +
+                    `<a href="tg://user?id=${ctx.from.id}">${escapeHtml(ctx.from.first_name || 'Участник')}</a> ${verb} ` +
+                    `<a href="tg://user?id=${replyTo.from.id}">${escapeHtml(targetName)}</a>\n` +
+                    `📈 Текущая репутация: <b>${scoreStr}</b>`;
+
+                  const isMuteRepMessages = !!(settings as any).muteReputationChangeMessages || !!(filters as any).muteReputationChangeMessages;
+                  const notifyGroup = !isMuteRepMessages && (settings as any).reputationNotifyInGroup !== false && (filters as any).reputationNotifyInGroup !== false;
+                  if (notifyGroup) {
+                    try {
+                      await ctx.reply(replyHtml, {
+                        parse_mode: 'HTML',
+                        reply_parameters: { message_id: ctx.message.message_id }
+                      });
+                    } catch (replyErr) {
+                      try {
+                        await ctx.reply(replyHtml, { parse_mode: 'HTML' });
+                      } catch (e) {
+                        console.error('Failed to send reputation reply:', e);
+                      }
+                    }
+                  }
+                } else {
+                  const waitSec = Math.ceil((10000 - (now - lastRepTime)) / 1000);
+                  await ctx.reply(`⏳ Вы уже недавно изменяли репутацию этому участнику. Подождите ещё ${waitSec} сек.!`, {
+                    reply_parameters: { message_id: ctx.message.message_id }
+                  }).catch(() => {});
+                }
+              }
+            }
+          }
+          // 6. Direct mentions without reply (+rep @username, спасибо @username)
+          else if (!replyTo && rawMsgText) {
+            const mentionMatch = rawMsgText.match(/(\+rep|\+реп|\+|спасибо|спс|респект|-rep|-реп|-)\s+@([a-zA-Z0-9_]{4,32})/i);
+            if (mentionMatch) {
+              const actionPrefix = mentionMatch[1].toLowerCase();
+              const targetUsername = mentionMatch[2].toLowerCase();
+
+              // Find user in memberships or reputations
+              const targetMember = memberships.find(m => m.username && m.username.toLowerCase().replace(/^@/, '') === targetUsername);
+              const targetRep = reputations.find(r => r.username && r.username.toLowerCase() === targetUsername);
+              const targetId = targetMember ? String(targetMember.userId) : (targetRep ? String(targetRep.userId) : null);
+
+              if (targetId && targetId !== String(ctx.from.id)) {
+                const isNeg = actionPrefix.startsWith('-') || actionPrefix.includes('минус');
+                const delta = isNeg ? -1 : 1;
+                const repCooldownKey = `${ctx.from.id}_${targetId}`;
+                const lastRepTime = reputationCooldownMap.get(repCooldownKey) || 0;
+                const now = Date.now();
+
+                if (now - lastRepTime >= 10 * 1000) {
+                  reputationCooldownMap.set(repCooldownKey, now);
+
+                  const rep = await adjustUserReputation(
+                    targetId,
+                    delta,
+                    isNeg ? 'Снижение по упоминанию @username' : 'Повышение по упоминанию @username',
+                    String(ctx.from.id),
+                    ctx.from.first_name || ctx.from.username || 'Пользователь',
+                    chatId,
+                    effectiveChatTitle
+                  );
+
+                  const targetName = targetMember?.firstName || targetRep?.firstName || `@${targetUsername}`;
+                  const scoreStr = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
+                  const deltaEmoji = delta > 0 ? '⭐️' : '🔻';
+                  const actionWord = delta > 0 ? 'повышена' : 'снижена';
+                  const deltaStr = delta > 0 ? `+${delta}` : `${delta}`;
+
+                  const replyHtml = 
+                    `${deltaEmoji} <b>Репутация ${actionWord}!</b> (<code>${deltaStr}</code>)\n` +
+                    `<a href="tg://user?id=${ctx.from.id}">${escapeHtml(ctx.from.first_name || 'Участник')}</a> изменил(а) репутацию ` +
+                    `<a href="tg://user?id=${targetId}">${escapeHtml(targetName)}</a>\n` +
+                    `📈 Текущая репутация: <b>${scoreStr}</b>`;
+
+                  const isMuteRepMessages = !!(settings as any).muteReputationChangeMessages || !!(filters as any).muteReputationChangeMessages;
+                  const notifyGroup = !isMuteRepMessages && (settings as any).reputationNotifyInGroup !== false && (filters as any).reputationNotifyInGroup !== false;
+                  if (notifyGroup) {
+                    try {
+                      await ctx.reply(replyHtml, { parse_mode: 'HTML', reply_parameters: { message_id: ctx.message.message_id } });
+                    } catch (e) {
+                      await ctx.reply(replyHtml, { parse_mode: 'HTML' }).catch(() => {});
+                    }
+                  }
+                } else {
+                  const waitSec = Math.ceil((10000 - (now - lastRepTime)) / 1000);
+                  await ctx.reply(`⏳ Вы уже недавно изменяли репутацию этому участнику. Подождите ещё ${waitSec} сек.!`, {
+                    reply_parameters: { message_id: ctx.message.message_id }
+                  }).catch(() => {});
+                }
+              }
+            }
+          }
+        }
+
+        // Moderation Logic (for chats with active automated protection)
         if (chat.active) {
           // Check Global Ban List (ID or Username)
           const isBanned = bans.some(b => {
@@ -6858,120 +7871,6 @@ async function initBot(token: string) {
               return;
             } catch (e) {
               console.error('Moderation failed (ban):', e);
-            }
-          }
-
-          // Reputation Trigger: Gratitude / Rating replies & quotes
-          if (filters.reputationEnabled !== false && ctx.message && ('text' in ctx.message || 'caption' in ctx.message)) {
-            const replyTo = ctx.message.reply_to_message;
-            const threadId = (ctx.message as any).message_thread_id;
-            
-            // Check that this is a genuine user quote/reply, NOT a topic header, channel forward, bot, or service message
-            const isAutomaticOrSystem = replyTo && (
-              Boolean((replyTo as any).is_automatic_forward) ||
-              Boolean((replyTo as any).forum_topic_created) ||
-              Boolean((replyTo as any).pinned_message) ||
-              Boolean((replyTo as any).sender_chat) ||
-              Boolean(threadId && replyTo.message_id === threadId) || // replying to forum topic origin
-              Boolean(replyTo.from && [777000, 1087968824, 136817688].includes(replyTo.from.id))
-            );
-
-            // The replied message must contain actual user content (text, caption, media)
-            const hasRepliedContent = replyTo && Boolean(
-              (replyTo as any).text || (replyTo as any).caption || (replyTo as any).photo || 
-              (replyTo as any).document || (replyTo as any).video || (replyTo as any).voice || 
-              (replyTo as any).audio || (replyTo as any).sticker
-            );
-
-            if (replyTo && replyTo.from && !replyTo.from.is_bot && !isAutomaticOrSystem && hasRepliedContent) {
-              const textRaw = ('text' in ctx.message ? ctx.message.text : ('caption' in ctx.message ? ctx.message.caption : ''))?.trim() || '';
-              const trimmed = textRaw.trim();
-              const lower = trimmed.toLowerCase();
-
-              // Positive reputation expressions
-              const posExact = new Set([
-                '+', '++', '+++', '+1', '+ 1', '+rep', '+ rep', '+реп', '+ реп', 
-                '+репутация', '+ репутация', '+карма', '+ карма', '+респект', '+ респект',
-                'респект', 'уважуха', 'красава', 'молодец', 'лайк', 'плюсую', 'плюс',
-                '👍', '🤝', '❤️', '🔥', '👏', '🏆', '💎', '⚡️'
-              ]);
-              const posRegex = /(^|\s)(спасибо|спс|благодарю|благодарствую|от души|сяп|спасибки|thx|thanks|thank you|дякую|сенкс|благодарочка)(\s|$|[!.,:;])/i;
-              const posPrefixRegex = /^(\+|плюс)(\s|rep|реп|респект|карма|1)/i;
-
-              // Negative reputation expressions
-              const negExact = new Set([
-                '-', '--', '---', '-1', '- 1', '-rep', '- rep', '-реп', '- реп', 
-                '-репутация', '- репутация', '-карма', '- карма', '-респект',
-                'дизлайк', 'фу', '👎', '💩', '🤡'
-              ]);
-              const negPrefixRegex = /^(\-|минус)(\s|rep|реп|диз|карма|1)/i;
-
-              let repDelta = 0;
-              let repReason = '';
-
-              if (posExact.has(lower) || posPrefixRegex.test(lower) || (trimmed.length <= 80 && posRegex.test(lower))) {
-                repDelta = 1;
-                repReason = posRegex.test(lower) ? 'Благодарность в сообщении' : 'Повышение репутации (+1)';
-              } else if (negExact.has(lower) || negPrefixRegex.test(lower)) {
-                repDelta = -1;
-                repReason = 'Снижение репутации (-1)';
-              }
-
-              if (repDelta !== 0) {
-                // Prevent self-reputation
-                if (replyTo.from.id === ctx.from.id) {
-                  try {
-                    await ctx.reply('⚠️ Вы не можете изменять репутацию самому себе!', {
-                      reply_parameters: { message_id: ctx.message.message_id }
-                    });
-                  } catch (e) {}
-                } else {
-                  // Cooldown check (15 seconds between same pair)
-                  const repCooldownKey = `${ctx.from.id}_${replyTo.from.id}`;
-                  const lastRepTime = reputationCooldownMap.get(repCooldownKey) || 0;
-                  const now = Date.now();
-
-                  if (now - lastRepTime >= 15 * 1000) {
-                    reputationCooldownMap.set(repCooldownKey, now);
-
-                    const rep = await adjustUserReputation(
-                      String(replyTo.from.id),
-                      repDelta,
-                      repReason,
-                      String(ctx.from.id),
-                      ctx.from.first_name || ctx.from.username || 'Пользователь',
-                      chatId,
-                      chat.title
-                    );
-
-                    const targetName = replyTo.from.first_name || (replyTo.from.username ? `@${replyTo.from.username}` : `User ${replyTo.from.id}`);
-                    const scoreStr = rep.score > 0 ? `+${rep.score}` : `${rep.score}`;
-                    const deltaEmoji = repDelta > 0 ? '⭐️' : '🔻';
-                    const actionWord = repDelta > 0 ? 'повышена' : 'снижена';
-                    const deltaStr = repDelta > 0 ? `+${repDelta}` : `${repDelta}`;
-                    const verb = repDelta > 0 ? 'поблагодарил(а)' : 'поставил(а) минус';
-
-                    const replyHtml = 
-                      `${deltaEmoji} <b>Репутация ${actionWord}!</b> (<code>${deltaStr}</code>)\n` +
-                      `<a href="tg://user?id=${ctx.from.id}">${escapeHtml(ctx.from.first_name || 'Участник')}</a> ${verb} ` +
-                      `<a href="tg://user?id=${replyTo.from.id}">${escapeHtml(targetName)}</a>\n` +
-                      `📈 Текущая репутация: <b>${scoreStr}</b>`;
-
-                    try {
-                      await ctx.reply(replyHtml, {
-                        parse_mode: 'HTML',
-                        reply_parameters: { message_id: ctx.message.message_id }
-                      });
-                    } catch (replyErr) {
-                      try {
-                        await ctx.reply(replyHtml, { parse_mode: 'HTML' });
-                      } catch (e) {
-                        console.error('Failed to send reputation reply:', e);
-                      }
-                    }
-                  }
-                }
-              }
             }
           }
 
@@ -9069,26 +9968,32 @@ async function initBot(token: string) {
           console.warn('Note on clearing webhook:', delErr?.message || delErr);
         }
         
+        isBotPollingActive = true;
+        console.log('Telegram bot launched in Long Polling mode');
+
         bot.launch({
           dropPendingUpdates: false,
           allowedUpdates: ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query', 'chat_member', 'my_chat_member', 'chat_join_request', 'message_reaction']
         }).then(() => {
-          isBotPollingActive = true;
-          console.log('Telegram bot launched successfully and actively listening via Long Polling');
+          isBotPollingActive = false;
+          console.log('Telegram bot polling stopped.');
         }).catch(err => {
           isBotPollingActive = false;
-          if (err && (err.code === 409 || err.response?.error_code === 409 || String(err).includes('409') || String(err).includes('Conflict'))) {
-            console.warn('⚠️ Конфликт 409: Другой экземпляр бота с таким же токеном опрашивает Telegram API. Повторная попытка через 10 сек...');
+          const isConflict = err && (err.code === 409 || err.response?.error_code === 409 || String(err).includes('409') || String(err).includes('Conflict'));
+          if (isConflict) {
+            console.warn('⚠️ Конфликт 409: Другой экземпляр бота с таким же токеном опрашивает Telegram API. Повторная попытка через 30 сек...');
           } else {
             console.error('Failed to launch bot via polling:', err?.message || err);
           }
           if (botReconnectTimer) clearTimeout(botReconnectTimer);
+          const reconnectDelay = isConflict ? 30000 : 15000;
           botReconnectTimer = setTimeout(() => {
-            if (settings.botToken) {
+            botReconnectTimer = null;
+            if (settings.botToken && !isBotPollingActive && !isInitializingBot) {
               console.log('[BotSupervisor] 🔄 Auto-recovering bot polling connection...');
               initBot(settings.botToken).catch(e => console.error('[BotSupervisor] Recovery error:', e));
             }
-          }, 10000);
+          }, reconnectDelay);
         });
       } catch (err: any) {
         isBotPollingActive = false;
@@ -9104,6 +10009,8 @@ async function initBot(token: string) {
     console.error('Failed to initialize Telegram bot:', err);
     bot = null;
     return null;
+  } finally {
+    isInitializingBot = false;
   }
 }
 
@@ -9111,6 +10018,9 @@ async function initBot(token: string) {
 syncData().then(() => {
   if (settings.botToken) {
     initBot(settings.botToken);
+  }
+  if ((settings as any).companionBot?.enabled && (settings as any).companionBot?.botToken) {
+    initCompanionBot((settings as any).companionBot);
   }
 }).catch(err => {
   console.error('Data sync failed during startup:', err);
@@ -9758,7 +10668,7 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -9857,14 +10767,18 @@ async function startServer() {
     // Bot Watchdog: ensure bot instance is active and polling is alive
     if (settings.botToken) {
       if (!bot || !isBotPollingActive) {
-        console.log('[BotSupervisor] ⚠️ Bot instance is missing or polling is inactive. Auto-reconnecting...');
-        initBot(settings.botToken).catch(e => console.error('[BotSupervisor] Auto-reconnect error:', e?.message));
+        if (!isInitializingBot && !botReconnectTimer) {
+          console.log('[BotSupervisor] ⚠️ Bot instance is missing or polling is inactive. Auto-reconnecting...');
+          initBot(settings.botToken).catch(e => console.error('[BotSupervisor] Auto-reconnect error:', e?.message));
+        }
       } else {
         bot.telegram.getMe().then(me => {
           botInfo = { id: me.id, username: me.username };
         }).catch(err => {
           console.warn('[BotSupervisor] ⚠️ Bot ping getMe failed:', err?.message || err);
-          if (!String(err).includes('401') && !String(err).includes('Unauthorized')) {
+          const is401 = String(err).includes('401') || String(err).includes('Unauthorized');
+          const is429 = String(err).includes('429') || (err as any)?.response?.error_code === 429;
+          if (!is401 && !is429 && !isInitializingBot && !botReconnectTimer) {
             console.log('[BotSupervisor] Attempting soft reconnection...');
             initBot(settings.botToken).catch(e => console.error('[BotSupervisor] Soft reconnection error:', e?.message));
           }

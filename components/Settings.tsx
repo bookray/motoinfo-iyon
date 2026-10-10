@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { BotSettings, DatabaseType } from '../types';
+import { BotSettings, DatabaseType, Chat, CompanionBotSettings } from '../types';
 import { 
   Save, 
   Key, 
@@ -25,20 +25,40 @@ import {
   Copy,
   Check,
   Eye,
-  EyeOff
+  EyeOff,
+  MessageSquare,
+  Smile,
+  Flame,
+  Award,
+  Bell,
+  Sliders
 } from 'lucide-react';
 
 interface SettingsProps {
   settings: BotSettings;
+  chats?: Chat[];
   onUpdateSettings: (settings: BotSettings) => void;
 }
 
-export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }) => {
+export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpdateSettings }) => {
   const [localSettings, setLocalSettings] = useState<BotSettings>(settings);
   const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isRestarting, setIsRestarting] = useState(false);
   const [statusMessage, setStatusMessage] = useState<{ text: string, type: 'success' | 'error' } | null>(null);
+
+  // Companion Bot State
+  const [isVerifyingCompanion, setIsVerifyingCompanion] = useState(false);
+  const [companionBotInfo, setCompanionBotInfo] = useState<any>(null);
+  const [companionVerifyError, setCompanionVerifyError] = useState<string | null>(null);
+
+  const [isTestingCompanionAi, setIsTestingCompanionAi] = useState(false);
+  const [companionTestPrompt, setCompanionTestPrompt] = useState('Привет! Подскажите, как подготовить мотоцикл к зиме?');
+  const [companionTestResult, setCompanionTestResult] = useState<{ success: boolean; reply?: string; error?: string } | null>(null);
+
+  // Reputation Notification Test State
+  const [isTestingRepNotify, setIsTestingRepNotify] = useState(false);
+  const [repNotifyResult, setRepNotifyResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Live ticking clock for server time & project time preview
   const [currentUtc, setCurrentUtc] = useState<Date>(new Date());
@@ -193,6 +213,116 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
       setStatusMessage({ text: 'Ошибка сети при проверке', type: 'error' });
     } finally {
       setIsVerifying(false);
+    }
+  };
+
+  const handleVerifyCompanionBot = async () => {
+    const companionToken = localSettings.companionBot?.botToken;
+    if (!companionToken || !companionToken.trim()) {
+      setCompanionVerifyError('Сначала введите токен второго бота');
+      return;
+    }
+    setIsVerifyingCompanion(true);
+    setCompanionVerifyError(null);
+    setCompanionBotInfo(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/companion-bot/verify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ botToken: companionToken.trim() })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCompanionBotInfo(data.bot);
+        setLocalSettings(prev => ({
+          ...prev,
+          companionBot: {
+            ...prev.companionBot,
+            enabled: prev.companionBot?.enabled ?? true,
+            botToken: companionToken.trim(),
+            botUsername: data.bot.username,
+            botName: data.bot.firstName,
+            replyProbability: prev.companionBot?.replyProbability ?? 15,
+            replyToDirectMentions: prev.companionBot?.replyToDirectMentions ?? true,
+            replyToQuestions: prev.companionBot?.replyToQuestions ?? true,
+            minDelayBetweenRepliesSeconds: prev.companionBot?.minDelayBetweenRepliesSeconds ?? 180,
+            humorLevel: prev.companionBot?.humorLevel || 'high',
+            banterLevel: prev.companionBot?.banterLevel || 'friendly',
+            personaPreset: prev.companionBot?.personaPreset || 'biker_veteran',
+            model: prev.companionBot?.model || localSettings.geminiModel || 'gemini-3.1-flash-lite',
+            useContextCount: prev.companionBot?.useContextCount || 10
+          }
+        }));
+        setStatusMessage({ text: `Второй бот подключен: @${data.bot.username}`, type: 'success' });
+      } else {
+        setCompanionVerifyError(data.error || 'Ошибка проверки токена бота');
+      }
+    } catch (e: any) {
+      setCompanionVerifyError('Ошибка сети при проверке токена: ' + (e.message || String(e)));
+    } finally {
+      setIsVerifyingCompanion(false);
+    }
+  };
+
+  const handleTestCompanionAi = async () => {
+    setIsTestingCompanionAi(true);
+    setCompanionTestResult(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/companion-bot/test', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          prompt: companionTestPrompt,
+          settings: localSettings.companionBot,
+          chatTitle: 'Моточат'
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCompanionTestResult({ success: true, reply: data.reply });
+      } else {
+        setCompanionTestResult({ success: false, error: data.error || 'Ошибка генерации ответа' });
+      }
+    } catch (e: any) {
+      setCompanionTestResult({ success: false, error: 'Ошибка сети: ' + (e.message || String(e)) });
+    } finally {
+      setIsTestingCompanionAi(false);
+    }
+  };
+
+  const handleTestReputationNotification = async () => {
+    setIsTestingRepNotify(true);
+    setRepNotifyResult(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/reputation/test-notify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          chatId: localSettings.reputationNotifyChatId || localSettings.infoChatId
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setRepNotifyResult({ success: true, message: `Уведомление успешно доставлено в чат ${data.targetChatId} (ID сообщения: ${data.messageId})` });
+      } else {
+        setRepNotifyResult({ success: false, message: data.error || 'Ошибка отправки уведомления' });
+      }
+    } catch (e: any) {
+      setRepNotifyResult({ success: false, message: 'Ошибка сети: ' + (e.message || String(e)) });
+    } finally {
+      setIsTestingRepNotify(false);
     }
   };
 
@@ -741,6 +871,704 @@ export const Settings: React.FC<SettingsProps> = ({ settings, onUpdateSettings }
                 <li><b>100% функционал:</b> Все вкладки (Статистика, Чаты, ИИ-Суммаризация, Модерация, Анти-мошенники, Репутация, Планировщик, Рассылки, Логи, Настройки) работают прямо в мобильном Telegram.</li>
               </ul>
             </div>
+          </div>
+        </div>
+
+        {/* Companion Bot Settings (Second Bot) */}
+        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm relative overflow-hidden">
+          <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-br from-indigo-500/10 via-purple-500/5 to-transparent rounded-full blur-3xl pointer-events-none" />
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-5 border-b border-slate-800/80">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-xl text-white shadow-lg shadow-indigo-600/30">
+                <Bot className="w-6 h-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-bold text-white">Второй Telegram-бот (ИИ-собеседник)</h3>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 uppercase tracking-wider">
+                    Gemini AI
+                  </span>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Бот-участник для чатов: периодически отвечает людям, анализирует контекст беседы, шутит и разряжает обстановку
+                </p>
+              </div>
+            </div>
+
+            <label className="relative inline-flex items-center cursor-pointer shrink-0">
+              <input
+                type="checkbox"
+                className="sr-only peer"
+                checked={localSettings.companionBot?.enabled || false}
+                onChange={(e) => {
+                  const enabled = e.target.checked;
+                  setLocalSettings({
+                    ...localSettings,
+                    companionBot: {
+                      ...(localSettings.companionBot || {
+                        botToken: '',
+                        replyProbability: 15,
+                        replyToDirectMentions: true,
+                        replyToQuestions: true,
+                        minDelayBetweenRepliesSeconds: 180,
+                        humorLevel: 'high',
+                        banterLevel: 'friendly',
+                        personaPreset: 'biker_veteran',
+                        model: localSettings.geminiModel || 'gemini-3.1-flash-lite',
+                        useContextCount: 10
+                      }),
+                      enabled
+                    }
+                  });
+                }}
+              />
+              <div className="w-12 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-gradient-to-r peer-checked:from-indigo-600 peer-checked:to-purple-600"></div>
+              <span className="ml-3 text-xs font-bold text-slate-300">
+                {localSettings.companionBot?.enabled ? 'Включен' : 'Выключен'}
+              </span>
+            </label>
+          </div>
+
+          <div className="space-y-6">
+            {/* Bot Token & Verification */}
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 ml-1">
+                Токен второго бота (получите у @BotFather)
+              </label>
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="text"
+                  value={localSettings.companionBot?.botToken || ''}
+                  onChange={(e) => setLocalSettings({
+                    ...localSettings,
+                    companionBot: {
+                      ...(localSettings.companionBot || {
+                        enabled: false,
+                        replyProbability: 15,
+                        replyToDirectMentions: true,
+                        replyToQuestions: true,
+                        minDelayBetweenRepliesSeconds: 180,
+                        humorLevel: 'high',
+                        banterLevel: 'friendly',
+                        personaPreset: 'biker_veteran',
+                        model: localSettings.geminiModel || 'gemini-3.1-flash-lite',
+                        useContextCount: 10
+                      }),
+                      botToken: e.target.value
+                    }
+                  })}
+                  className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-mono text-sm"
+                  placeholder="987654321:XYZabc123... (токен второго бота)"
+                />
+                <button
+                  type="button"
+                  onClick={handleVerifyCompanionBot}
+                  disabled={isVerifyingCompanion || !localSettings.companionBot?.botToken}
+                  className="px-4 py-3 bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-indigo-950/30 flex items-center justify-center gap-2 cursor-pointer shrink-0"
+                >
+                  {isVerifyingCompanion ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                  <span>{isVerifyingCompanion ? 'Проверка...' : 'Проверить токен'}</span>
+                </button>
+              </div>
+
+              {companionVerifyError && (
+                <div className="mt-2.5 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-center gap-2">
+                  <XCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{companionVerifyError}</span>
+                </div>
+              )}
+
+              {(companionBotInfo || localSettings.companionBot?.botUsername) && (
+                <div className="mt-2.5 p-3.5 rounded-xl bg-indigo-500/10 border border-indigo-500/30 text-indigo-200 text-xs flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <div>
+                      <span className="font-semibold text-white">
+                        {companionBotInfo?.firstName || localSettings.companionBot?.botName || 'Бот-собеседник'}
+                      </span>
+                      <span className="text-indigo-300 font-mono ml-2">
+                        @{companionBotInfo?.username || localSettings.companionBot?.botUsername}
+                      </span>
+                      {companionBotInfo?.id && (
+                        <span className="text-[10px] text-slate-400 ml-2 font-mono">
+                          (ID: {companionBotInfo.id})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                    ГОТОВ К РАБОТЕ
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Behavior & Reply Frequency */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-slate-300">
+                    Вероятность ответа в чате
+                  </label>
+                  <span className="text-xs font-mono font-bold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                    {localSettings.companionBot?.replyProbability ?? 15}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="1"
+                  max="100"
+                  value={localSettings.companionBot?.replyProbability ?? 15}
+                  onChange={(e) => setLocalSettings({
+                    ...localSettings,
+                    companionBot: {
+                      ...(localSettings.companionBot as CompanionBotSettings),
+                      replyProbability: Number(e.target.value)
+                    }
+                  })}
+                  className="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                />
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  Рекомендуется 10-25%: бот будет иногда органично вклиниваться в разговор, не создавая спама.
+                </p>
+              </div>
+
+              <div className="p-4 bg-slate-950/60 rounded-xl border border-slate-800 space-y-3">
+                <label className="block text-xs font-bold text-slate-300">
+                  Минимальный интервал (кулдаун) между ответами в одном чате
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="30"
+                    max="3600"
+                    step="30"
+                    value={localSettings.companionBot?.minDelayBetweenRepliesSeconds ?? 180}
+                    onChange={(e) => setLocalSettings({
+                      ...localSettings,
+                      companionBot: {
+                        ...(localSettings.companionBot as CompanionBotSettings),
+                        minDelayBetweenRepliesSeconds: Math.max(10, Number(e.target.value))
+                      }
+                    })}
+                    className="w-32 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  <span className="text-xs text-slate-400">
+                    секунд ({Math.round((localSettings.companionBot?.minDelayBetweenRepliesSeconds ?? 180) / 60)} мин.)
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 leading-normal">
+                  Защита от частых ответов: в течение этого времени бот не станет писать сам, кроме прямых упоминаний.
+                </p>
+              </div>
+            </div>
+
+            {/* Triggers Options */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="flex items-start gap-3 p-3.5 bg-slate-950/60 rounded-xl border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={localSettings.companionBot?.replyToDirectMentions !== false}
+                  onChange={(e) => setLocalSettings({
+                    ...localSettings,
+                    companionBot: {
+                      ...(localSettings.companionBot as CompanionBotSettings),
+                      replyToDirectMentions: e.target.checked
+                    }
+                  })}
+                  className="mt-0.5 rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                />
+                <div>
+                  <span className="text-xs font-semibold text-white block">Отвечать на упоминания и реплаи</span>
+                  <span className="text-[11px] text-slate-400">Всегда отвечать, если упомянули @бота или ответили на его сообщение</span>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 p-3.5 bg-slate-950/60 rounded-xl border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={localSettings.companionBot?.replyToQuestions !== false}
+                  onChange={(e) => setLocalSettings({
+                    ...localSettings,
+                    companionBot: {
+                      ...(localSettings.companionBot as CompanionBotSettings),
+                      replyToQuestions: e.target.checked
+                    }
+                  })}
+                  className="mt-0.5 rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-indigo-500"
+                />
+                <div>
+                  <span className="text-xs font-semibold text-white block">Реагировать на вопросы (?)</span>
+                  <span className="text-[11px] text-slate-400">Увеличивать вероятность ответа, если сообщение содержит вопрос</span>
+                </div>
+              </label>
+            </div>
+
+            {/* Humor, Banter & Persona Settings */}
+            <div className="p-5 bg-gradient-to-br from-slate-950 via-slate-900/90 to-slate-950 rounded-xl border border-indigo-900/30 space-y-5">
+              <div className="flex items-center gap-2 pb-3 border-b border-slate-800">
+                <Smile className="w-5 h-5 text-amber-400" />
+                <h4 className="text-sm font-bold text-white">Настройки юмора, подколок и стиля общения</h4>
+              </div>
+
+              {/* Humor Level */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
+                  Уровень юмора
+                </label>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  {[
+                    { id: 'none', label: 'Без юмора', desc: 'Строго по делу, без шуток', icon: '🧘' },
+                    { id: 'light', label: 'Легкий юмор', desc: 'Позитивный, добрый', icon: '😊' },
+                    { id: 'high', label: 'Шутник', desc: 'Приколы, байки, ирония', icon: '🃏' },
+                    { id: 'sarcastic', label: 'Саркастичный', desc: 'Едкий, острый юмор', icon: '⚡️' },
+                  ].map((h) => {
+                    const isSelected = (localSettings.companionBot?.humorLevel || 'high') === h.id;
+                    return (
+                      <button
+                        key={h.id}
+                        type="button"
+                        onClick={() => setLocalSettings({
+                          ...localSettings,
+                          companionBot: {
+                            ...(localSettings.companionBot as CompanionBotSettings),
+                            humorLevel: h.id as any
+                          }
+                        })}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-500/15 border-amber-500/50 text-white shadow-lg shadow-amber-500/10'
+                            : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="text-xl mb-1">{h.icon}</div>
+                        <div className="text-xs font-bold">{h.label}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5 leading-tight">{h.desc}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Banter Level (Подколки) */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
+                  Степень подколок (Banter / Поддразнивание)
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  {[
+                    { id: 'none', label: 'Без подколок', desc: 'Не подшучивать над участниками', icon: '🤝' },
+                    { id: 'friendly', label: 'Дружеские подколки', desc: 'По-братски, без обид и токсичности', icon: '😉' },
+                    { id: 'sharp', label: 'Острый роаст', desc: 'Дерзкие панчи, подколы поломок и байков', icon: '🔥' },
+                  ].map((b) => {
+                    const isSelected = (localSettings.companionBot?.banterLevel || 'friendly') === b.id;
+                    return (
+                      <button
+                        key={b.id}
+                        type="button"
+                        onClick={() => setLocalSettings({
+                          ...localSettings,
+                          companionBot: {
+                            ...(localSettings.companionBot as CompanionBotSettings),
+                            banterLevel: b.id as any
+                          }
+                        })}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-rose-500/15 border-rose-500/50 text-white shadow-lg shadow-rose-500/10'
+                            : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="text-lg">{b.icon}</span>
+                          <span className="text-xs font-bold">{b.label}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 mt-1 leading-tight">{b.desc}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Persona Preset */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2.5">
+                  Характер и образ персонажа
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
+                  {[
+                    { id: 'biker_veteran', label: 'Опытный байкер', desc: 'Старожил дорог, байкерский сленг, опыт поломок и дальняков' },
+                    { id: 'witty_expert', label: 'Остроумный мотомеханик', desc: 'Знает всё про карбы, клапана и инжекторы, советует с иронией' },
+                    { id: 'friendly_mate', label: 'Свой парень в чате', desc: 'Душевный, простой собеседник, за любой позитивный движ' },
+                    { id: 'provocateur', label: 'Задорный трикстер', desc: 'Подливает масла в огонь споров, шутит и подначивает' },
+                    { id: 'custom', label: 'Свой характер (Custom)', desc: 'Полностью настраивается вашим системным промптом' },
+                  ].map((p) => {
+                    const isSelected = (localSettings.companionBot?.personaPreset || 'biker_veteran') === p.id;
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => setLocalSettings({
+                          ...localSettings,
+                          companionBot: {
+                            ...(localSettings.companionBot as CompanionBotSettings),
+                            personaPreset: p.id as any
+                          }
+                        })}
+                        className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          isSelected
+                            ? 'bg-indigo-500/15 border-indigo-500/50 text-white shadow-lg shadow-indigo-500/10'
+                            : 'bg-slate-900/60 border-slate-800 text-slate-300 hover:border-slate-700'
+                        }`}
+                      >
+                        <div className="text-xs font-bold">{p.label}</div>
+                        <p className="text-[10px] text-slate-400 mt-1 leading-tight">{p.desc}</p>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Custom System Prompt */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                  Дополнительные инструкции для ИИ (Системный промпт)
+                </label>
+                <textarea
+                  rows={3}
+                  value={localSettings.companionBot?.customSystemPrompt || ''}
+                  onChange={(e) => setLocalSettings({
+                    ...localSettings,
+                    companionBot: {
+                      ...(localSettings.companionBot as CompanionBotSettings),
+                      customSystemPrompt: e.target.value
+                    }
+                  })}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-xs transition-all placeholder-slate-600"
+                  placeholder="Например: Любишь мотоциклы Honda, подшучиваешь над китайской техникой, но по-доброму; советуешь всегда надевать экип; называй участников чата «райдеры»..."
+                />
+              </div>
+
+              {/* Model & Context count */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                    Модель Gemini для ответов
+                  </label>
+                  <select
+                    value={localSettings.companionBot?.model || localSettings.geminiModel || 'gemini-3.1-flash-lite'}
+                    onChange={(e) => setLocalSettings({
+                      ...localSettings,
+                      companionBot: {
+                        ...(localSettings.companionBot as CompanionBotSettings),
+                        model: e.target.value
+                      }
+                    })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-xs"
+                  >
+                    <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite (Рекомендуется: быстро и стабильно)</option>
+                    <option value="gemini-flash-lite-latest">gemini-flash-lite-latest</option>
+                    <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite</option>
+                    <option value="gemini-3.8-flash">gemini-3.8-flash</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1.5 ml-1">
+                    Глубина контекста (сообщений)
+                  </label>
+                  <input
+                    type="number"
+                    min="3"
+                    max="30"
+                    value={localSettings.companionBot?.useContextCount ?? 10}
+                    onChange={(e) => setLocalSettings({
+                      ...localSettings,
+                      companionBot: {
+                        ...(localSettings.companionBot as CompanionBotSettings),
+                        useContextCount: Number(e.target.value)
+                      }
+                    })}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 text-xs font-mono"
+                  />
+                </div>
+              </div>
+
+              {/* Allowed Chats Selection */}
+              {chats && chats.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">
+                      Чаты, где активен бот-собеседник
+                    </label>
+                    <span className="text-[11px] text-slate-400">
+                      {(!localSettings.companionBot?.enabledChatIds || localSettings.companionBot.enabledChatIds.length === 0)
+                        ? 'Работает во всех чатах'
+                        : `Выбрано: ${localSettings.companionBot.enabledChatIds.length} из ${chats.length}`}
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto p-2 bg-slate-950 rounded-xl border border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setLocalSettings({
+                        ...localSettings,
+                        companionBot: {
+                          ...(localSettings.companionBot as CompanionBotSettings),
+                          enabledChatIds: []
+                        }
+                      })}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                        (!localSettings.companionBot?.enabledChatIds || localSettings.companionBot.enabledChatIds.length === 0)
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-slate-900 text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      🌐 Все чаты
+                    </button>
+                    {chats.map(chat => {
+                      const selected = (localSettings.companionBot?.enabledChatIds || []).includes(chat.id);
+                      return (
+                        <button
+                          key={chat.id}
+                          type="button"
+                          onClick={() => {
+                            const current = localSettings.companionBot?.enabledChatIds || [];
+                            const next = selected 
+                              ? current.filter(id => id !== chat.id) 
+                              : [...current, chat.id];
+                            setLocalSettings({
+                              ...localSettings,
+                              companionBot: {
+                                ...(localSettings.companionBot as CompanionBotSettings),
+                                enabledChatIds: next
+                              }
+                            });
+                          }}
+                          className={`px-3 py-1.5 rounded-lg text-xs transition-all cursor-pointer border ${
+                            selected 
+                              ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50 font-bold' 
+                              : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-700'
+                          }`}
+                        >
+                          {chat.title}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Interactive Test Box */}
+              <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                <label className="block text-xs font-bold text-slate-300">
+                  🧪 Протестировать характер бота (ИИ-тест):
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <input
+                    type="text"
+                    value={companionTestPrompt}
+                    onChange={(e) => setCompanionTestPrompt(e.target.value)}
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="Введите фразу или вопрос, как в чате..."
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestCompanionAi}
+                    disabled={isTestingCompanionAi || !companionTestPrompt.trim()}
+                    className="px-4 py-2 bg-purple-600 hover:bg-purple-500 disabled:bg-slate-800 disabled:text-slate-600 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer shrink-0"
+                  >
+                    {isTestingCompanionAi ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                    <span>{isTestingCompanionAi ? 'Генерация...' : 'Сгенерировать ответ'}</span>
+                  </button>
+                </div>
+
+                {companionTestResult && (
+                  <div className={`p-3.5 rounded-xl border text-xs animate-in fade-in ${
+                    companionTestResult.success 
+                      ? 'bg-purple-500/10 border-purple-500/30 text-purple-200' 
+                      : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                  }`}>
+                    {companionTestResult.success ? (
+                      <div className="space-y-1">
+                        <div className="font-bold text-purple-300 flex items-center gap-1.5">
+                          <Bot className="w-4 h-4" /> Ответ ИИ-собеседника:
+                        </div>
+                        <p className="text-white text-sm bg-slate-950/70 p-2.5 rounded-lg border border-purple-500/20 italic">
+                          "{companionTestResult.reply}"
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                        <span>{companionTestResult.error}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Info Chat & Reputation Notifications */}
+        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm space-y-6">
+          <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-amber-500/10 rounded-lg text-amber-400">
+                <Award className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-bold text-white">Уведомления и система репутации</h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Настройка каналов доставки оповещений об изменениях репутации и событиях
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                ID информационного чата (Общие события)
+              </label>
+              <input
+                type="text"
+                value={localSettings.infoChatId || ''}
+                onChange={(e) => setLocalSettings({ ...localSettings, infoChatId: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-sm"
+                placeholder="-1004336455230 (ID группы или канала)"
+              />
+              <p className="mt-1.5 text-[10px] text-slate-500">
+                Канал или чат для системных логов, уведомлений о входах/выходах и мульти-чат активности.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                Чат для уведомлений о репутации
+              </label>
+              <input
+                type="text"
+                value={localSettings.reputationNotifyChatId || ''}
+                onChange={(e) => setLocalSettings({ ...localSettings, reputationNotifyChatId: e.target.value })}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-sm"
+                placeholder="Оставьте пустым для использования информационного чата"
+              />
+              <p className="mt-1.5 text-[10px] text-slate-500">
+                Куда слать карточки изменения репутации (если пусто — отправляется в инфо-чат).
+              </p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors cursor-pointer ${
+              localSettings.muteReputationChangeMessages
+                ? 'bg-slate-950/30 border-slate-800/40 opacity-50 cursor-not-allowed'
+                : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
+            }`}>
+              <input
+                type="checkbox"
+                checked={localSettings.reputationNotifyInGroup !== false && !localSettings.muteReputationChangeMessages}
+                disabled={localSettings.muteReputationChangeMessages}
+                onChange={(e) => setLocalSettings({ ...localSettings, reputationNotifyInGroup: e.target.checked })}
+                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500 disabled:opacity-50"
+              />
+              <div>
+                <span className="text-xs font-semibold text-white block">Ответ в чате группы</span>
+                <span className="text-[10px] text-slate-400">Публиковать подтверждение «⭐️ Репутация повышена/снижена» в группе</span>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-3 p-3.5 bg-slate-950/60 rounded-xl border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+              <input
+                type="checkbox"
+                checked={localSettings.reputationNotifyInAdminChat !== false}
+                onChange={(e) => setLocalSettings({ ...localSettings, reputationNotifyInAdminChat: e.target.checked })}
+                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500"
+              />
+              <div>
+                <span className="text-xs font-semibold text-white block">Оповещение в инфо-чат</span>
+                <span className="text-[10px] text-slate-400">Слать подробную карточку администраторам в инфо-чат</span>
+              </div>
+            </label>
+
+            <label className="flex items-start gap-3 p-3.5 bg-slate-950/60 rounded-xl border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+              <input
+                type="checkbox"
+                checked={localSettings.reputationNotifyInDm !== false}
+                onChange={(e) => setLocalSettings({ ...localSettings, reputationNotifyInDm: e.target.checked })}
+                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500"
+              />
+              <div>
+                <span className="text-xs font-semibold text-white block">Личное сообщение в ЛС</span>
+                <span className="text-[10px] text-slate-400">Отправлять пользователю уведомление в боте, если он запустил бота</span>
+              </div>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+            <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors cursor-pointer ${
+              localSettings.muteReputationChangeMessages
+                ? 'bg-amber-500/10 border-amber-500/40 text-white'
+                : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 text-slate-300'
+            }`}>
+              <input
+                type="checkbox"
+                checked={!!localSettings.muteReputationChangeMessages}
+                onChange={(e) => {
+                  const checked = e.target.checked;
+                  setLocalSettings({
+                    ...localSettings,
+                    muteReputationChangeMessages: checked,
+                    reputationNotifyInGroup: checked ? false : localSettings.reputationNotifyInGroup
+                  });
+                }}
+                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
+              />
+              <div>
+                <span className="text-xs font-bold text-white block">1. Не выводить сообщения об изменении репутации</span>
+                <span className="text-[10px] text-slate-400 block mt-0.5">Тихий режим: бот начисляет баллы, но не пишет в чат при «Спасибо» и реакциях.</span>
+              </div>
+            </label>
+
+            <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors cursor-pointer ${
+              localSettings.reputationDailyDigestEnabled !== false
+                ? 'bg-amber-500/10 border-amber-500/40 text-white'
+                : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 text-slate-300'
+            }`}>
+              <input
+                type="checkbox"
+                checked={localSettings.reputationDailyDigestEnabled !== false}
+                onChange={(e) => setLocalSettings({ ...localSettings, reputationDailyDigestEnabled: e.target.checked })}
+                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
+              />
+              <div>
+                <span className="text-xs font-bold text-white block">2. Выводить информацию за день об изменении репутации в дайджест</span>
+                <span className="text-[10px] text-slate-400 block mt-0.5">Включает блок со сводкой благодарностей и динамикой рейтинга участников в ежедневный дайджест чата.</span>
+              </div>
+            </label>
+          </div>
+
+          <div className="pt-2">
+            <button
+              type="button"
+              onClick={handleTestReputationNotification}
+              disabled={isTestingRepNotify}
+              className="px-4 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-amber-950/30 flex items-center gap-2 cursor-pointer"
+            >
+              {isTestingRepNotify ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+              <span>{isTestingRepNotify ? 'Отправка...' : 'Проверить отправку уведомления в Telegram'}</span>
+            </button>
+
+            {repNotifyResult && (
+              <div className={`mt-3 p-3 rounded-xl border text-xs flex items-center gap-2 animate-in fade-in ${
+                repNotifyResult.success ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'
+              }`}>
+                {repNotifyResult.success ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+                <span>{repNotifyResult.message}</span>
+              </div>
+            )}
           </div>
         </div>
 

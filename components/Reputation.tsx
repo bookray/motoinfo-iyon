@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { 
   Award, ThumbsUp, ThumbsDown, AlertTriangle, ShieldAlert, 
   Search, Filter, Plus, UserMinus, RotateCcw, Clock, 
-  MessageSquare, User, CheckCircle2, ChevronRight, TrendingUp, TrendingDown, Sparkles
+  MessageSquare, User, CheckCircle2, ChevronRight, TrendingUp, TrendingDown, Sparkles,
+  Bell, Send, RefreshCw, Settings as SettingsIcon, XCircle
 } from 'lucide-react';
 import { Chat, ReputationEntry, WarningEntry, FilterSettings } from '../types';
 
@@ -19,6 +20,17 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
   const [selectedChatFilter, setSelectedChatFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'LEADERBOARD' | 'WARNINGS' | 'HISTORY'>('LEADERBOARD');
+
+  // Notification Settings State
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isTestingRepNotify, setIsTestingRepNotify] = useState(false);
+  const [repNotifyResult, setRepNotifyResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [localNotifyChatId, setLocalNotifyChatId] = useState(filters.reputationNotifyChatId || '');
+  const [localNotifyInGroup, setLocalNotifyInGroup] = useState<boolean>((filters as any).reputationNotifyInGroup !== false && !(filters as any).muteReputationChangeMessages);
+  const [localNotifyInAdminChat, setLocalNotifyInAdminChat] = useState<boolean>((filters as any).reputationNotifyInAdminChat !== false);
+  const [localNotifyInDm, setLocalNotifyInDm] = useState<boolean>((filters as any).reputationNotifyInDm !== false);
+  const [localMuteChangeMessages, setLocalMuteChangeMessages] = useState<boolean>(!!(filters as any).muteReputationChangeMessages);
+  const [localDailyDigestEnabled, setLocalDailyDigestEnabled] = useState<boolean>((filters as any).reputationDailyDigestEnabled !== false);
 
   // Modals
   const [isWarnModalOpen, setIsWarnModalOpen] = useState(false);
@@ -58,6 +70,92 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
       console.error('Failed to toggle reputation:', err);
     }
   };
+
+  const handleTestNotification = async () => {
+    setIsTestingRepNotify(true);
+    setRepNotifyResult(null);
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/reputation/test-notify', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
+        body: JSON.stringify({
+          chatId: localNotifyChatId
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setRepNotifyResult({ success: true, message: `Уведомление успешно доставлено в чат ${data.targetChatId} (ID: ${data.messageId})` });
+      } else {
+        setRepNotifyResult({ success: false, message: data.error || 'Ошибка отправки уведомления' });
+      }
+    } catch (e: any) {
+      setRepNotifyResult({ success: false, message: 'Ошибка сети: ' + (e.message || String(e)) });
+    } finally {
+      setIsTestingRepNotify(false);
+    }
+  };
+
+  const handleSaveNotifySettings = async () => {
+    if (!onUpdateFilters) return;
+    const effectiveInGroup = localMuteChangeMessages ? false : localNotifyInGroup;
+    const updated = {
+      ...filters,
+      reputationNotifyChatId: localNotifyChatId,
+      reputationNotifyInGroup: effectiveInGroup,
+      reputationNotifyInAdminChat: localNotifyInAdminChat,
+      reputationNotifyInDm: localNotifyInDm,
+      muteReputationChangeMessages: localMuteChangeMessages,
+      reputationDailyDigestEnabled: localDailyDigestEnabled,
+    };
+    try {
+      const token = localStorage.getItem('token');
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+      };
+
+      await Promise.all([
+        fetch('/api/filters', {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify(updated)
+        }),
+        fetch('/api/settings', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            reputationNotifyChatId: localNotifyChatId,
+            reputationNotifyInGroup: effectiveInGroup,
+            reputationNotifyInAdminChat: localNotifyInAdminChat,
+            reputationNotifyInDm: localNotifyInDm,
+            muteReputationChangeMessages: localMuteChangeMessages,
+            reputationDailyDigestEnabled: localDailyDigestEnabled,
+          })
+        }).catch(() => {})
+      ]);
+
+      onUpdateFilters(updated);
+      setActionSuccess('Настройки уведомлений и суммаризации репутации успешно сохранены');
+      setTimeout(() => setActionSuccess(null), 3500);
+    } catch (e) {
+      console.error('Failed to save reputation notify settings:', e);
+    }
+  };
+
+  useEffect(() => {
+    if (filters) {
+      setLocalNotifyChatId(filters.reputationNotifyChatId || '');
+      setLocalNotifyInGroup((filters as any).reputationNotifyInGroup !== false && !(filters as any).muteReputationChangeMessages);
+      setLocalNotifyInAdminChat((filters as any).reputationNotifyInAdminChat !== false);
+      setLocalNotifyInDm((filters as any).reputationNotifyInDm !== false);
+      setLocalMuteChangeMessages(!!(filters as any).muteReputationChangeMessages);
+      setLocalDailyDigestEnabled((filters as any).reputationDailyDigestEnabled !== false);
+    }
+  }, [filters]);
 
   const loadData = async () => {
     try {
@@ -333,8 +431,184 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
               <AlertTriangle className="w-4 h-4" />
               <span>Выдать варн</span>
             </button>
+            <button
+              onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+              className={`flex-1 sm:flex-initial px-4 py-2.5 text-sm font-semibold rounded-xl transition-all border flex items-center justify-center gap-2 cursor-pointer ${
+                isSettingsOpen
+                  ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
+              }`}
+              title="Настройки доставки уведомлений в Telegram"
+            >
+              <Bell className="w-4 h-4" />
+              <span>Оповещения {isSettingsOpen ? '▲' : '▼'}</span>
+            </button>
           </div>
         </div>
+
+        {/* Collapsible Reputation Notifications Card */}
+        {isSettingsOpen && (
+          <div className="mt-4 p-5 bg-slate-950/80 rounded-2xl border border-amber-500/30 space-y-4 animate-in fade-in">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-400">
+                  <Bell className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white">Доставка уведомлений об изменении репутации</h4>
+                  <p className="text-xs text-slate-400">Куда и в каком виде бот отправляет карточки при изменении рейтинга пользователей</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleSaveNotifySettings}
+                className="px-4 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-amber-900/30 cursor-pointer flex items-center gap-1.5 shrink-0"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Сохранить настройки</span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1.5">
+                  ID чата или канала для карточек репутации
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={localNotifyChatId}
+                    onChange={(e) => setLocalNotifyChatId(e.target.value)}
+                    placeholder="Например: -1004336455230 (по умолчанию инфо-чат)"
+                    className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleTestNotification}
+                    disabled={isTestingRepNotify}
+                    className="px-3.5 py-2.5 bg-slate-800 hover:bg-slate-700 disabled:bg-slate-900 text-white rounded-xl text-xs font-semibold transition-all border border-slate-700 flex items-center gap-1.5 cursor-pointer shrink-0"
+                    title="Отправить тестовую карточку изменения репутации в Telegram"
+                  >
+                    {isTestingRepNotify ? <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-400" /> : <Send className="w-3.5 h-3.5 text-amber-400" />}
+                    <span>{isTestingRepNotify ? 'Отправка...' : 'Тест'}</span>
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Если оставить пустым, используется общий системный инфо-чат (События чатов: -1004336455230).
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  Каналы отправки
+                </label>
+                <div className="grid grid-cols-1 gap-2">
+                  <label className={`flex items-center gap-2.5 p-2 rounded-xl border transition-colors cursor-pointer ${
+                    localMuteChangeMessages
+                      ? 'bg-slate-900/30 border-slate-800/40 opacity-50 cursor-not-allowed'
+                      : 'bg-slate-900/60 rounded-xl border-slate-800/80 hover:border-slate-700'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={localNotifyInGroup && !localMuteChangeMessages}
+                      disabled={localMuteChangeMessages}
+                      onChange={(e) => setLocalNotifyInGroup(e.target.checked)}
+                      className="rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 disabled:opacity-50"
+                    />
+                    <span className="text-xs text-slate-200">Ответное сообщение в группе («⭐️ Репутация повышена/снижена»)</span>
+                  </label>
+                  <label className="flex items-center gap-2.5 p-2 bg-slate-900/60 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={localNotifyInAdminChat}
+                      onChange={(e) => setLocalNotifyInAdminChat(e.target.checked)}
+                      className="rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500"
+                    />
+                    <span className="text-xs text-slate-200">Подробная карточка в инфо-чат для администрации</span>
+                  </label>
+                  <label className="flex items-center gap-2.5 p-2 bg-slate-900/60 rounded-xl border border-slate-800/80 cursor-pointer hover:border-slate-700 transition-colors">
+                    <input
+                      type="checkbox"
+                      checked={localNotifyInDm}
+                      onChange={(e) => setLocalNotifyInDm(e.target.checked)}
+                      className="rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500"
+                    />
+                    <span className="text-xs text-slate-200">Личное уведомление пользователю в ЛС от бота</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Дополнительные настройки: Режим тишины и Суточная суммаризация */}
+            <div className="pt-3 border-t border-slate-800/80 space-y-2">
+              <label className="block text-xs font-bold text-amber-400">
+                Специальные настройки отображения и суммаризации
+              </label>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {/* 1. Не выводить сообщения об изменении репутации */}
+                <label className={`flex items-start gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
+                  localMuteChangeMessages
+                    ? 'bg-amber-500/10 border-amber-500/40 text-white'
+                    : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700 text-slate-300'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={localMuteChangeMessages}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setLocalMuteChangeMessages(checked);
+                      if (checked) {
+                        setLocalNotifyInGroup(false);
+                      }
+                    }}
+                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-white block">
+                      1. Не выводить сообщения об изменении репутации
+                    </span>
+                    <span className="text-[11px] text-slate-400 block mt-0.5 leading-relaxed">
+                      При включении бот начисляет баллы в фоновом режиме, но не отправляет ответные сообщения в чат («⭐️ Репутация повышена/снижена»).
+                    </span>
+                  </div>
+                </label>
+
+                {/* 2. Выводить информацию за день об изменении репутации пользователей в сообщение с суммаризацией за день */}
+                <label className={`flex items-start gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
+                  localDailyDigestEnabled
+                    ? 'bg-amber-500/10 border-amber-500/40 text-white'
+                    : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700 text-slate-300'
+                }`}>
+                  <input
+                    type="checkbox"
+                    checked={localDailyDigestEnabled}
+                    onChange={(e) => setLocalDailyDigestEnabled(e.target.checked)}
+                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
+                  />
+                  <div>
+                    <span className="text-xs font-bold text-white block">
+                      2. Выводить информацию за день об изменении репутации пользователей в сообщение с суммаризацией за день
+                    </span>
+                    <span className="text-[11px] text-slate-400 block mt-0.5 leading-relaxed">
+                      Добавляет в суточный дайджест (суммаризацию) блок «⭐️ Итоги репутации и благодарностей за день» со списком отмеченных участников и их динамикой.
+                    </span>
+                  </div>
+                </label>
+              </div>
+            </div>
+
+            {repNotifyResult && (
+              <div className={`p-3 rounded-xl border text-xs flex items-center gap-2 animate-in fade-in ${
+                repNotifyResult.success 
+                  ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' 
+                  : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+              }`}>
+                {repNotifyResult.success ? <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" /> : <XCircle className="w-4 h-4 shrink-0 text-rose-400" />}
+                <span>{repNotifyResult.message}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {!isReputationActive && (
           <div className="mt-4 p-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs sm:text-sm flex items-center justify-between gap-3 animate-in fade-in">
