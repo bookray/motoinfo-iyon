@@ -8,6 +8,33 @@
     <meta name="description" content="Telegram chat administration and public catalog with 41 moto communities, daily AI digests archive, live statistics, and comprehensive advertising portal." />
     <meta property="og:title" content="Motoinfo Admin - июнь" />
     <meta property="og:description" content="Telegram chat administration and public catalog with 41 moto communities, daily AI digests archive, live statistics, and comprehensive advertising portal." />
+    <script>
+      // Suppress Vite HMR / ModuleRunner WebSocket connection errors in dev/sandbox iframe
+      window.addEventListener('error', function(event) {
+        var str = (event.message || '') + ' ' + (event.filename || '') + ' ' + (event.error && (event.error.stack || event.error.message) || '');
+        if (
+          str.indexOf('@vite/client') !== -1 ||
+          str.indexOf('WebSocket') !== -1 ||
+          str.indexOf('createWebSocketModuleRunnerTransport') !== -1
+        ) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          return true;
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function(event) {
+        var reason = event.reason;
+        var str = String((reason && (reason.stack || reason.message)) || reason || '');
+        if (
+          str.indexOf('@vite/client') !== -1 ||
+          str.indexOf('WebSocket') !== -1 ||
+          str.indexOf('createWebSocketModuleRunnerTransport') !== -1
+        ) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    </script>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <link rel="stylesheet" href="/index.css">
     <style>

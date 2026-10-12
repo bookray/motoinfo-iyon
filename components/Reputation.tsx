@@ -22,7 +22,7 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
   const [activeTab, setActiveTab] = useState<'LEADERBOARD' | 'WARNINGS' | 'HISTORY'>('LEADERBOARD');
 
   // Notification Settings State
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(true);
   const [isTestingRepNotify, setIsTestingRepNotify] = useState(false);
   const [repNotifyResult, setRepNotifyResult] = useState<{ success: boolean; message: string } | null>(null);
   const [localNotifyChatId, setLocalNotifyChatId] = useState(filters.reputationNotifyChatId || '');
@@ -99,17 +99,30 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
     }
   };
 
-  const handleSaveNotifySettings = async () => {
+  const handleSaveNotifySettings = async (overrides?: Partial<{
+    muteReputationChangeMessages: boolean;
+    reputationDailyDigestEnabled: boolean;
+    reputationNotifyChatId: string;
+    reputationNotifyInGroup: boolean;
+    reputationNotifyInAdminChat: boolean;
+    reputationNotifyInDm: boolean;
+  }>) => {
     if (!onUpdateFilters) return;
-    const effectiveInGroup = localMuteChangeMessages ? false : localNotifyInGroup;
+    const effectiveMute = overrides?.muteReputationChangeMessages !== undefined ? overrides.muteReputationChangeMessages : localMuteChangeMessages;
+    const effectiveDailyDigest = overrides?.reputationDailyDigestEnabled !== undefined ? overrides.reputationDailyDigestEnabled : localDailyDigestEnabled;
+    const effectiveChatId = overrides?.reputationNotifyChatId !== undefined ? overrides.reputationNotifyChatId : localNotifyChatId;
+    const effectiveInAdmin = overrides?.reputationNotifyInAdminChat !== undefined ? overrides.reputationNotifyInAdminChat : localNotifyInAdminChat;
+    const effectiveInDm = overrides?.reputationNotifyInDm !== undefined ? overrides.reputationNotifyInDm : localNotifyInDm;
+    const effectiveInGroup = effectiveMute ? false : (overrides?.reputationNotifyInGroup !== undefined ? overrides.reputationNotifyInGroup : localNotifyInGroup);
+
     const updated = {
       ...filters,
-      reputationNotifyChatId: localNotifyChatId,
+      reputationNotifyChatId: effectiveChatId,
       reputationNotifyInGroup: effectiveInGroup,
-      reputationNotifyInAdminChat: localNotifyInAdminChat,
-      reputationNotifyInDm: localNotifyInDm,
-      muteReputationChangeMessages: localMuteChangeMessages,
-      reputationDailyDigestEnabled: localDailyDigestEnabled,
+      reputationNotifyInAdminChat: effectiveInAdmin,
+      reputationNotifyInDm: effectiveInDm,
+      muteReputationChangeMessages: effectiveMute,
+      reputationDailyDigestEnabled: effectiveDailyDigest,
     };
     try {
       const token = localStorage.getItem('token');
@@ -125,22 +138,22 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
           body: JSON.stringify(updated)
         }),
         fetch('/api/settings', {
-          method: 'POST',
+          method: 'PUT',
           headers,
           body: JSON.stringify({
-            reputationNotifyChatId: localNotifyChatId,
+            reputationNotifyChatId: effectiveChatId,
             reputationNotifyInGroup: effectiveInGroup,
-            reputationNotifyInAdminChat: localNotifyInAdminChat,
-            reputationNotifyInDm: localNotifyInDm,
-            muteReputationChangeMessages: localMuteChangeMessages,
-            reputationDailyDigestEnabled: localDailyDigestEnabled,
+            reputationNotifyInAdminChat: effectiveInAdmin,
+            reputationNotifyInDm: effectiveInDm,
+            muteReputationChangeMessages: effectiveMute,
+            reputationDailyDigestEnabled: effectiveDailyDigest,
           })
         }).catch(() => {})
       ]);
 
       onUpdateFilters(updated);
-      setActionSuccess('Настройки уведомлений и суммаризации репутации успешно сохранены');
-      setTimeout(() => setActionSuccess(null), 3500);
+      setActionSuccess('Настройки уведомлений и суммаризации сохранены');
+      setTimeout(() => setActionSuccess(null), 3000);
     } catch (e) {
       console.error('Failed to save reputation notify settings:', e);
     }
@@ -546,9 +559,9 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
               </label>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {/* 1. Не выводить сообщения об изменении репутации */}
-                <label className={`flex items-start gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
+                <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-all cursor-pointer ${
                   localMuteChangeMessages
-                    ? 'bg-amber-500/10 border-amber-500/40 text-white'
+                    ? 'bg-amber-500/10 border-amber-500/40 text-white shadow-sm shadow-amber-500/10'
                     : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700 text-slate-300'
                 }`}>
                   <input
@@ -560,13 +573,24 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
                       if (checked) {
                         setLocalNotifyInGroup(false);
                       }
+                      handleSaveNotifySettings({
+                        muteReputationChangeMessages: checked,
+                        reputationNotifyInGroup: checked ? false : localNotifyInGroup
+                      });
                     }}
-                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
+                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0 w-4 h-4 cursor-pointer"
                   />
                   <div>
-                    <span className="text-xs font-bold text-white block">
-                      1. Не выводить сообщения об изменении репутации
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-white block">
+                        1. Не выводить сообщения об изменении репутации
+                      </span>
+                      {localMuteChangeMessages && (
+                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                          Режим тишины активен
+                        </span>
+                      )}
+                    </div>
                     <span className="text-[11px] text-slate-400 block mt-0.5 leading-relaxed">
                       При включении бот начисляет баллы в фоновом режиме, но не отправляет ответные сообщения в чат («⭐️ Репутация повышена/снижена»).
                     </span>
@@ -574,23 +598,36 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
                 </label>
 
                 {/* 2. Выводить информацию за день об изменении репутации пользователей в сообщение с суммаризацией за день */}
-                <label className={`flex items-start gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
+                <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-all cursor-pointer ${
                   localDailyDigestEnabled
-                    ? 'bg-amber-500/10 border-amber-500/40 text-white'
+                    ? 'bg-amber-500/10 border-amber-500/40 text-white shadow-sm shadow-amber-500/10'
                     : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700 text-slate-300'
                 }`}>
                   <input
                     type="checkbox"
                     checked={localDailyDigestEnabled}
-                    onChange={(e) => setLocalDailyDigestEnabled(e.target.checked)}
-                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setLocalDailyDigestEnabled(checked);
+                      handleSaveNotifySettings({
+                        reputationDailyDigestEnabled: checked
+                      });
+                    }}
+                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0 w-4 h-4 cursor-pointer"
                   />
                   <div>
-                    <span className="text-xs font-bold text-white block">
-                      2. Выводить информацию за день об изменении репутации пользователей в сообщение с суммаризацией за день
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-white block">
+                        2. Выводить информацию за день об изменении репутации пользователей в сообщение с суммаризацией за день
+                      </span>
+                      {localDailyDigestEnabled && (
+                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                          Включено в дайджест
+                        </span>
+                      )}
+                    </div>
                     <span className="text-[11px] text-slate-400 block mt-0.5 leading-relaxed">
-                      Добавляет в суточный дайджест (суммаризацию) блок «⭐️ Итоги репутации и благодарностей за день» со списком отмеченных участников и их динамикой.
+                      Добавляет в суточный дайджест (суммаризацию) блок «⭐️ Итоги изменения репутации за день» со списком отмеченных участников и их динамикой.
                     </span>
                   </div>
                 </label>
