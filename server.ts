@@ -761,63 +761,32 @@ app.post('/api/login', async (req, res) => {
     }
 
     // Try exact match by username
-    let userSnap: any;
-    try {
-      userSnap = await db.collection('users').where('username', '==', rawUsername).get();
-      
-      // Try lowercased username
-      if (userSnap.empty) {
-        userSnap = await db.collection('users').where('username', '==', rawUsername.toLowerCase()).get();
-      }
-      
-      // Try by email
-      if (userSnap.empty) {
-        userSnap = await db.collection('users').where('email', '==', rawUsername).get();
-      }
-      if (userSnap.empty) {
-        userSnap = await db.collection('users').where('email', '==', rawUsername.toLowerCase()).get();
-      }
-
-      // Fallback: If username is 'bookray', check if default admin can authenticate
-      if (userSnap.empty && (rawUsername.toLowerCase() === 'bookray' || rawUsername.toLowerCase().includes('bookray'))) {
-        userSnap = await db.collection('users').where('username', '==', 'admin').get();
-      }
-    } catch (dbErr: any) {
-      console.warn('Database error during user query, checking emergency superadmin credentials:', dbErr?.message);
+    let userSnap = await db.collection('users').where('username', '==', rawUsername).get();
+    
+    // Try lowercased username
+    if (userSnap.empty) {
+      userSnap = await db.collection('users').where('username', '==', rawUsername.toLowerCase()).get();
+    }
+    
+    // Try by email
+    if (userSnap.empty) {
+      userSnap = await db.collection('users').where('email', '==', rawUsername).get();
+    }
+    if (userSnap.empty) {
+      userSnap = await db.collection('users').where('email', '==', rawUsername.toLowerCase()).get();
     }
 
-    // Emergency fail-safe for super admin login
-    const isSuperAdminName = (rawUsername.toLowerCase() === 'admin' || rawUsername.toLowerCase() === 'bookray');
-    const isSuperAdminPass = (password === 'admin123' || (settings.adminPassword && password === settings.adminPassword));
-
-    if ((!userSnap || userSnap.empty) && isSuperAdminName && isSuperAdminPass) {
-      console.log(`[Auth] Emergency superadmin fallback authenticated for '${rawUsername}'`);
-      const fallbackUser = {
-        id: 'superadmin',
-        username: rawUsername,
-        role: 'SUPER_ADMIN',
-        email: `${rawUsername}@motoinfo.local`
-      };
-      const token = jwt.sign({ id: fallbackUser.id, username: fallbackUser.username, role: fallbackUser.role }, JWT_SECRET, { expiresIn: '7d' });
-      return res.json({ token, user: fallbackUser });
+    // Fallback: If username is 'bookray', check if default admin can authenticate
+    if (userSnap.empty && (rawUsername.toLowerCase() === 'bookray' || rawUsername.toLowerCase().includes('bookray'))) {
+      userSnap = await db.collection('users').where('username', '==', 'admin').get();
     }
 
-    if (!userSnap || userSnap.empty) {
+    if (userSnap.empty) {
       return res.status(401).json({ error: 'Неверный логин или пароль' });
     }
 
     const user = userSnap.docs[0].data();
-    let validPassword = false;
-    try {
-      validPassword = await bcrypt.compare(password, user.password);
-    } catch (e) {
-      validPassword = false;
-    }
-
-    if (!validPassword && isSuperAdminName && isSuperAdminPass) {
-      validPassword = true;
-    }
-
+    const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) {
       return res.status(401).json({ error: 'Неверный логин или пароль' });
     }
@@ -829,13 +798,6 @@ app.post('/api/login', async (req, res) => {
     res.json({ token, user: userWithoutPassword });
   } catch (err: any) {
     console.error('Error during /api/login:', err);
-    // Check if emergency admin login can recover the session
-    const rawUsername = (username || '').trim().toLowerCase();
-    if ((rawUsername === 'admin' || rawUsername === 'bookray') && (password === 'admin123' || (settings.adminPassword && password === settings.adminPassword))) {
-      const fallbackUser = { id: 'superadmin', username: rawUsername, role: 'SUPER_ADMIN' };
-      const token = jwt.sign(fallbackUser, JWT_SECRET, { expiresIn: '7d' });
-      return res.json({ token, user: fallbackUser });
-    }
     res.status(500).json({ error: 'Ошибка сервера: ' + (err?.message || 'Не удалось выполнить вход') });
   }
 });
@@ -2028,17 +1990,18 @@ app.get('/api/memberships/latest', (req, res) => {
   res.json(latestMembers);
 });
 
-app.put('/api/settings', authenticateToken, async (req, res) => {
+const handleUpdateSettings = async (req: express.Request, res: express.Response) => {
   try {
     const user = (req as any).user;
-    if (user.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Access denied' });
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') return res.status(403).json({ error: 'Access denied' });
     
     const oldToken = settings.botToken;
     const oldApiRoot = settings.telegramApiRoot;
     const newSettings = req.body;
     console.log('Updating settings:', newSettings);
-    await db.collection('config').doc('settings').set(cleanData(newSettings));
-    settings = { ...settings, ...newSettings };
+    const mergedSettings = { ...settings, ...newSettings };
+    await db.collection('config').doc('settings').set(cleanData(mergedSettings));
+    settings = mergedSettings;
 
     if (newSettings.botToken && (newSettings.botToken !== oldToken || newSettings.telegramApiRoot !== oldApiRoot)) {
       console.log('Bot token or Telegram API Root updated, auto-reinitializing bot instance...');
@@ -2059,12 +2022,15 @@ app.put('/api/settings', authenticateToken, async (req, res) => {
       details: `Обновлены настройки системы.`
     });
     
-    res.json({ success: true });
+    res.json({ success: true, settings });
   } catch (err) {
     console.error('Failed to update settings:', err);
     res.status(500).json({ error: (err as Error).message });
   }
-});
+};
+
+app.put('/api/settings', authenticateToken, handleUpdateSettings);
+app.post('/api/settings', authenticateToken, handleUpdateSettings);
 
 app.put('/api/filters', authenticateToken, async (req, res) => {
   try {
@@ -5280,15 +5246,9 @@ async function generateChatSummary(
 
   if (msgs.length === 0) {
     try {
-      const snap = await db.collection('chat_messages')
-        .where('chatId', '==', chatIdStr)
-        .where('timestamp', '>=', cutoffTime)
-        .limit(300)
-        .get();
-      const dbMsgs = snap.docs.map(d => d.data());
-      if (dbMsgs.length > 0) {
-        msgs = dbMsgs;
-      }
+      const snap = await db.collection('chat_messages').get();
+      const allDbMsgs = snap.docs.map(d => d.data());
+      msgs = allDbMsgs.filter(m => String(m.chatId) === chatIdStr && m.timestamp >= cutoffTime);
     } catch (e) {
       console.warn('Could not load chat messages from db:', e);
     }
@@ -5651,22 +5611,6 @@ async function syncData() {
     await safeLoad('chats', async () => {
       const snap = await db.collection('chats').get();
       chats = snap.docs.map(d => ({ id: String(d.id), ...d.data() } as any));
-      if (chats.length === 0 && Array.isArray(CHATS_CATALOG)) {
-        console.log(`[Sync] Populating in-memory chats with ${CHATS_CATALOG.length} communities from catalog...`);
-        chats = CHATS_CATALOG.map(c => {
-          const mapping = CHAT_TO_DB_MAPPING[c.slug];
-          return {
-            id: mapping?.id || `chat_${c.slug}`,
-            title: c.title,
-            members: c.estimatedMembers || 100,
-            active: true,
-            username: c.username,
-            category: c.category,
-            description: c.shortDesc,
-            avatarUrl: c.image
-          } as any;
-        });
-      }
       console.log(`Loaded ${chats.length} chats`);
     });
 
