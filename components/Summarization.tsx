@@ -45,8 +45,16 @@ export const TelegramFormattedDigest: React.FC<{ text: string }> = ({ text }) =>
   const [viewMode, setViewMode] = useState<'preview' | 'code'>('preview');
   const [expandedQuotes, setExpandedQuotes] = useState<Record<number, boolean>>({});
 
+  const cleanDigestText = (raw: string) => {
+    let out = raw || '';
+    // Strip unwanted "Причина: Реакция 👍/❤️ на сообщение" or any reaction reasons
+    out = out.replace(/\s*<i>\s*Причина:\s*[^<]*(?:реакция|👍|❤️|👎|🤡)[^<]*<\/i>\.?/gi, '');
+    out = out.replace(/\s*Причина:\s*[^\n]*(?:реакция|👍|❤️|👎|🤡)[^\n]*/gi, '');
+    return out;
+  };
+
   const parseBlocks = (raw: string) => {
-    let processed = raw || '';
+    let processed = cleanDigestText(raw);
     // Standardize any markdown bold/italic/headers if mixed
     processed = processed.replace(/^###?\s+(.+)$/gm, '<b>$1</b>');
     processed = processed.replace(/^#\s+(.+)$/gm, '<b>$1</b>');
@@ -57,8 +65,11 @@ export const TelegramFormattedDigest: React.FC<{ text: string }> = ({ text }) =>
     processed = processed.replace(/`([^`]+)`/g, '<code>$1</code>');
     processed = processed.replace(/^[\*\-]\s+/gm, '• ');
 
-    // Match expandable and normal blockquotes
-    const segments: Array<{ type: 'text' | 'expandable' | 'quote'; content: string }> = [];
+    // Normalize any simple <blockquote> to <blockquote expandable> so it is always collapsible
+    processed = processed.replace(/<blockquote(?!\s+expandable)\b[^>]*>/gi, '<blockquote expandable>');
+
+    // Match expandable blockquotes
+    const segments: Array<{ type: 'text' | 'expandable' | 'quote'; content: string; title?: string }> = [];
     const quoteRegex = /<blockquote(\s+expandable)?>([\s\S]*?)<\/blockquote>/gi;
     let lastIndex = 0;
     let match;
@@ -67,10 +78,22 @@ export const TelegramFormattedDigest: React.FC<{ text: string }> = ({ text }) =>
       if (match.index > lastIndex) {
         segments.push({ type: 'text', content: processed.slice(lastIndex, match.index) });
       }
-      const isExpandable = !!match[1] || match[0].includes('expandable');
+      const quoteBody = match[2].trim();
+      const precedingText = processed.slice(Math.max(0, match.index - 120), match.index);
+      
+      let title = '💬 Текст суммаризации (темы и итоги)';
+      if (precedingText.includes('Итоги') || precedingText.includes('репутаци') || quoteBody.includes('Итоги изменения репутации') || quoteBody.includes('репутаци') || quoteBody.includes('⭐️')) {
+        title = '⭐️ Статистика рейтинга и репутации за день';
+      } else if (precedingText.includes('MotoBlackList') || quoteBody.includes('MotoBlackList')) {
+        title = '🚨 Сводка MotoBlackList';
+      } else if (precedingText.includes('Главные темы') || precedingText.includes('Темы')) {
+        title = '💬 Текст суммаризации (Главные темы дня)';
+      }
+
       segments.push({
-        type: isExpandable ? 'expandable' : 'quote',
-        content: match[2].trim()
+        type: 'expandable',
+        content: quoteBody,
+        title
       });
       lastIndex = quoteRegex.lastIndex;
     }
@@ -79,59 +102,124 @@ export const TelegramFormattedDigest: React.FC<{ text: string }> = ({ text }) =>
       segments.push({ type: 'text', content: processed.slice(lastIndex) });
     }
 
+    // Fallback: If no blockquotes were found at all in the raw text, split header from body and collapse the body
+    if (segments.length === 1 && segments[0].type === 'text') {
+      const whole = segments[0].content;
+      const headerEndMatch = whole.match(/^(📊[^\n]*\n(?:📅|🗓️)[^\n]*\n*)/i);
+      if (headerEndMatch && whole.length > headerEndMatch[0].length + 20) {
+        const header = headerEndMatch[0];
+        const bodyContent = whole.slice(header.length).trim();
+        return [
+          { type: 'text' as const, content: header },
+          { type: 'expandable' as const, content: bodyContent, title: '💬 Текст суммаризации (Главные темы и итоги)' }
+        ];
+      }
+    }
+
     return segments;
   };
 
   const segments = parseBlocks(text || '');
 
+  const toggleAll = (expand: boolean) => {
+    const nextState: Record<number, boolean> = {};
+    segments.forEach((seg, idx) => {
+      if (seg.type === 'expandable') {
+        nextState[idx] = expand;
+      }
+    });
+    setExpandedQuotes(nextState);
+  };
+
+  const cleanedText = cleanDigestText(text || '');
+
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-between pb-2 border-b border-slate-800 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-800 text-xs">
         <div className="flex items-center gap-2 text-slate-400">
           <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></span>
           <span className="font-medium text-slate-300">Telegram HTML (свёрнутые блоки &lt;blockquote expandable&gt;)</span>
         </div>
-        <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
-          <button
-            type="button"
-            onClick={() => setViewMode('preview')}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
-              viewMode === 'preview' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Telegram Вид
-          </button>
-          <button
-            type="button"
-            onClick={() => setViewMode('code')}
-            className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
-              viewMode === 'code' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            Код HTML
-          </button>
+        <div className="flex items-center gap-2">
+          {viewMode === 'preview' && (
+            <div className="flex items-center gap-1.5 mr-1">
+              <button
+                type="button"
+                onClick={() => toggleAll(false)}
+                className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all"
+                title="Свернуть все блоки дайджеста"
+              >
+                Свернуть всё ▲
+              </button>
+              <button
+                type="button"
+                onClick={() => toggleAll(true)}
+                className="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-all"
+                title="Развернуть все блоки дайджеста"
+              >
+                Развернуть всё ▼
+              </button>
+            </div>
+          )}
+          <div className="flex items-center bg-slate-900 rounded-lg p-0.5 border border-slate-800">
+            <button
+              type="button"
+              onClick={() => setViewMode('preview')}
+              className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                viewMode === 'preview' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Telegram Вид
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('code')}
+              className={`px-2.5 py-1 rounded text-xs font-medium transition-all ${
+                viewMode === 'code' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Код HTML
+            </button>
+          </div>
         </div>
       </div>
 
       {viewMode === 'code' ? (
         <pre className="bg-slate-950 border border-slate-800 rounded-xl p-4 text-xs font-mono text-emerald-400 whitespace-pre-wrap leading-relaxed overflow-x-auto select-all">
-          {text}
+          {cleanedText}
         </pre>
       ) : (
         <div className="bg-slate-950/90 border border-slate-800/80 rounded-xl p-5 text-sm text-slate-200 font-sans leading-relaxed space-y-3 shadow-inner">
           {segments.map((seg, idx) => {
             if (seg.type === 'expandable') {
               const isExpanded = !!expandedQuotes[idx];
+              const isReputationBlock = (seg.title || '').includes('репутации') || (seg.title || '').includes('рейтинга');
+              
               return (
-                <div key={idx} className="my-2.5 rounded-lg border-l-4 border-blue-500 bg-blue-950/20 border border-slate-800/60 overflow-hidden">
+                <div 
+                  key={idx} 
+                  className={`my-2.5 rounded-lg border-l-4 overflow-hidden transition-all border ${
+                    isReputationBlock
+                      ? 'border-amber-500 bg-amber-950/15 border-slate-800/60'
+                      : 'border-blue-500 bg-blue-950/20 border-slate-800/60'
+                  }`}
+                >
                   <div 
                     onClick={() => setExpandedQuotes(prev => ({ ...prev, [idx]: !prev[idx] }))}
-                    className="p-3 flex items-center justify-between cursor-pointer hover:bg-blue-900/20 transition-all select-none text-xs font-semibold text-blue-400"
+                    className={`p-3 flex items-center justify-between cursor-pointer transition-all select-none text-xs font-semibold ${
+                      isReputationBlock 
+                        ? 'hover:bg-amber-900/20 text-amber-300' 
+                        : 'hover:bg-blue-900/20 text-blue-400'
+                    }`}
                   >
                     <span className="flex items-center gap-1.5">
-                      <span>💬 Подробности обсуждения / Цитаты</span>
+                      <span>{seg.title || '💬 Подробности обсуждения / Цитаты'}</span>
                     </span>
-                    <span className="flex items-center gap-1 text-[11px] text-blue-400/90 bg-blue-500/10 px-2 py-0.5 rounded border border-blue-500/20">
+                    <span className={`flex items-center gap-1 text-[11px] px-2 py-0.5 rounded border ${
+                      isReputationBlock
+                        ? 'text-amber-300/90 bg-amber-500/10 border-amber-500/20'
+                        : 'text-blue-400/90 bg-blue-500/10 border-blue-500/20'
+                    }`}>
                       {isExpanded ? 'Свернуть ▲' : 'Развернуть ▼'}
                     </span>
                   </div>

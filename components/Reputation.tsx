@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { 
   Award, ThumbsUp, ThumbsDown, AlertTriangle, ShieldAlert, 
   Search, Filter, Plus, UserMinus, RotateCcw, Clock, 
-  MessageSquare, User, CheckCircle2, ChevronRight, TrendingUp, TrendingDown, Sparkles,
+  MessageSquare, User, CheckCircle2, ChevronRight, ChevronDown, ChevronUp, TrendingUp, TrendingDown, Sparkles,
   Bell, Send, RefreshCw, Settings as SettingsIcon, XCircle
 } from 'lucide-react';
 import { Chat, ReputationEntry, WarningEntry, FilterSettings } from '../types';
@@ -21,8 +21,12 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
   const [searchQuery, setSearchQuery] = useState('');
   const [activeTab, setActiveTab] = useState<'LEADERBOARD' | 'WARNINGS' | 'HISTORY'>('LEADERBOARD');
 
+  // Rating Statistics Collapsed State
+  const [isTopPositiveCollapsed, setIsTopPositiveCollapsed] = useState(false);
+  const [isTopNegativeCollapsed, setIsTopNegativeCollapsed] = useState(false);
+
   // Notification Settings State
-  const [isSettingsOpen, setIsSettingsOpen] = useState(true);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isTestingRepNotify, setIsTestingRepNotify] = useState(false);
   const [repNotifyResult, setRepNotifyResult] = useState<{ success: boolean; message: string } | null>(null);
   const [localNotifyChatId, setLocalNotifyChatId] = useState(filters.reputationNotifyChatId || '');
@@ -99,30 +103,17 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
     }
   };
 
-  const handleSaveNotifySettings = async (overrides?: Partial<{
-    muteReputationChangeMessages: boolean;
-    reputationDailyDigestEnabled: boolean;
-    reputationNotifyChatId: string;
-    reputationNotifyInGroup: boolean;
-    reputationNotifyInAdminChat: boolean;
-    reputationNotifyInDm: boolean;
-  }>) => {
+  const handleSaveNotifySettings = async () => {
     if (!onUpdateFilters) return;
-    const effectiveMute = overrides?.muteReputationChangeMessages !== undefined ? overrides.muteReputationChangeMessages : localMuteChangeMessages;
-    const effectiveDailyDigest = overrides?.reputationDailyDigestEnabled !== undefined ? overrides.reputationDailyDigestEnabled : localDailyDigestEnabled;
-    const effectiveChatId = overrides?.reputationNotifyChatId !== undefined ? overrides.reputationNotifyChatId : localNotifyChatId;
-    const effectiveInAdmin = overrides?.reputationNotifyInAdminChat !== undefined ? overrides.reputationNotifyInAdminChat : localNotifyInAdminChat;
-    const effectiveInDm = overrides?.reputationNotifyInDm !== undefined ? overrides.reputationNotifyInDm : localNotifyInDm;
-    const effectiveInGroup = effectiveMute ? false : (overrides?.reputationNotifyInGroup !== undefined ? overrides.reputationNotifyInGroup : localNotifyInGroup);
-
+    const effectiveInGroup = localMuteChangeMessages ? false : localNotifyInGroup;
     const updated = {
       ...filters,
-      reputationNotifyChatId: effectiveChatId,
+      reputationNotifyChatId: localNotifyChatId,
       reputationNotifyInGroup: effectiveInGroup,
-      reputationNotifyInAdminChat: effectiveInAdmin,
-      reputationNotifyInDm: effectiveInDm,
-      muteReputationChangeMessages: effectiveMute,
-      reputationDailyDigestEnabled: effectiveDailyDigest,
+      reputationNotifyInAdminChat: localNotifyInAdminChat,
+      reputationNotifyInDm: localNotifyInDm,
+      muteReputationChangeMessages: localMuteChangeMessages,
+      reputationDailyDigestEnabled: localDailyDigestEnabled,
     };
     try {
       const token = localStorage.getItem('token');
@@ -138,22 +129,22 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
           body: JSON.stringify(updated)
         }),
         fetch('/api/settings', {
-          method: 'PUT',
+          method: 'POST',
           headers,
           body: JSON.stringify({
-            reputationNotifyChatId: effectiveChatId,
+            reputationNotifyChatId: localNotifyChatId,
             reputationNotifyInGroup: effectiveInGroup,
-            reputationNotifyInAdminChat: effectiveInAdmin,
-            reputationNotifyInDm: effectiveInDm,
-            muteReputationChangeMessages: effectiveMute,
-            reputationDailyDigestEnabled: effectiveDailyDigest,
+            reputationNotifyInAdminChat: localNotifyInAdminChat,
+            reputationNotifyInDm: localNotifyInDm,
+            muteReputationChangeMessages: localMuteChangeMessages,
+            reputationDailyDigestEnabled: localDailyDigestEnabled,
           })
         }).catch(() => {})
       ]);
 
       onUpdateFilters(updated);
-      setActionSuccess('Настройки уведомлений и суммаризации сохранены');
-      setTimeout(() => setActionSuccess(null), 3000);
+      setActionSuccess('Настройки уведомлений и суммаризации репутации успешно сохранены');
+      setTimeout(() => setActionSuccess(null), 3500);
     } catch (e) {
       console.error('Failed to save reputation notify settings:', e);
     }
@@ -559,9 +550,9 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
               </label>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {/* 1. Не выводить сообщения об изменении репутации */}
-                <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-all cursor-pointer ${
+                <label className={`flex items-start gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
                   localMuteChangeMessages
-                    ? 'bg-amber-500/10 border-amber-500/40 text-white shadow-sm shadow-amber-500/10'
+                    ? 'bg-amber-500/10 border-amber-500/40 text-white'
                     : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700 text-slate-300'
                 }`}>
                   <input
@@ -573,24 +564,13 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
                       if (checked) {
                         setLocalNotifyInGroup(false);
                       }
-                      handleSaveNotifySettings({
-                        muteReputationChangeMessages: checked,
-                        reputationNotifyInGroup: checked ? false : localNotifyInGroup
-                      });
                     }}
-                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0 w-4 h-4 cursor-pointer"
+                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
                   />
                   <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-white block">
-                        1. Не выводить сообщения об изменении репутации
-                      </span>
-                      {localMuteChangeMessages && (
-                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                          Режим тишины активен
-                        </span>
-                      )}
-                    </div>
+                    <span className="text-xs font-bold text-white block">
+                      1. Не выводить сообщения об изменении репутации
+                    </span>
                     <span className="text-[11px] text-slate-400 block mt-0.5 leading-relaxed">
                       При включении бот начисляет баллы в фоновом режиме, но не отправляет ответные сообщения в чат («⭐️ Репутация повышена/снижена»).
                     </span>
@@ -598,36 +578,23 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
                 </label>
 
                 {/* 2. Выводить информацию за день об изменении репутации пользователей в сообщение с суммаризацией за день */}
-                <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-all cursor-pointer ${
+                <label className={`flex items-start gap-3 p-3 rounded-xl border transition-all cursor-pointer ${
                   localDailyDigestEnabled
-                    ? 'bg-amber-500/10 border-amber-500/40 text-white shadow-sm shadow-amber-500/10'
+                    ? 'bg-amber-500/10 border-amber-500/40 text-white'
                     : 'bg-slate-900/60 border-slate-800/80 hover:border-slate-700 text-slate-300'
                 }`}>
                   <input
                     type="checkbox"
                     checked={localDailyDigestEnabled}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setLocalDailyDigestEnabled(checked);
-                      handleSaveNotifySettings({
-                        reputationDailyDigestEnabled: checked
-                      });
-                    }}
-                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0 w-4 h-4 cursor-pointer"
+                    onChange={(e) => setLocalDailyDigestEnabled(e.target.checked)}
+                    className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
                   />
                   <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-bold text-white block">
-                        2. Выводить информацию за день об изменении репутации пользователей в сообщение с суммаризацией за день
-                      </span>
-                      {localDailyDigestEnabled && (
-                        <span className="px-1.5 py-0.2 rounded text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                          Включено в дайджест
-                        </span>
-                      )}
-                    </div>
+                    <span className="text-xs font-bold text-white block">
+                      2. Выводить информацию за день об изменении репутации пользователей в сообщение с суммаризацией за день
+                    </span>
                     <span className="text-[11px] text-slate-400 block mt-0.5 leading-relaxed">
-                      Добавляет в суточный дайджест (суммаризацию) блок «⭐️ Итоги изменения репутации за день» со списком отмеченных участников и их динамикой.
+                      Добавляет в суточный дайджест (суммаризацию) блок «⭐️ Итоги репутации и благодарностей за день» со списком отмеченных участников и их динамикой.
                     </span>
                   </div>
                 </label>
@@ -748,145 +715,213 @@ export const Reputation: React.FC<ReputationProps> = ({ chats, filters, onUpdate
         <>
           {/* TAB 1: LEADERBOARDS */}
           {activeTab === 'LEADERBOARD' && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* TOP 10 POSITIVE REPUTATION */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
-                <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-emerald-500/20 text-emerald-400 rounded-xl">
-                      <TrendingUp className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="font-bold text-white text-lg">Топ 10 по репутации</h3>
-                      <p className="text-xs text-slate-400">Самые полезные и уважаемые участники</p>
-                    </div>
-                  </div>
-                  <span className="text-xs font-semibold px-2.5 py-1 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20">
-                    +{topPositive.reduce((acc, u) => acc + u.score, 0)} очков
-                  </span>
-                </div>
-
-                <div className="mt-4 divide-y divide-slate-800/60">
-                  {topPositive.length === 0 ? (
-                    <div className="py-12 text-center text-slate-500 text-sm">
-                      Пока нет пользователей с положительной репутацией.
-                    </div>
-                  ) : (
-                    topPositive.map((user, idx) => (
-                      <div 
-                        key={user.userId} 
-                        onClick={() => setSelectedUserHistory(user)}
-                        className="py-3 px-2 flex items-center justify-between hover:bg-slate-800/40 rounded-xl transition-colors cursor-pointer group"
-                      >
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <span className={`w-6 text-center font-bold text-sm ${
-                            idx === 0 ? 'text-amber-400 text-base' : 
-                            idx === 1 ? 'text-slate-300 text-base' : 
-                            idx === 2 ? 'text-amber-600 text-base' : 'text-slate-500'
-                          }`}>
-                            {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`}
-                          </span>
-                          
-                          <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 font-bold border border-slate-700 shrink-0">
-                            {user.firstName ? user.firstName.charAt(0).toUpperCase() : user.username ? user.username.charAt(0).toUpperCase() : 'U'}
-                          </div>
-
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-white group-hover:text-amber-400 transition-colors truncate">
-                                {user.firstName || user.username || `User ${user.userId}`}
-                              </span>
-                              {user.username && (
-                                <span className="text-xs text-slate-500 truncate">@{user.username}</span>
-                              )}
-                            </div>
-                            <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
-                              <span>ID: {user.userId}</span>
-                              <span>•</span>
-                              <span className="text-emerald-400/80">👍 +{user.positiveCount || 0}</span>
-                              <span>•</span>
-                              <span className="text-rose-400/80">👎 -{user.negativeCount || 0}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <div className="px-3 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl font-bold text-sm">
-                            +{user.score}
-                          </div>
-                          <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-400" />
-                        </div>
-                      </div>
-                    ))
-                  )}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between text-xs text-slate-400 pb-1">
+                <span className="font-medium">Статистика рейтинга участников</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsTopPositiveCollapsed(true);
+                      setIsTopNegativeCollapsed(true);
+                    }}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 text-xs transition-colors"
+                  >
+                    Свернуть всё ▲
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsTopPositiveCollapsed(false);
+                      setIsTopNegativeCollapsed(false);
+                    }}
+                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 text-xs transition-colors"
+                  >
+                    Развернуть всё ▼
+                  </button>
                 </div>
               </div>
 
-              {/* TOP 10 ANTI-RATING (NEGATIVE REPUTATION) */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
-                <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-rose-500/20 text-rose-400 rounded-xl">
-                      <TrendingDown className="w-5 h-5" />
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* TOP 10 POSITIVE REPUTATION */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+                  <div 
+                    onClick={() => setIsTopPositiveCollapsed(!isTopPositiveCollapsed)}
+                    className="flex items-center justify-between pb-4 border-b border-slate-800 cursor-pointer select-none group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-emerald-500/20 text-emerald-400 rounded-xl">
+                        <TrendingUp className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-white text-lg group-hover:text-emerald-400 transition-colors flex items-center gap-2">
+                          <span>Топ 10 по репутации</span>
+                          {isTopPositiveCollapsed ? (
+                            <ChevronDown className="w-4 h-4 text-slate-400" />
+                          ) : (
+                            <ChevronUp className="w-4 h-4 text-slate-400" />
+                          )}
+                        </h3>
+                        <p className="text-xs text-slate-400">Самые полезные и уважаемые участники</p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="font-bold text-white text-lg">Антирейтинг репутации</h3>
-                      <p className="text-xs text-slate-400">Участники с наибольшим числом дизлайков</p>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold px-2.5 py-1 bg-emerald-500/10 text-emerald-400 rounded-full border border-emerald-500/20">
+                        +{topPositive.reduce((acc, u) => acc + u.score, 0)} очков
+                      </span>
                     </div>
                   </div>
-                  <span className="text-xs font-semibold px-2.5 py-1 bg-rose-500/10 text-rose-400 rounded-full border border-rose-500/20">
-                    Отрицательный баланс
-                  </span>
-                </div>
 
-                <div className="mt-4 divide-y divide-slate-800/60">
-                  {topNegative.length === 0 ? (
-                    <div className="py-12 text-center text-slate-500 text-sm">
-                      Нет пользователей с отрицательной репутацией. В чатах дружелюбная атмосфера! 🎉
+                  {!isTopPositiveCollapsed ? (
+                    <div className="mt-4 divide-y divide-slate-800/60 animate-in fade-in duration-200">
+                      {topPositive.length === 0 ? (
+                        <div className="py-12 text-center text-slate-500 text-sm">
+                          Пока нет пользователей с положительной репутацией.
+                        </div>
+                      ) : (
+                        topPositive.map((user, idx) => (
+                          <div 
+                            key={user.userId} 
+                            onClick={() => setSelectedUserHistory(user)}
+                            className="py-3 px-2 flex items-center justify-between hover:bg-slate-800/40 rounded-xl transition-colors cursor-pointer group"
+                          >
+                            <div className="flex items-center gap-3.5 min-w-0">
+                              <span className={`w-6 text-center font-bold text-sm ${
+                                idx === 0 ? 'text-amber-400 text-base' : 
+                                idx === 1 ? 'text-slate-300 text-base' : 
+                                idx === 2 ? 'text-amber-600 text-base' : 'text-slate-500'
+                              }`}>
+                                {idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`}
+                              </span>
+                              
+                              <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-300 font-bold border border-slate-700 shrink-0">
+                                {user.firstName ? user.firstName.charAt(0).toUpperCase() : user.username ? user.username.charAt(0).toUpperCase() : 'U'}
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-semibold text-white group-hover:text-amber-400 transition-colors truncate">
+                                    {user.firstName || user.username || `User ${user.userId}`}
+                                  </span>
+                                  {user.username && (
+                                    <span className="text-xs text-slate-500 truncate">@{user.username}</span>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                                  <span>ID: {user.userId}</span>
+                                  <span>•</span>
+                                  <span className="text-emerald-400/80">👍 +{user.positiveCount || 0}</span>
+                                  <span>•</span>
+                                  <span className="text-rose-400/80">👎 -{user.negativeCount || 0}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <div className="px-3 py-1 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl font-bold text-sm">
+                                +{user.score}
+                              </div>
+                              <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-400" />
+                            </div>
+                          </div>
+                        ))
+                      )}
                     </div>
                   ) : (
-                    topNegative.map((user, idx) => (
-                      <div 
-                        key={user.userId} 
-                        onClick={() => setSelectedUserHistory(user)}
-                        className="py-3 px-2 flex items-center justify-between hover:bg-slate-800/40 rounded-xl transition-colors cursor-pointer group"
-                      >
-                        <div className="flex items-center gap-3.5 min-w-0">
-                          <span className="w-6 text-center font-bold text-sm text-rose-400">
-                            #{idx + 1}
-                          </span>
-                          
-                          <div className="w-10 h-10 rounded-full bg-rose-950/40 flex items-center justify-center text-rose-300 font-bold border border-rose-900/50 shrink-0">
-                            {user.firstName ? user.firstName.charAt(0).toUpperCase() : user.username ? user.username.charAt(0).toUpperCase() : 'U'}
-                          </div>
+                    <div 
+                      onClick={() => setIsTopPositiveCollapsed(false)}
+                      className="mt-3 p-3 text-center bg-slate-950/60 hover:bg-slate-800/40 rounded-xl border border-slate-800 text-xs text-slate-400 cursor-pointer transition-colors"
+                    >
+                      Список свёрнут ({topPositive.length} уч.). Нажмите, чтобы развернуть ▼
+                    </div>
+                  )}
+                </div>
 
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-white group-hover:text-rose-400 transition-colors truncate">
-                                {user.firstName || user.username || `User ${user.userId}`}
-                              </span>
-                              {user.username && (
-                                <span className="text-xs text-slate-500 truncate">@{user.username}</span>
-                              )}
-                            </div>
-                            <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
-                              <span>ID: {user.userId}</span>
-                              <span>•</span>
-                              <span className="text-emerald-400/80">👍 +{user.positiveCount || 0}</span>
-                              <span>•</span>
-                              <span className="text-rose-400/80">👎 -{user.negativeCount || 0}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2">
-                          <div className="px-3 py-1 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl font-bold text-sm">
-                            {user.score}
-                          </div>
-                          <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-400" />
-                        </div>
+                {/* TOP 10 ANTI-RATING (NEGATIVE REPUTATION) */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+                  <div 
+                    onClick={() => setIsTopNegativeCollapsed(!isTopNegativeCollapsed)}
+                    className="flex items-center justify-between pb-4 border-b border-slate-800 cursor-pointer select-none group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-rose-500/20 text-rose-400 rounded-xl">
+                        <TrendingDown className="w-5 h-5" />
                       </div>
-                    ))
+                      <div>
+                        <h3 className="font-bold text-white text-lg group-hover:text-rose-400 transition-colors flex items-center gap-2">
+                          <span>Антирейтинг репутации</span>
+                          {isTopNegativeCollapsed ? (
+                            <ChevronDown className="w-4 h-4 text-slate-400" />
+                          ) : (
+                            <ChevronUp className="w-4 h-4 text-slate-400" />
+                          )}
+                        </h3>
+                        <p className="text-xs text-slate-400">Участники с наибольшим числом дизлайков</p>
+                      </div>
+                    </div>
+                    <span className="text-xs font-semibold px-2.5 py-1 bg-rose-500/10 text-rose-400 rounded-full border border-rose-500/20">
+                      Отрицательный баланс
+                    </span>
+                  </div>
+
+                  {!isTopNegativeCollapsed ? (
+                    <div className="mt-4 divide-y divide-slate-800/60 animate-in fade-in duration-200">
+                      {topNegative.length === 0 ? (
+                        <div className="py-12 text-center text-slate-500 text-sm">
+                          Нет пользователей с отрицательной репутацией. В чатах дружелюбная атмосфера! 🎉
+                        </div>
+                      ) : (
+                        topNegative.map((user, idx) => (
+                          <div 
+                            key={user.userId} 
+                            onClick={() => setSelectedUserHistory(user)}
+                            className="py-3 px-2 flex items-center justify-between hover:bg-slate-800/40 rounded-xl transition-colors cursor-pointer group"
+                          >
+                            <div className="flex items-center gap-3.5 min-w-0">
+                              <span className="w-6 text-center font-bold text-sm text-rose-400">
+                                #{idx + 1}
+                              </span>
+                              
+                              <div className="w-10 h-10 rounded-full bg-rose-950/40 flex items-center justify-center text-rose-300 font-bold border border-rose-900/50 shrink-0">
+                                {user.firstName ? user.firstName.charAt(0).toUpperCase() : user.username ? user.username.charAt(0).toUpperCase() : 'U'}
+                              </div>
+
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-semibold text-white group-hover:text-rose-400 transition-colors truncate">
+                                    {user.firstName || user.username || `User ${user.userId}`}
+                                  </span>
+                                  {user.username && (
+                                    <span className="text-xs text-slate-500 truncate">@{user.username}</span>
+                                  )}
+                                </div>
+                                <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
+                                  <span>ID: {user.userId}</span>
+                                  <span>•</span>
+                                  <span className="text-emerald-400/80">👍 +{user.positiveCount || 0}</span>
+                                  <span>•</span>
+                                  <span className="text-rose-400/80">👎 -{user.negativeCount || 0}</span>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              <div className="px-3 py-1 bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded-xl font-bold text-sm">
+                                {user.score}
+                              </div>
+                              <ChevronRight className="w-4 h-4 text-slate-600 group-hover:text-slate-400" />
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : (
+                    <div 
+                      onClick={() => setIsTopNegativeCollapsed(false)}
+                      className="mt-3 p-3 text-center bg-slate-950/60 hover:bg-slate-800/40 rounded-xl border border-slate-800 text-xs text-slate-400 cursor-pointer transition-colors"
+                    >
+                      Список свёрнут ({topNegative.length} уч.). Нажмите, чтобы развернуть ▼
+                    </div>
                   )}
                 </div>
               </div>

@@ -324,6 +324,7 @@ export interface BotSettings {
   adminTelegramUsername?: string;
   telegramApiRoot?: string;
   webAppUrl?: string;
+  infoChatId?: string;
   // AI Provider & API Key Settings
   aiProvider?: 'gemini' | 'openrouter' | 'custom';
   geminiApiKey?: string;

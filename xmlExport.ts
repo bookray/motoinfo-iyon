@@ -225,9 +225,12 @@ export function buildExportXml(context?: XmlExportContext): string {
         xml += `          </topics>\n`;
       }
 
-      const plainText = stripHtml(digest.rawSummaryHtml || '');
+      let rawHtml = digest.rawSummaryHtml || '';
+      rawHtml = rawHtml.replace(/\s*<i>\s*Причина:\s*[^<]*(?:реакция|👍|❤️|👎|🤡)[^<]*<\/i>\.?/gi, '');
+      rawHtml = rawHtml.replace(/\s*Причина:\s*[^\n]*(?:реакция|👍|❤️|👎|🤡)[^\n]*/gi, '');
+      const plainText = stripHtml(rawHtml);
       xml += `          <text>${cdata(plainText)}</text>\n`;
-      xml += `          <html_text>${cdata(digest.rawSummaryHtml || '')}</html_text>\n`;
+      xml += `          <html_text>${cdata(rawHtml)}</html_text>\n`;
       xml += `        </digest>\n`;
     }
 
