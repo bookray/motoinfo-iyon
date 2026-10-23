@@ -33,12 +33,10 @@ RUN npm install --omit=dev --no-audit --no-fund
 COPY --from=build /app/dist ./dist
 
 # Copy backend assets and configs
-COPY --from=build /app/sqlite-init.sql ./
-COPY --from=build /app/firebase-applet-config.json ./
-COPY --from=build /app/database.ts ./
-COPY --from=build /app/firebase-admin.ts ./
-COPY --from=build /app/types.ts ./
-COPY --from=build /app/server.ts ./
+COPY --from=build /app/sqlite-init.sql* ./
+COPY --from=build /app/firebase-applet-config.json* ./
+
+RUN mkdir -p /app/data /app/uploads
 
 EXPOSE 3000
 
