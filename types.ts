@@ -53,7 +53,7 @@ export interface ScheduledMessage {
 export interface LogEntry {
   id: string;
   timestamp: string;
-  type: 'JOIN' | 'LEAVE' | 'BAN' | 'KICK' | 'WARN' | 'MUTE' | 'SYSTEM' | 'BROADCAST' | 'SETTINGS' | 'AUTH' | 'CHAT_UPDATE' | 'TASK';
+  type: 'JOIN' | 'LEAVE' | 'BAN' | 'UNBAN' | 'KICK' | 'WARN' | 'UNWARN' | 'MUTE' | 'UNMUTE' | 'SYSTEM' | 'BROADCAST' | 'SETTINGS' | 'AUTH' | 'CHAT_UPDATE' | 'TASK' | 'DIGEST' | 'SHOP';
   user: string;
   chat: string;
   details: string;
@@ -324,7 +324,6 @@ export interface BotSettings {
   adminTelegramUsername?: string;
   telegramApiRoot?: string;
   webAppUrl?: string;
-  infoChatId?: string;
   // AI Provider & API Key Settings
   aiProvider?: 'gemini' | 'openrouter' | 'custom';
   geminiApiKey?: string;
@@ -338,6 +337,7 @@ export interface BotSettings {
   customAiApiKey?: string;
   customAiModel?: string;
   reputationEnabled?: boolean;
+  infoChatId?: string;
   reputationNotifyChatId?: string;
   reputationNotifyInGroup?: boolean;
   reputationNotifyInAdminChat?: boolean;
@@ -576,9 +576,58 @@ export interface PinnedMessage {
   link?: string;
 }
 
+export interface ShopTopicConfig {
+  chatId: string;
+  chatTitle?: string;
+  enabled: boolean;
+  messageThreadId?: number;
+  topicLink?: string;
+  topicTitle?: string;
+  defaultWeeklyLimit?: number;
+  defaultDurationDays?: number;
+  notifyVendorOnDelete?: boolean;
+  updatedAt: string;
+}
+
+export interface ShopVendor {
+  id: string;
+  chatId: string;
+  chatTitle?: string;
+  shopName: string;
+  contactInfo?: string;
+  userId?: string;
+  username?: string;
+  weeklyLimit: number;
+  currentWeekMessages: number;
+  weekStartIso: string;
+  addedAt: string;
+  expiresAt: string;
+  active: boolean;
+  totalPostsCount?: number;
+  lastPostAt?: string;
+}
+
+export interface ShopPublicationLog {
+  id: string;
+  chatId: string;
+  chatTitle: string;
+  messageThreadId: number;
+  messageId: number;
+  vendorId: string;
+  shopName: string;
+  userId: string;
+  username?: string;
+  authorName: string;
+  textPreview: string;
+  timestamp: string;
+  weekCountAfter: number;
+  weeklyLimit: number;
+}
+
 export const Tab = {
   STATISTICS: 'STATISTICS',
   CHATS: 'CHATS',
+  SHOP_TOPICS: 'SHOP_TOPICS',
   AI_SUMMARY: 'AI_SUMMARY',
   MODERATION: 'MODERATION',
   REPUTATION: 'REPUTATION',
@@ -589,4 +638,4 @@ export const Tab = {
   USERS: 'USERS',
   SETTINGS: 'SETTINGS',
 } as const;
-export type Tab = 'STATISTICS' | 'CHATS' | 'AI_SUMMARY' | 'MODERATION' | 'REPUTATION' | 'ANTI_SCAM' | 'SCHEDULER' | 'BROADCAST' | 'LOGS' | 'USERS' | 'SETTINGS';
+export type Tab = 'STATISTICS' | 'CHATS' | 'SHOP_TOPICS' | 'AI_SUMMARY' | 'MODERATION' | 'REPUTATION' | 'ANTI_SCAM' | 'SCHEDULER' | 'BROADCAST' | 'LOGS' | 'USERS' | 'SETTINGS';

@@ -201,6 +201,53 @@
         "messageId": { "type": "number" }
       },
       "required": ["id", "timestamp", "chatId", "userId", "matchedKeyword"]
+    },
+    "ShopTopicConfig": {
+      "title": "ShopTopicConfig",
+      "description": "Configuration for commercial shop announcements topic in chat",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "chatId": { "type": "string" },
+        "chatTitle": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "topicId": { "type": "number" },
+        "topicTitle": { "type": "string" },
+        "topicLink": { "type": "string" },
+        "defaultWeeklyLimit": { "type": "number" },
+        "defaultDurationDays": { "type": "number" }
+      },
+      "required": ["id", "chatId", "enabled"]
+    },
+    "ShopSeller": {
+      "title": "ShopSeller",
+      "description": "Authorized shop seller allowed to post in commercial topic",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "chatId": { "type": "string" },
+        "userId": { "type": "string" },
+        "username": { "type": "string" },
+        "shopName": { "type": "string" },
+        "weeklyLimit": { "type": "number" },
+        "allowedUntil": { "type": "string", "format": "date-time" },
+        "active": { "type": "boolean" }
+      },
+      "required": ["id", "chatId", "userId", "shopName", "allowedUntil"]
+    },
+    "ShopPublication": {
+      "title": "ShopPublication",
+      "description": "Publication audit log of shop message",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "sellerId": { "type": "string" },
+        "chatId": { "type": "string" },
+        "topicId": { "type": "number" },
+        "userId": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "sellerId", "chatId", "topicId", "userId", "timestamp"]
     }
   },
   "firestore": {
@@ -216,6 +263,9 @@
     "/users/{userId}": { "schema": "User", "description": "Dashboard users" },
     "/reputations/{userId}": { "schema": "Reputation", "description": "User reputation rankings" },
     "/warnings/{warningId}": { "schema": "Warning", "description": "User warnings" },
-    "/pinned_messages/{pinnedId}": { "schema": "PinnedMessage", "description": "Cumulative pinned messages history" }
+    "/pinned_messages/{pinnedId}": { "schema": "PinnedMessage", "description": "Cumulative pinned messages history" },
+    "/shop_topic_configs/{chatId}": { "schema": "ShopTopicConfig", "description": "Shop topic configurations" },
+    "/shop_sellers/{sellerId}": { "schema": "ShopSeller", "description": "Authorized shop sellers" },
+    "/shop_publications/{pubId}": { "schema": "ShopPublication", "description": "Shop publication logs" }
   }
 }

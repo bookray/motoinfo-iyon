@@ -1,12 +1,532 @@
-var __defProp=Object.defineProperty;var __name=(target,value)=>__defProp(target,"name",{value,configurable:true});import dotenv from"dotenv";dotenv.config();import Database from"better-sqlite3";import fs from"fs";import path from"path";import{adminDb as firebaseDb}from"./firebase-admin";import{CHATS_CATALOG,CHAT_TO_DB_MAPPING}from"./chatsCatalog";const DB_TYPE=(process.env.DB_TYPE||"HYBRID").toUpperCase();const SQLITE_PATH=process.env.SQLITE_PATH||"./data/database.sqlite";console.log(`[Database] Selected type: ${DB_TYPE}`);function isFirestoreQuotaExceeded(err){if(!err)return false;const msg=String(err?.message||err);const code=err?.code;return code===8||code==="RESOURCE_EXHAUSTED"||msg.includes("Quota limit exceeded")||msg.includes("Quota exceeded")||msg.includes("Free daily read units")||msg.includes("ResourceExhausted")||msg.includes("DEADLINE_EXCEEDED")}__name(isFirestoreQuotaExceeded,"isFirestoreQuotaExceeded");class SQLiteDoc{static{__name(this,"SQLiteDoc")}constructor(db2,tableName,id){this.db=db2;this.tableName=tableName;this.id=String(id)}async get(){try{const row=this.db.prepare(`SELECT * FROM ${this.tableName} WHERE id = ?`).get(this.id);if(!row){return{id:this.id,exists:false,data:__name(()=>null,"data")}}return{id:this.id,exists:true,data:__name(()=>{let res={...row};if(row.data){try{const parsed=typeof row.data==="string"?JSON.parse(row.data):row.data;res={...res,...parsed}}catch(e){}}res.id=this.id;return res},"data")}}catch(e){return{id:this.id,exists:false,data:__name(()=>null,"data")}}}async set(data){if(!data)return;const clean={...data};clean.id=this.id;try{this.db.prepare(`SELECT 1 FROM ${this.tableName} LIMIT 1`).get()}catch(e){this.db.prepare(`CREATE TABLE IF NOT EXISTS ${this.tableName} (id TEXT PRIMARY KEY, data TEXT)`).run()}const columns=this.db.prepare(`PRAGMA table_info(${this.tableName})`).all().map(c=>c.name);if(columns.includes("data")){clean.data=JSON.stringify(data)}const validFields=Object.keys(clean).filter(k=>columns.includes(k));if(validFields.length===0){if(!columns.includes("data")){this.db.prepare(`ALTER TABLE ${this.tableName} ADD COLUMN data TEXT`).run();columns.push("data")}clean.data=JSON.stringify(data);validFields.push("id","data")}const placeholders=validFields.map(()=>"?").join(", ");const colList=validFields.join(", ");const values=validFields.map(k=>{const val=clean[k];if(typeof val==="boolean")return val?1:0;if(typeof val==="object"&&val!==null)return JSON.stringify(val);return val});const sql=`INSERT OR REPLACE INTO ${this.tableName} (${colList}) VALUES (${placeholders})`;this.db.prepare(sql).run(...values)}async update(data){if(!data)return;const existing=await this.get();const currentData=existing.exists?existing.data()||{}:{};return this.set({...currentData,...data})}async delete(){try{this.db.prepare(`DELETE FROM ${this.tableName} WHERE id = ?`).run(this.id)}catch(e){}}onSnapshot(callback){this.get().then(callback);return()=>{}}}class SQLiteCollection{constructor(db2,tableName,constraints=[]){this.queryConstraints=[];this.db=db2;this.tableName=tableName;this.queryConstraints=[...constraints]}static{__name(this,"SQLiteCollection")}doc(id){return new SQLiteDoc(this.db,this.tableName,id)}where(field,op,value){return new SQLiteCollection(this.db,this.tableName,[...this.queryConstraints,{type:"where",field,op,value}])}orderBy(field,dir="asc"){return new SQLiteCollection(this.db,this.tableName,[...this.queryConstraints,{type:"orderBy",field,dir}])}limit(n){return new SQLiteCollection(this.db,this.tableName,[...this.queryConstraints,{type:"limit",field:"",value:n}])}async add(data){const id=data.id||Math.random().toString(36).substr(2,9);const docRef=this.doc(id);await docRef.set(data);return docRef}async get(){let sql=`SELECT * FROM ${this.tableName}`;const params=[];const whereClauses=[];try{this.db.prepare(`SELECT 1 FROM ${this.tableName} LIMIT 1`).get()}catch(e){return{empty:true,size:0,docs:[]}}const columns=this.db.prepare(`PRAGMA table_info(${this.tableName})`).all().map(c=>c.name);for(const c of this.queryConstraints){if(c.type==="where"){const op=c.op==="=="?"=":c.op;if(columns.includes(c.field)){whereClauses.push(`${c.field} ${op} ?`);params.push(c.value)}else if(columns.includes("data")){whereClauses.push(`json_extract(data, '$.${c.field}') ${op} ?`);params.push(typeof c.value==="object"?JSON.stringify(c.value):c.value)}}}if(whereClauses.length>0){sql+=` WHERE ${whereClauses.join(" AND ")}`}const orderBy=this.queryConstraints.find(c=>c.type==="orderBy");if(orderBy){if(columns.includes(orderBy.field)){sql+=` ORDER BY ${orderBy.field} ${orderBy.dir?.toUpperCase()}`}else if(columns.includes("data")){sql+=` ORDER BY json_extract(data, '$.${orderBy.field}') ${orderBy.dir?.toUpperCase()}`}}const limit=this.queryConstraints.find(c=>c.type==="limit");if(limit){sql+=` LIMIT ${limit.value}`}try{const rows=this.db.prepare(sql).all(...params);return{empty:rows.length===0,size:rows.length,docs:rows.map(row=>({id:String(row.id),data:__name(()=>{let res={...row};if(row.data){try{const parsed=typeof row.data==="string"?JSON.parse(row.data):row.data;res={...res,...parsed}}catch(e){}}res.id=String(row.id);return res},"data"),exists:true}))}}catch(e){console.error(`SQLite get error for ${this.tableName}:`,e);return{empty:true,size:0,docs:[]}}}}class SQLiteDB{static{__name(this,"SQLiteDB")}constructor(){const dir=path.dirname(SQLITE_PATH);if(!fs.existsSync(dir)){fs.mkdirSync(dir,{recursive:true})}this.db=new Database(SQLITE_PATH);this.init()}init(){if(fs.existsSync("./sqlite-init.sql")){const sql=fs.readFileSync("./sqlite-init.sql","utf8");this.db.exec(sql)}const collections=["stats","broadcast_history","whitelist","users","chats","global_bans","chat_bans","filters","logs","memberships","tasks","config","chat_digests","chat_messages","reputations","warnings","active_mutes","scam_alert_logs","pinned_messages"];for(const c of collections){try{this.db.prepare(`SELECT 1 FROM ${c} LIMIT 1`).get()}catch(e){this.db.prepare(`CREATE TABLE IF NOT EXISTS ${c} (id TEXT PRIMARY KEY, data TEXT)`).run()}}try{const chatCount=this.db.prepare("SELECT count(*) as count FROM chats").get()?.count||0;if(chatCount===0&&Array.isArray(CHATS_CATALOG)){console.log(`[SQLiteDB] Seeding ${CHATS_CATALOG.length} moto communities from catalog...`);const insertStmt=this.db.prepare(`
+import dotenv from 'dotenv';
+dotenv.config();
+import Database from 'better-sqlite3';
+import fs from 'fs';
+import path from 'path';
+import { adminDb as firebaseDb } from './firebase-admin';
+import { CHATS_CATALOG, CHAT_TO_DB_MAPPING } from './chatsCatalog';
+
+const DB_TYPE = (process.env.DB_TYPE || 'HYBRID').toUpperCase();
+const SQLITE_PATH = process.env.SQLITE_PATH || './data/database.sqlite';
+
+console.log(`[Database] Selected type: ${DB_TYPE}`);
+
+export function isFirestoreQuotaExceeded(err: any): boolean {
+  if (!err) return false;
+  const msg = String(err?.message || err);
+  const code = err?.code;
+  return (
+    code === 8 ||
+    code === 'RESOURCE_EXHAUSTED' ||
+    msg.includes('Quota limit exceeded') ||
+    msg.includes('Quota exceeded') ||
+    msg.includes('Free daily read units') ||
+    msg.includes('ResourceExhausted') ||
+    msg.includes('DEADLINE_EXCEEDED')
+  );
+}
+
+export class SQLiteDoc {
+  private db: Database.Database;
+  private tableName: string;
+  private id: string;
+
+  constructor(db: Database.Database, tableName: string, id: string) {
+    this.db = db;
+    this.tableName = tableName;
+    this.id = String(id);
+  }
+
+  async get() {
+    try {
+      const row: any = this.db.prepare(`SELECT * FROM ${this.tableName} WHERE id = ?`).get(this.id);
+      if (!row) {
+        return {
+          id: this.id,
+          exists: false,
+          data: () => null
+        };
+      }
+      return {
+        id: this.id,
+        exists: true,
+        data: () => {
+          let res: any = { ...row };
+          if (row.data) {
+            try {
+              const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+              res = { ...res, ...parsed };
+            } catch (e) {}
+          }
+          res.id = this.id;
+          return res;
+        }
+      };
+    } catch (e) {
+      return { id: this.id, exists: false, data: () => null };
+    }
+  }
+
+  async set(data: any) {
+    if (!data) return;
+    const clean = { ...data };
+    clean.id = this.id;
+
+    // Ensure table exists
+    try {
+      this.db.prepare(`SELECT 1 FROM ${this.tableName} LIMIT 1`).get();
+    } catch (e) {
+      this.db.prepare(`CREATE TABLE IF NOT EXISTS ${this.tableName} (id TEXT PRIMARY KEY, data TEXT)`).run();
+    }
+
+    const columns = (this.db.prepare(`PRAGMA table_info(${this.tableName})`).all() as any[]).map(c => c.name);
+
+    if (columns.includes('data')) {
+      clean.data = JSON.stringify(data);
+    }
+
+    const validFields = Object.keys(clean).filter(k => columns.includes(k));
+    if (validFields.length === 0) {
+      if (!columns.includes('data')) {
+        this.db.prepare(`ALTER TABLE ${this.tableName} ADD COLUMN data TEXT`).run();
+        columns.push('data');
+      }
+      clean.data = JSON.stringify(data);
+      validFields.push('id', 'data');
+    }
+
+    const placeholders = validFields.map(() => '?').join(', ');
+    const colList = validFields.join(', ');
+    const values = validFields.map(k => {
+      const val = clean[k];
+      if (typeof val === 'boolean') return val ? 1 : 0;
+      if (typeof val === 'object' && val !== null) return JSON.stringify(val);
+      return val;
+    });
+
+    const sql = `INSERT OR REPLACE INTO ${this.tableName} (${colList}) VALUES (${placeholders})`;
+    this.db.prepare(sql).run(...values);
+  }
+
+  async update(data: any) {
+    if (!data) return;
+    const existing = await this.get();
+    const currentData = existing.exists ? existing.data() || {} : {};
+    return this.set({ ...currentData, ...data });
+  }
+
+  async delete() {
+    try {
+      this.db.prepare(`DELETE FROM ${this.tableName} WHERE id = ?`).run(this.id);
+    } catch (e) {}
+  }
+
+  onSnapshot(callback: (doc: any) => void) {
+    this.get().then(callback);
+    return () => {};
+  }
+}
+
+export class SQLiteCollection {
+  private db: Database.Database;
+  private tableName: string;
+  private queryConstraints: Array<{ type: string; field: string; op?: string; value?: any; dir?: string }> = [];
+
+  constructor(db: Database.Database, tableName: string, constraints: Array<{ type: string; field: string; op?: string; value?: any; dir?: string }> = []) {
+    this.db = db;
+    this.tableName = tableName;
+    this.queryConstraints = [...constraints];
+  }
+
+  doc(id: string) {
+    return new SQLiteDoc(this.db, this.tableName, id);
+  }
+
+  where(field: string, op: string, value: any) {
+    return new SQLiteCollection(this.db, this.tableName, [
+      ...this.queryConstraints,
+      { type: 'where', field, op, value }
+    ]);
+  }
+
+  orderBy(field: string, dir: 'asc' | 'desc' = 'asc') {
+    return new SQLiteCollection(this.db, this.tableName, [
+      ...this.queryConstraints,
+      { type: 'orderBy', field, dir }
+    ]);
+  }
+
+  limit(n: number) {
+    return new SQLiteCollection(this.db, this.tableName, [
+      ...this.queryConstraints,
+      { type: 'limit', field: '', value: n }
+    ]);
+  }
+
+  async add(data: any) {
+    const id = data.id || Math.random().toString(36).substr(2, 9);
+    const docRef = this.doc(id);
+    await docRef.set(data);
+    return docRef;
+  }
+
+  async get() {
+    let sql = `SELECT * FROM ${this.tableName}`;
+    const params: any[] = [];
+    const whereClauses: string[] = [];
+
+    // Ensure table exists
+    try {
+      this.db.prepare(`SELECT 1 FROM ${this.tableName} LIMIT 1`).get();
+    } catch (e) {
+      return { empty: true, size: 0, docs: [] };
+    }
+
+    const columns = (this.db.prepare(`PRAGMA table_info(${this.tableName})`).all() as any[]).map(c => c.name);
+
+    for (const c of this.queryConstraints) {
+      if (c.type === 'where') {
+        const op = c.op === '==' ? '=' : c.op;
+        if (columns.includes(c.field)) {
+          whereClauses.push(`${c.field} ${op} ?`);
+          params.push(c.value);
+        } else if (columns.includes('data')) {
+          whereClauses.push(`json_extract(data, '$.${c.field}') ${op} ?`);
+          params.push(typeof c.value === 'object' ? JSON.stringify(c.value) : c.value);
+        }
+      }
+    }
+
+    if (whereClauses.length > 0) {
+      sql += ` WHERE ${whereClauses.join(' AND ')}`;
+    }
+
+    const orderBy = this.queryConstraints.find(c => c.type === 'orderBy');
+    if (orderBy) {
+      if (columns.includes(orderBy.field)) {
+        sql += ` ORDER BY ${orderBy.field} ${orderBy.dir?.toUpperCase()}`;
+      } else if (columns.includes('data')) {
+        sql += ` ORDER BY json_extract(data, '$.${orderBy.field}') ${orderBy.dir?.toUpperCase()}`;
+      }
+    }
+
+    const limit = this.queryConstraints.find(c => c.type === 'limit');
+    if (limit) {
+      sql += ` LIMIT ${limit.value}`;
+    }
+
+    try {
+      const rows = this.db.prepare(sql).all(...params);
+      return {
+        empty: rows.length === 0,
+        size: rows.length,
+        docs: rows.map((row: any) => ({
+          id: String(row.id),
+          data: () => {
+            let res: any = { ...row };
+            if (row.data) {
+              try {
+                const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+                res = { ...res, ...parsed };
+              } catch (e) {}
+            }
+            res.id = String(row.id);
+            return res;
+          },
+          exists: true
+        }))
+      };
+    } catch (e) {
+      console.error(`SQLite get error for ${this.tableName}:`, e);
+      return { empty: true, size: 0, docs: [] };
+    }
+  }
+}
+
+export class SQLiteDB {
+  public db: Database.Database;
+
+  constructor() {
+    const dir = path.dirname(SQLITE_PATH);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    this.db = new Database(SQLITE_PATH);
+    this.init();
+  }
+
+  private init() {
+    if (fs.existsSync('./sqlite-init.sql')) {
+      const sql = fs.readFileSync('./sqlite-init.sql', 'utf8');
+      this.db.exec(sql);
+    }
+
+    // Ensure all collection tables exist
+    const collections = [
+      'stats', 'broadcast_history', 'whitelist', 'users', 'chats', 
+      'global_bans', 'chat_bans', 'filters', 'logs', 'memberships', 
+      'tasks', 'config', 'chat_digests', 'chat_messages', 'reputations', 
+      'warnings', 'active_mutes', 'scam_alert_logs', 'pinned_messages',
+      'shop_topics', 'shop_vendors', 'shop_publications'
+    ];
+
+    for (const c of collections) {
+      try {
+        this.db.prepare(`SELECT 1 FROM ${c} LIMIT 1`).get();
+      } catch (e) {
+        this.db.prepare(`CREATE TABLE IF NOT EXISTS ${c} (id TEXT PRIMARY KEY, data TEXT)`).run();
+      }
+    }
+
+    // Auto-seed chats from CHATS_CATALOG if empty
+    try {
+      const chatCount = (this.db.prepare('SELECT count(*) as count FROM chats').get() as any)?.count || 0;
+      if (chatCount === 0 && Array.isArray(CHATS_CATALOG)) {
+        console.log(`[SQLiteDB] Seeding ${CHATS_CATALOG.length} moto communities from catalog...`);
+        const insertStmt = this.db.prepare(`
           INSERT OR REPLACE INTO chats (id, title, members, active, username, category, description, avatarUrl)
           VALUES (?, ?, ?, 1, ?, ?, ?, ?)
-        `);for(const item of CHATS_CATALOG){const mapping=CHAT_TO_DB_MAPPING[item.slug];const chatId=mapping?.id||`chat_${item.slug}`;try{insertStmt.run(chatId,item.title,item.estimatedMembers||100,item.username,item.category,item.shortDesc,item.image)}catch(err){}}}}catch(e){console.warn("[SQLiteDB] Note on chats seed:",e)}try{const adminCount=this.db.prepare("SELECT count(*) as count FROM users WHERE username = 'admin'").get()?.count||0;if(adminCount===0){this.db.prepare(`
+        `);
+        for (const item of CHATS_CATALOG) {
+          const mapping = CHAT_TO_DB_MAPPING[item.slug];
+          const chatId = mapping?.id || `chat_${item.slug}`;
+          try {
+            insertStmt.run(
+              chatId,
+              item.title,
+              item.estimatedMembers || 100,
+              item.username,
+              item.category,
+              item.shortDesc,
+              item.image
+            );
+          } catch (err) {}
+        }
+      }
+    } catch (e) {
+      console.warn('[SQLiteDB] Note on chats seed:', e);
+    }
+
+    // Ensure superadmin user exists (password: admin123)
+    try {
+      const adminCount = (this.db.prepare("SELECT count(*) as count FROM users WHERE username = 'admin'").get() as any)?.count || 0;
+      if (adminCount === 0) {
+        this.db.prepare(`
           INSERT OR REPLACE INTO users (id, username, email, password, role, createdAt)
           VALUES ('superadmin', 'admin', 'admin@example.com', '$2b$10$1xUBiO5w/emNGq1aEgxDguYE7AyDu7rQygeHhn27SwUsZFJIQV09C', 'SUPER_ADMIN', CURRENT_TIMESTAMP)
-        `).run()}const bookrayCount=this.db.prepare("SELECT count(*) as count FROM users WHERE username = 'bookray'").get()?.count||0;if(bookrayCount===0){this.db.prepare(`
+        `).run();
+      }
+      const bookrayCount = (this.db.prepare("SELECT count(*) as count FROM users WHERE username = 'bookray'").get() as any)?.count || 0;
+      if (bookrayCount === 0) {
+        this.db.prepare(`
           INSERT OR REPLACE INTO users (id, username, email, password, role, createdAt)
           VALUES ('user_bookray', 'bookray', 'bookray1114@gmail.com', '$2b$10$1xUBiO5w/emNGq1aEgxDguYE7AyDu7rQygeHhn27SwUsZFJIQV09C', 'SUPER_ADMIN', CURRENT_TIMESTAMP)
-        `).run()}}catch(e){}}collection(name){let tableName=name;if(name==="bans")tableName="global_bans";try{this.db.prepare(`SELECT 1 FROM ${tableName} LIMIT 1`).get()}catch(e){this.db.prepare(`CREATE TABLE IF NOT EXISTS ${tableName} (id TEXT PRIMARY KEY, data TEXT)`).run()}return new SQLiteCollection(this.db,tableName)}batch(){return{set:__name((docRef,data)=>docRef.set(data),"set"),update:__name((docRef,data)=>docRef.update(data),"update"),delete:__name(docRef=>docRef.delete(),"delete"),commit:__name(async()=>{},"commit")}}}class HybridDatabase{constructor(){this.isQuotaExhausted=true;this.quotaCooldownUntil=Date.now()+60*60*1e3;this.sqlite=new SQLiteDB;console.log("[HybridDatabase] \u{1F6E1}\uFE0F Initialized with SQLite fallback engine active.")}static{__name(this,"HybridDatabase")}markQuotaExhausted(reason){this.isQuotaExhausted=true;this.quotaCooldownUntil=Date.now()+60*60*1e3;console.warn(`[HybridDatabase] \u26A0\uFE0F Firestore Free Read Quota limit reached (50k daily units). Seamlessly routed to local SQLite engine. Reason: ${reason||"quota check"}`)}collection(name){const sqliteCol=this.sqlite.collection(name);if(DB_TYPE==="SQLITE"||this.isQuotaExhausted&&Date.now()<this.quotaCooldownUntil){return sqliteCol}return this.createProxyCollection(name,sqliteCol)}createProxyCollection(name,sqliteCol){const self=this;const fbCol=firebaseDb.collection(name);return{doc(id){const sqliteDoc=sqliteCol.doc(id);const fbDoc=fbCol.doc(id);return{async get(){if(self.isQuotaExhausted&&Date.now()<self.quotaCooldownUntil){return sqliteDoc.get()}try{const snap=await fbDoc.get();if(snap.exists){sqliteDoc.set(snap.data()).catch(()=>{})}return snap}catch(err){if(isFirestoreQuotaExceeded(err)){self.markQuotaExhausted(err.message);return sqliteDoc.get()}throw err}},async set(data){await sqliteDoc.set(data);if(!self.isQuotaExhausted){fbDoc.set(data).catch(err=>{if(isFirestoreQuotaExceeded(err))self.markQuotaExhausted(err.message)})}},async update(data){await sqliteDoc.update(data);if(!self.isQuotaExhausted){fbDoc.update(data).catch(err=>{if(isFirestoreQuotaExceeded(err))self.markQuotaExhausted(err.message)})}},async delete(){await sqliteDoc.delete();if(!self.isQuotaExhausted){fbDoc.delete().catch(err=>{if(isFirestoreQuotaExceeded(err))self.markQuotaExhausted(err.message)})}},onSnapshot(cb){if(self.isQuotaExhausted){return sqliteDoc.onSnapshot(cb)}try{return fbDoc.onSnapshot(cb,err=>{if(isFirestoreQuotaExceeded(err)){self.markQuotaExhausted(err.message);sqliteDoc.onSnapshot(cb)}})}catch(err){return sqliteDoc.onSnapshot(cb)}}}},where(field,op,val){return self.createProxyQuery(fbCol.where(field,op,val),sqliteCol.where(field,op,val))},orderBy(field,dir){return self.createProxyQuery(fbCol.orderBy(field,dir),sqliteCol.orderBy(field,dir))},limit(n){return self.createProxyQuery(fbCol.limit(n),sqliteCol.limit(n))},async add(data){const docRef=await sqliteCol.add(data);if(!self.isQuotaExhausted){fbCol.add(data).catch(err=>{if(isFirestoreQuotaExceeded(err))self.markQuotaExhausted(err.message)})}return docRef},async get(){if(self.isQuotaExhausted&&Date.now()<self.quotaCooldownUntil){return sqliteCol.get()}try{const snap=await fbCol.get();if(snap&&snap.docs){for(const doc of snap.docs){sqliteCol.doc(doc.id).set(doc.data()).catch(()=>{})}}return snap}catch(err){if(isFirestoreQuotaExceeded(err)){self.markQuotaExhausted(err.message);return sqliteCol.get()}throw err}}}}createProxyQuery(fbQuery,sqliteQuery){const self=this;return{where(field,op,val){return self.createProxyQuery(fbQuery.where(field,op,val),sqliteQuery.where(field,op,val))},orderBy(field,dir){return self.createProxyQuery(fbQuery.orderBy(field,dir),sqliteQuery.orderBy(field,dir))},limit(n){return self.createProxyQuery(fbQuery.limit(n),sqliteQuery.limit(n))},async get(){if(self.isQuotaExhausted&&Date.now()<self.quotaCooldownUntil){return sqliteQuery.get()}try{const snap=await fbQuery.get();return snap}catch(err){if(isFirestoreQuotaExceeded(err)){self.markQuotaExhausted(err.message);return sqliteQuery.get()}throw err}}}}batch(){return this.sqlite.batch()}}const db=new HybridDatabase;export{SQLiteCollection,SQLiteDB,SQLiteDoc,db,isFirestoreQuotaExceeded};
+        `).run();
+      }
+    } catch (e) {}
+  }
 
-//# sourceMappingURL=data:application/json;base64,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QUkseUJBQXlCLEdBQUcsRUFBRyxLQUFLLG1CQUFtQixJQUFJLE9BQU8sQ0FDeEUsQ0FBQyxDQUNILENBQ0EsT0FBTyxNQUNULEVBRUEsTUFBTSxLQUFNLENBQ1YsR0FBSSxLQUFLLGtCQUFvQixLQUFLLElBQUksRUFBSSxLQUFLLG1CQUFvQixDQUNqRSxPQUFPLFVBQVUsSUFBSSxDQUN2QixDQUNBLEdBQUksQ0FDRixNQUFNLEtBQU8sTUFBTSxNQUFNLElBQUksRUFDN0IsR0FBSSxNQUFRLEtBQUssS0FBTSxDQUNyQixVQUFXLE9BQU8sS0FBSyxLQUFNLENBQzNCLFVBQVUsSUFBSSxJQUFJLEVBQUUsRUFBRSxJQUFJLElBQUksS0FBSyxDQUFDLEVBQUUsTUFBTSxJQUFNLENBQUMsQ0FBQyxDQUN0RCxDQUNGLENBQ0EsT0FBTyxJQUNULE9BQVMsSUFBVSxDQUNqQixHQUFJLHlCQUF5QixHQUFHLEVBQUcsQ0FDakMsS0FBSyxtQkFBbUIsSUFBSSxPQUFPLEVBQ25DLE9BQU8sVUFBVSxJQUFJLENBQ3ZCLENBQ0EsTUFBTSxHQUNSLENBQ0YsQ0FDRixDQUNGLENBRVEsaUJBQWlCLFFBQWMsWUFBdUIsQ0FDNUQsTUFBTSxLQUFPLEtBQ2IsTUFBTyxDQUNMLE1BQU0sTUFBZSxHQUFZLElBQVUsQ0FDekMsT0FBTyxLQUFLLGlCQUFpQixRQUFRLE1BQU0sTUFBTyxHQUFJLEdBQUcsRUFBRyxZQUFZLE1BQU0sTUFBTyxHQUFJLEdBQUcsQ0FBQyxDQUMvRixFQUNBLFFBQVEsTUFBZSxJQUFXLENBQ2hDLE9BQU8sS0FBSyxpQkFBaUIsUUFBUSxRQUFRLE1BQU8sR0FBRyxFQUFHLFlBQVksUUFBUSxNQUFPLEdBQUcsQ0FBQyxDQUMzRixFQUNBLE1BQU0sRUFBVyxDQUNmLE9BQU8sS0FBSyxpQkFBaUIsUUFBUSxNQUFNLENBQUMsRUFBRyxZQUFZLE1BQU0sQ0FBQyxDQUFDLENBQ3JFLEVBQ0EsTUFBTSxLQUFNLENBQ1YsR0FBSSxLQUFLLGtCQUFvQixLQUFLLElBQUksRUFBSSxLQUFLLG1CQUFvQixDQUNqRSxPQUFPLFlBQVksSUFBSSxDQUN6QixDQUNBLEdBQUksQ0FDRixNQUFNLEtBQU8sTUFBTSxRQUFRLElBQUksRUFDL0IsT0FBTyxJQUNULE9BQVMsSUFBVSxDQUNqQixHQUFJLHlCQUF5QixHQUFHLEVBQUcsQ0FDakMsS0FBSyxtQkFBbUIsSUFBSSxPQUFPLEVBQ25DLE9BQU8sWUFBWSxJQUFJLENBQ3pCLENBQ0EsTUFBTSxHQUNSLENBQ0YsQ0FDRixDQUNGLENBRUEsT0FBUSxDQUNOLE9BQU8sS0FBSyxPQUFPLE1BQU0sQ0FDM0IsQ0FDRixDQUVPLE1BQU0sR0FBSyxJQUFJIiwibmFtZXMiOlsiZGIiXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiL2FwcC9hcHBsZXQvZGF0YWJhc2UudHMiXSwic291cmNlc0NvbnRlbnQiOltudWxsXX0=
+  collection(name: string) {
+    let tableName = name;
+    if (name === 'bans') tableName = 'global_bans';
+
+    try {
+      this.db.prepare(`SELECT 1 FROM ${tableName} LIMIT 1`).get();
+    } catch (e) {
+      this.db.prepare(`CREATE TABLE IF NOT EXISTS ${tableName} (id TEXT PRIMARY KEY, data TEXT)`).run();
+    }
+
+    return new SQLiteCollection(this.db, tableName);
+  }
+
+  batch() {
+    return {
+      set: (docRef: any, data: any) => docRef.set(data),
+      update: (docRef: any, data: any) => docRef.update(data),
+      delete: (docRef: any) => docRef.delete(),
+      commit: async () => {}
+    };
+  }
+}
+
+class HybridDatabase {
+  public sqlite: SQLiteDB;
+  private isQuotaExhausted: boolean = true; // Active failover protection while free read quota is exhausted
+  private quotaCooldownUntil: number = Date.now() + 60 * 60 * 1000;
+
+  constructor() {
+    this.sqlite = new SQLiteDB();
+    console.log('[HybridDatabase] 🛡️ Initialized with SQLite fallback engine active.');
+  }
+
+  markQuotaExhausted(reason?: string) {
+    this.isQuotaExhausted = true;
+    this.quotaCooldownUntil = Date.now() + 60 * 60 * 1000;
+    console.warn(`[HybridDatabase] ⚠️ Firestore Free Read Quota limit reached (50k daily units). Seamlessly routed to local SQLite engine. Reason: ${reason || 'quota check'}`);
+  }
+
+  collection(name: string) {
+    const sqliteCol = this.sqlite.collection(name);
+
+    if (DB_TYPE === 'SQLITE' || (this.isQuotaExhausted && Date.now() < this.quotaCooldownUntil)) {
+      return sqliteCol;
+    }
+
+    return this.createProxyCollection(name, sqliteCol);
+  }
+
+  private createProxyCollection(name: string, sqliteCol: SQLiteCollection): any {
+    const self = this;
+    const fbCol = (firebaseDb as any).collection(name);
+
+    return {
+      doc(id: string) {
+        const sqliteDoc = sqliteCol.doc(id);
+        const fbDoc = fbCol.doc(id);
+
+        return {
+          async get() {
+            if (self.isQuotaExhausted && Date.now() < self.quotaCooldownUntil) {
+              return sqliteDoc.get();
+            }
+            try {
+              const snap = await fbDoc.get();
+              if (snap.exists) {
+                sqliteDoc.set(snap.data()).catch(() => {});
+              }
+              return snap;
+            } catch (err: any) {
+              if (isFirestoreQuotaExceeded(err)) {
+                self.markQuotaExhausted(err.message);
+                return sqliteDoc.get();
+              }
+              throw err;
+            }
+          },
+
+          async set(data: any) {
+            await sqliteDoc.set(data);
+            if (!self.isQuotaExhausted) {
+              fbDoc.set(data).catch((err: any) => {
+                if (isFirestoreQuotaExceeded(err)) self.markQuotaExhausted(err.message);
+              });
+            }
+          },
+
+          async update(data: any) {
+            await sqliteDoc.update(data);
+            if (!self.isQuotaExhausted) {
+              fbDoc.update(data).catch((err: any) => {
+                if (isFirestoreQuotaExceeded(err)) self.markQuotaExhausted(err.message);
+              });
+            }
+          },
+
+          async delete() {
+            await sqliteDoc.delete();
+            if (!self.isQuotaExhausted) {
+              fbDoc.delete().catch((err: any) => {
+                if (isFirestoreQuotaExceeded(err)) self.markQuotaExhausted(err.message);
+              });
+            }
+          },
+
+          onSnapshot(cb: any) {
+            if (self.isQuotaExhausted) {
+              return sqliteDoc.onSnapshot(cb);
+            }
+            try {
+              return fbDoc.onSnapshot(cb, (err: any) => {
+                if (isFirestoreQuotaExceeded(err)) {
+                  self.markQuotaExhausted(err.message);
+                  sqliteDoc.onSnapshot(cb);
+                }
+              });
+            } catch (err: any) {
+              return sqliteDoc.onSnapshot(cb);
+            }
+          }
+        };
+      },
+
+      where(field: string, op: string, val: any) {
+        return self.createProxyQuery(fbCol.where(field, op, val), sqliteCol.where(field, op, val));
+      },
+
+      orderBy(field: string, dir?: any) {
+        return self.createProxyQuery(fbCol.orderBy(field, dir), sqliteCol.orderBy(field, dir));
+      },
+
+      limit(n: number) {
+        return self.createProxyQuery(fbCol.limit(n), sqliteCol.limit(n));
+      },
+
+      async add(data: any) {
+        const docRef = await sqliteCol.add(data);
+        if (!self.isQuotaExhausted) {
+          fbCol.add(data).catch((err: any) => {
+            if (isFirestoreQuotaExceeded(err)) self.markQuotaExhausted(err.message);
+          });
+        }
+        return docRef;
+      },
+
+      async get() {
+        if (self.isQuotaExhausted && Date.now() < self.quotaCooldownUntil) {
+          return sqliteCol.get();
+        }
+        try {
+          const snap = await fbCol.get();
+          if (snap && snap.docs) {
+            for (const doc of snap.docs) {
+              sqliteCol.doc(doc.id).set(doc.data()).catch(() => {});
+            }
+          }
+          return snap;
+        } catch (err: any) {
+          if (isFirestoreQuotaExceeded(err)) {
+            self.markQuotaExhausted(err.message);
+            return sqliteCol.get();
+          }
+          throw err;
+        }
+      }
+    };
+  }
+
+  private createProxyQuery(fbQuery: any, sqliteQuery: any): any {
+    const self = this;
+    return {
+      where(field: string, op: string, val: any) {
+        return self.createProxyQuery(fbQuery.where(field, op, val), sqliteQuery.where(field, op, val));
+      },
+      orderBy(field: string, dir?: any) {
+        return self.createProxyQuery(fbQuery.orderBy(field, dir), sqliteQuery.orderBy(field, dir));
+      },
+      limit(n: number) {
+        return self.createProxyQuery(fbQuery.limit(n), sqliteQuery.limit(n));
+      },
+      async get() {
+        if (self.isQuotaExhausted && Date.now() < self.quotaCooldownUntil) {
+          return sqliteQuery.get();
+        }
+        try {
+          const snap = await fbQuery.get();
+          return snap;
+        } catch (err: any) {
+          if (isFirestoreQuotaExceeded(err)) {
+            self.markQuotaExhausted(err.message);
+            return sqliteQuery.get();
+          }
+          throw err;
+        }
+      }
+    };
+  }
+
+  batch() {
+    return this.sqlite.batch();
+  }
+}
+
+export const db = new HybridDatabase();
