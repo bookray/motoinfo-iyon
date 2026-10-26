@@ -358,7 +358,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
     try {
       await onUpdateSettings(localSettings);
       await fetchDbStatus();
-      setStatusMessage({ text: 'Настройки сохранены', type: 'success' });
+      if (localSettings.adminPassword) {
+        setLocalSettings(prev => ({ ...prev, adminPassword: '' }));
+      }
+      setStatusMessage({ text: 'Настройки и данные супер-администратора сохранены', type: 'success' });
       setTimeout(() => setStatusMessage(null), 3000);
     } catch (e: any) {
       setStatusMessage({ text: e.message || 'Ошибка при сохранении', type: 'error' });
@@ -1632,7 +1635,7 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
           <div className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
-                Пароль администратора
+                Пароль супер-администратора
               </label>
               <div className="relative">
                 <Key className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
@@ -1641,7 +1644,7 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                   value={localSettings.adminPassword || ''}
                   onChange={(e) => setLocalSettings({ ...localSettings, adminPassword: e.target.value })}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-11 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all text-sm"
-                  placeholder="Оставьте пустым, чтобы не менять"
+                  placeholder="Введите новый пароль (или оставьте пустым)"
                 />
                 <button
                   type="button"
@@ -1653,11 +1656,14 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                   {showAdminPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
                 </button>
               </div>
+              <p className="text-[11px] text-slate-500 mt-1.5 ml-1">
+                Взаимосвязано с аккаунтом супер-администратора в «Управлении пользователями». При смене пароля старый пароль по умолчанию перестаёт действовать.
+              </p>
             </div>
 
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
-                Email для восстановления
+                Email супер-администратора (для входа и восстановления)
               </label>
               <div className="relative">
                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
@@ -1666,9 +1672,12 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                   value={localSettings.recoveryEmail || ''}
                   onChange={(e) => setLocalSettings({ ...localSettings, recoveryEmail: e.target.value })}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-11 pr-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500/50 transition-all"
-                  placeholder="admin@example.com"
+                  placeholder="bookray1114@gmail.com"
                 />
               </div>
+              <p className="text-[11px] text-slate-500 mt-1.5 ml-1">
+                Синхронизируется с email супер-администратора в «Управлении пользователями».
+              </p>
             </div>
 
             <div className="flex items-center justify-between p-4 bg-slate-950/50 rounded-xl border border-slate-800">

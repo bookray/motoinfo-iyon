@@ -906,6 +906,66 @@ app.post('/api/bot/restart', authenticateToken, async (req, res) => {
   }
 });
 
+// Helper: Synchronize super admin credentials across users collection, settings config, and all databases
+async function syncSuperAdminCredentials(opts: { password?: string; email?: string }) {
+  try {
+    const rawPass = opts.password && opts.password.trim() ? opts.password.trim() : null;
+    const rawEmail = opts.email && opts.email.trim() ? opts.email.trim() : null;
+
+    let hashedPassword = rawPass ? await bcrypt.hash(rawPass, 10) : null;
+
+    let usersSnap = await db.collection('users').get();
+    let superAdminDocs = usersSnap.docs.filter((d: any) => {
+      const u = d.data();
+      return u && (u.role === 'SUPER_ADMIN' || u.username === 'admin' || u.username === 'bookray');
+    });
+
+    if (superAdminDocs.length > 0) {
+      for (const doc of superAdminDocs) {
+        const u = doc.data();
+        const updated: any = { ...u };
+        if (hashedPassword) updated.password = hashedPassword;
+        if (rawEmail) updated.email = rawEmail;
+        await db.collection('users').doc(doc.id).set(updated);
+        try {
+          await adminDb.collection('users').doc(doc.id).set(updated);
+        } catch {}
+      }
+    } else {
+      // Create default superadmin doc if none exists
+      const adminId = 'superadmin';
+      const defaultAdmin = {
+        id: adminId,
+        username: 'admin',
+        email: rawEmail || 'bookray1114@gmail.com',
+        password: hashedPassword || await bcrypt.hash('admin123', 10),
+        role: 'SUPER_ADMIN',
+        assignedChatIds: [],
+        createdAt: new Date().toISOString()
+      };
+      await db.collection('users').doc(adminId).set(defaultAdmin);
+      try {
+        await adminDb.collection('users').doc(adminId).set(defaultAdmin);
+      } catch {}
+    }
+
+    // Keep settings in sync
+    if (rawPass) {
+      settings.adminPassword = rawPass;
+    }
+    if (rawEmail) {
+      settings.recoveryEmail = rawEmail;
+    }
+    await db.collection('config').doc('settings').set(cleanData(settings));
+    try {
+      await adminDb.collection('config').doc('settings').set(cleanData(settings));
+    } catch {}
+    console.log(`[AuthSync] Superadmin credentials synchronized (email: ${settings.recoveryEmail || 'unchanged'}, password updated: ${Boolean(rawPass)})`);
+  } catch (err: any) {
+    console.error('[AuthSync] Error synchronizing superadmin credentials:', err?.message || err);
+  }
+}
+
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
   try {
@@ -914,7 +974,7 @@ app.post('/api/login', async (req, res) => {
       return res.status(400).json({ error: 'Пожалуйста, укажите логин и пароль' });
     }
 
-    // Try exact match by username
+    // Try exact match by username or email
     let userSnap: any;
     try {
       userSnap = await db.collection('users').where('username', '==', rawUsername).get();
@@ -932,64 +992,72 @@ app.post('/api/login', async (req, res) => {
         userSnap = await db.collection('users').where('email', '==', rawUsername.toLowerCase()).get();
       }
 
-      // Fallback: If username is 'bookray', check if default admin can authenticate
-      if (userSnap.empty && (rawUsername.toLowerCase() === 'bookray' || rawUsername.toLowerCase().includes('bookray'))) {
-        userSnap = await db.collection('users').where('username', '==', 'admin').get();
+      // Alias: If logging in as 'bookray' or 'admin', search for any super admin
+      if (userSnap.empty && (rawUsername.toLowerCase() === 'bookray' || rawUsername.toLowerCase() === 'admin')) {
+        const allSuperAdmins = await db.collection('users').where('role', '==', 'SUPER_ADMIN').get();
+        if (!allSuperAdmins.empty) {
+          userSnap = allSuperAdmins;
+        }
       }
     } catch (dbErr: any) {
       console.warn('Database error during user query, checking emergency superadmin credentials:', dbErr?.message);
     }
 
-    // Emergency fail-safe for super admin login
-    const isSuperAdminName = (rawUsername.toLowerCase() === 'admin' || rawUsername.toLowerCase() === 'bookray');
-    const isSuperAdminPass = (password === 'admin123' || (settings.adminPassword && password === settings.adminPassword));
-
-    if ((!userSnap || userSnap.empty) && isSuperAdminName && isSuperAdminPass) {
-      console.log(`[Auth] Emergency superadmin fallback authenticated for '${rawUsername}'`);
-      const fallbackUser = {
-        id: 'superadmin',
-        username: rawUsername,
-        role: 'SUPER_ADMIN',
-        email: `${rawUsername}@motoinfo.local`
-      };
-      const token = jwt.sign({ id: fallbackUser.id, username: fallbackUser.username, role: fallbackUser.role }, JWT_SECRET, { expiresIn: '7d' });
-      return res.json({ token, user: fallbackUser });
-    }
-
+    // If user document was not found
     if (!userSnap || userSnap.empty) {
+      const isSuperAdminName = (rawUsername.toLowerCase() === 'admin' || rawUsername.toLowerCase() === 'bookray');
+      const expectedPass = settings.adminPassword || 'admin123';
+      if (isSuperAdminName && password === expectedPass) {
+        console.log(`[Auth] First-time setup superadmin authenticated for '${rawUsername}'`);
+        const fallbackUser = {
+          id: 'superadmin',
+          username: rawUsername.toLowerCase(),
+          role: 'SUPER_ADMIN',
+          email: settings.recoveryEmail || 'bookray1114@gmail.com'
+        };
+        await syncSuperAdminCredentials({ password: expectedPass, email: fallbackUser.email });
+        const token = jwt.sign({ id: fallbackUser.id, username: fallbackUser.username, role: fallbackUser.role }, JWT_SECRET, { expiresIn: '7d' });
+        return res.json({ token, user: fallbackUser });
+      }
       return res.status(401).json({ error: 'Неверный логин или пароль' });
     }
 
     const user = userSnap.docs[0].data();
     let validPassword = false;
+
+    // 1. Primary check: bcrypt comparison against stored hash
     try {
-      validPassword = await bcrypt.compare(password, user.password);
+      if (user.password) {
+        validPassword = await bcrypt.compare(password, user.password);
+      }
     } catch (e) {
       validPassword = false;
     }
 
-    if (!validPassword && isSuperAdminName && isSuperAdminPass) {
-      validPassword = true;
+    // 2. Secondary check for superadmin: if settings.adminPassword was explicitly set and matches
+    if (!validPassword && (user.role === 'SUPER_ADMIN' || rawUsername.toLowerCase() === 'admin' || rawUsername.toLowerCase() === 'bookray')) {
+      if (settings.adminPassword && password === settings.adminPassword) {
+        validPassword = true;
+        // Re-hash and update stored user.password to keep bcrypt in sync
+        try {
+          const newHashed = await bcrypt.hash(password, 10);
+          user.password = newHashed;
+          await db.collection('users').doc(user.id || userSnap.docs[0].id).set(user);
+        } catch {}
+      }
     }
 
     if (!validPassword) {
       return res.status(401).json({ error: 'Неверный логин или пароль' });
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign({ id: user.id || userSnap.docs[0].id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
     
     // Don't send password back
     const { password: _, ...userWithoutPassword } = user;
     res.json({ token, user: userWithoutPassword });
   } catch (err: any) {
     console.error('Error during /api/login:', err);
-    // Check if emergency admin login can recover the session
-    const rawUsername = (username || '').trim().toLowerCase();
-    if ((rawUsername === 'admin' || rawUsername === 'bookray') && (password === 'admin123' || (settings.adminPassword && password === settings.adminPassword))) {
-      const fallbackUser = { id: 'superadmin', username: rawUsername, role: 'SUPER_ADMIN' };
-      const token = jwt.sign(fallbackUser, JWT_SECRET, { expiresIn: '7d' });
-      return res.json({ token, user: fallbackUser });
-    }
     res.status(500).json({ error: 'Ошибка сервера: ' + (err?.message || 'Не удалось выполнить вход') });
   }
 });
@@ -1193,14 +1261,32 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
     if (!userDoc.exists) return res.status(404).json({ error: 'Пользователь не найден' });
 
     const currentData = userDoc.data();
-    if (updateData.password) {
-      updateData.password = await bcrypt.hash(updateData.password, 10);
+    const isSuperAdmin = currentData.role === 'SUPER_ADMIN' || updateData.role === 'SUPER_ADMIN' || currentData.username === 'admin' || currentData.username === 'bookray';
+
+    const rawPassword = updateData.password && String(updateData.password).trim().length > 0
+      ? String(updateData.password).trim()
+      : null;
+
+    if (rawPassword) {
+      updateData.password = await bcrypt.hash(rawPassword, 10);
     } else {
       delete updateData.password;
     }
 
     const updatedUser = { ...currentData, ...updateData };
     await db.collection('users').doc(id).set(updatedUser);
+    try {
+      await adminDb.collection('users').doc(id).set(updatedUser);
+    } catch {}
+
+    // When updating a superadmin, synchronize credentials across settings and other superadmin records
+    if (isSuperAdmin) {
+      await syncSuperAdminCredentials({
+        password: rawPassword || undefined,
+        email: updateData.email || currentData.email
+      });
+    }
+
     const { password, ...u } = updatedUser;
     res.json(u);
   } catch (err) {
@@ -1223,10 +1309,21 @@ app.get('/api/chats', authenticateToken, (req, res) => res.json(chats));
 app.get('/api/bans', authenticateToken, (req, res) => res.json(bans));
 app.get('/api/filters', authenticateToken, (req, res) => res.json(filters));
 app.get('/api/logs', authenticateToken, (req, res) => res.json(logs));
-app.get('/api/settings', authenticateToken, (req, res) => {
+app.get('/api/settings', authenticateToken, async (req, res) => {
   const persistedDbCfg = db.getPersistedConfig();
+  let superAdminEmail = settings.recoveryEmail || '';
+  if (!superAdminEmail) {
+    try {
+      const uSnap = await db.collection('users').where('role', '==', 'SUPER_ADMIN').get();
+      if (!uSnap.empty) {
+        superAdminEmail = uSnap.docs[0].data()?.email || '';
+      }
+    } catch {}
+  }
   res.json({
     ...settings,
+    adminPassword: '', // Never expose cleartext password in GET response
+    recoveryEmail: superAdminEmail,
     dbType: settings.dbType || persistedDbCfg.dbType || 'FIREBASE',
     dbHost: settings.dbHost || persistedDbCfg.dbHost || 'localhost',
     dbPort: Number(settings.dbPort) || Number(persistedDbCfg.dbPort) || 3306,
@@ -2202,9 +2299,25 @@ app.put('/api/settings', authenticateToken, async (req, res) => {
     const oldApiRoot = settings.telegramApiRoot;
     const newSettings = req.body;
     console.log('Updating settings:', { ...newSettings, dbPass: newSettings?.dbPass ? '***' : '' });
+
+    // Handle superadmin password and recovery email sync
+    const newAdminPass = typeof newSettings.adminPassword === 'string' && newSettings.adminPassword.trim().length > 0 
+      ? newSettings.adminPassword.trim() 
+      : undefined;
+    const newRecoveryEmail = typeof newSettings.recoveryEmail === 'string' && newSettings.recoveryEmail.trim().length > 0
+      ? newSettings.recoveryEmail.trim()
+      : undefined;
+
+    if (newAdminPass || newRecoveryEmail) {
+      await syncSuperAdminCredentials({ password: newAdminPass, email: newRecoveryEmail });
+    }
+
     settings = {
       ...settings,
       ...newSettings,
+      // If adminPassword was empty in request (placeholder left empty), preserve current password!
+      adminPassword: newAdminPass !== undefined ? newAdminPass : (settings.adminPassword || ''),
+      recoveryEmail: newRecoveryEmail !== undefined ? newRecoveryEmail : (settings.recoveryEmail || ''),
       dbType: (newSettings.dbType || settings.dbType || 'FIREBASE') as 'FIREBASE' | 'MYSQL',
       dbPort: Number(newSettings.dbPort) || Number(settings.dbPort) || 3306
     };
@@ -2239,7 +2352,7 @@ app.put('/api/settings', authenticateToken, async (req, res) => {
       type: 'SETTINGS',
       user: user.username,
       chat: 'System',
-      details: `Обновлены настройки системы (БД: ${dbStatus.activeEngine}).`
+      details: `Обновлены настройки системы (БД: ${dbStatus.activeEngine})${newAdminPass ? ', пароль супер-администратора обновлен' : ''}.`
     });
     
     res.json({ success: true, settings, dbStatus });

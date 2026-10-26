@@ -359,6 +359,15 @@ export const UserManagement: React.FC<UserManagementProps> = ({ chats }) => {
                 </div>
               </div>
 
+              {((editingUser && editingUser.role === UserRole.SUPER_ADMIN) || formData.role === UserRole.SUPER_ADMIN) && (
+                <div className="p-3 bg-blue-500/10 border border-blue-500/20 rounded-xl text-xs text-blue-300 flex items-start gap-2.5">
+                  <ShieldCheck className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
+                  <span className="leading-relaxed">
+                    Данные супер-администратора (пароль и email) автоматически синхронизируются с разделом <b>«Настройки»</b>. При установке нового пароля старый пароль по умолчанию перестаёт действовать.
+                  </span>
+                </div>
+              )}
+
               {formData.role !== UserRole.SUPER_ADMIN && (
                 <div className="space-y-3">
                   <label className="text-sm font-medium text-slate-300">Назначенные чаты</label>

@@ -769,14 +769,14 @@ export class SQLiteDB {
       if (adminCount === 0) {
         this.db.prepare(`
           INSERT OR REPLACE INTO users (id, username, email, password, role, createdAt)
-          VALUES ('superadmin', 'admin', 'admin@example.com', '$2b$10$1xUBiO5w/emNGq1aEgxDguYE7AyDu7rQygeHhn27SwUsZFJIQV09C', 'SUPER_ADMIN', CURRENT_TIMESTAMP)
+          VALUES ('superadmin', 'admin', 'admin@example.com', '$2b$10$LHF7wbmq2X103Iv1a97J9eUmNCrEXKNT7wgBMBV/S0k7FRJdVmFJm', 'SUPER_ADMIN', CURRENT_TIMESTAMP)
         `).run();
       }
       const bookrayCount = (this.db.prepare("SELECT count(*) as count FROM users WHERE username = 'bookray'").get() as any)?.count || 0;
       if (bookrayCount === 0) {
         this.db.prepare(`
           INSERT OR REPLACE INTO users (id, username, email, password, role, createdAt)
-          VALUES ('user_bookray', 'bookray', 'bookray1114@gmail.com', '$2b$10$1xUBiO5w/emNGq1aEgxDguYE7AyDu7rQygeHhn27SwUsZFJIQV09C', 'SUPER_ADMIN', CURRENT_TIMESTAMP)
+          VALUES ('user_bookray', 'bookray', 'bookray1114@gmail.com', '$2b$10$LHF7wbmq2X103Iv1a97J9eUmNCrEXKNT7wgBMBV/S0k7FRJdVmFJm', 'SUPER_ADMIN', CURRENT_TIMESTAMP)
         `).run();
       }
     } catch (e) {}
