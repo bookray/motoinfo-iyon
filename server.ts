@@ -25,18 +25,46 @@ const DEPRECATED_GEMINI_MODELS = new Set([
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
   'gemini-2.0-pro',
-  'gemini-2.0-flash-thinking',
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-pro'
+  'gemini-2.0-flash-thinking'
 ]);
 
 function sanitizeGeminiModel(model?: string): string {
   const trimmed = (model || '').trim();
   if (!trimmed || DEPRECATED_GEMINI_MODELS.has(trimmed)) {
-    return 'gemini-3.1-flash-lite';
+    return 'gemini-2.5-flash';
   }
   return trimmed;
+}
+
+const GEMINI_SAFETY_SETTINGS = [
+  { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+  { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
+];
+
+function extractTextFromGeminiPayload(data: any): string {
+  if (!data) return '';
+  if (typeof data === 'string') return data.trim();
+  const parts = data.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts) && parts.length > 0) {
+    const nonThoughtText = parts
+      .filter((p: any) => p && !p.thought && typeof p.text === 'string')
+      .map((p: any) => p.text)
+      .join('');
+    if (nonThoughtText.trim()) return nonThoughtText.trim();
+    const allText = parts
+      .filter((p: any) => p && typeof p.text === 'string')
+      .map((p: any) => p.text)
+      .join('');
+    if (allText.trim()) return allText.trim();
+  }
+  if (typeof data.text === 'string' && data.text.trim()) return data.text.trim();
+  if (typeof data.output === 'string' && data.output.trim()) return data.output.trim();
+  if (typeof data.choices?.[0]?.message?.content === 'string') {
+    return data.choices[0].message.content.trim();
+  }
+  return '';
 }
 
 let geminiClient: GoogleGenAI | null = null;
@@ -262,16 +290,18 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     throw new Error('Ключ Google Gemini API не задан. Введите ключ в панели управления в разделе «ИИ-Суммаризация» или «Настройки».');
   }
 
-  const initialModel = sanitizeGeminiModel(options?.model || settings?.geminiModel || 'gemini-3.1-flash-lite');
+  const initialModel = sanitizeGeminiModel(options?.model || settings?.geminiModel || 'gemini-2.5-flash');
 
-  // Fallback to active, verified models in Google API (prioritize flash-lite for speed and stability)
+  // Fallback to active, verified models in Google API
   const candidateModels = Array.from(new Set([
     initialModel,
-    'gemini-3.1-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-3-flash-preview',
+    'gemini-3.1-flash-lite-preview',
+    'gemini-2.5-flash-lite',
     'gemini-flash-lite-latest',
-    'gemini-3.5-flash-lite',
-    'gemini-3.8-flash',
-    'gemini-flash-latest'
+    'gemini-flash-latest',
+    'gemini-3.1-flash-lite'
   ]));
 
   const effectiveBaseUrl = getGeminiEffectiveBaseUrl();
@@ -284,7 +314,8 @@ async function generateAIResponse(promptText: string, options?: { model?: string
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: promptText }] }]
+          contents: [{ role: 'user', parts: [{ text: promptText }] }],
+          safetySettings: GEMINI_SAFETY_SETTINGS
         }),
         signal: AbortSignal.timeout(60000)
       });
@@ -295,23 +326,46 @@ async function generateAIResponse(promptText: string, options?: { model?: string
         errObj.raw = errText;
         throw errObj;
       }
-      const data: any = await response.json();
-      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) throw new Error('Gemini вернул пустой ответ через прокси');
+      const rawBody = await response.text();
+      let data: any = null;
+      try {
+        data = JSON.parse(rawBody);
+      } catch {
+        throw new Error(`Gemini Proxy (${cleanBase}) вернул некорректный JSON: ${rawBody.slice(0, 180)}`);
+      }
+      if (data?.error) {
+        const errObj: any = new Error(`Gemini Proxy (${cleanBase}) API Error: ${data.error.message || JSON.stringify(data.error)}`);
+        errObj.status = data.error.code || 400;
+        throw errObj;
+      }
+      const text = extractTextFromGeminiPayload(data);
+      if (!text) {
+        const blockReason = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '';
+        const errObj: any = new Error(`Gemini вернул пустой ответ через прокси${blockReason ? ` (${blockReason})` : ''}`);
+        errObj.isEmptyProxy = true;
+        throw errObj;
+      }
       return text;
     } else {
       const client = getGeminiClient();
-      const response = await client.models.generateContent({
+      const response: any = await client.models.generateContent({
         model: modelToUse,
         contents: [
           {
             role: 'user',
             parts: [{ text: promptText }]
           }
-        ]
+        ],
+        config: {
+          safetySettings: GEMINI_SAFETY_SETTINGS as any
+        }
       });
-      const text = response.text;
-      if (!text) throw new Error('Gemini вернул пустой ответ');
+      const text = extractTextFromGeminiPayload(response) || response?.text || '';
+      if (!text) {
+        const errObj: any = new Error('Gemini вернул пустой ответ');
+        errObj.isEmptyResponse = true;
+        throw errObj;
+      }
       return text;
     }
   };
@@ -325,14 +379,28 @@ async function generateAIResponse(promptText: string, options?: { model?: string
     } catch (err: any) {
       lastErr = err;
       const msg = err?.message || String(err);
-      const is404 = err?.status === 404 || msg.includes('404') || msg.includes('is no longer available') || msg.includes('not found');
-      const is429 = err?.status === 429 || msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('Quota exceeded');
-      const is503 = err?.status === 503 || msg.includes('503') || msg.includes('high demand') || msg.includes('UNAVAILABLE') || msg.includes('Service Unavailable');
-      const isTimeout = msg.includes('timeout') || msg.includes('aborted');
-      const isFetchFailed = msg.includes('fetch failed') || msg.includes('ECONNRESET') || msg.includes('ETIMEDOUT') || msg.includes('socket hang up');
-      const isRegionError = !effectiveBaseUrl && (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION'));
 
-      // If region blocked and proxy available, try proxy for this model immediately
+      // If proxy failed (e.g. webhook-only Cloudflare Worker returning empty/non-Gemini response, 404, 502, etc.), try direct SDK for this model
+      if (effectiveBaseUrl) {
+        const isKeyInvalid = msg.includes('API_KEY_INVALID') || msg.includes('API key not valid');
+        if (!isKeyInvalid) {
+          try {
+            console.log(`[Gemini] Proxy (${effectiveBaseUrl}) failed for ${currentModel} (${msg.slice(0, 120)}). Trying direct connection...`);
+            return await executeGeminiSingle(currentModel, null);
+          } catch (directErr: any) {
+            const directMsg = directErr?.message || String(directErr);
+            // Keep whichever error is more informative (unless direct is just region-blocked)
+            if (!directMsg.includes('User location is not supported') && !directMsg.includes('FAILED_PRECONDITION')) {
+              lastErr = directErr;
+            }
+          }
+        }
+      }
+
+      const currentErrMsg = lastErr?.message || String(lastErr);
+      const isRegionError = !effectiveBaseUrl && (currentErrMsg.includes('User location is not supported') || currentErrMsg.includes('FAILED_PRECONDITION'));
+
+      // If direct connection was blocked by region and a fallback proxy is available, try proxy for this model
       if (isRegionError) {
         const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
         if (fallbackProxy) {
@@ -345,16 +413,19 @@ async function generateAIResponse(promptText: string, options?: { model?: string
         }
       }
 
-      // If transient error (503 high demand, 429 rate limit, 404, timeout, fetch failure) and we have fallback models left, try next model
-      const isTransient = is404 || is429 || is503 || isTimeout || isFetchFailed;
-      if (isTransient && i < candidateModels.length - 1) {
-        const reasonLabel = is503 ? '503 (Высокая нагрузка Google / High Demand)' : is429 ? '429 (Лимит запросов)' : isTimeout ? 'Таймаут ответа' : isFetchFailed ? 'Сбой соединения' : '404';
-        console.warn(`[Gemini] Модель ${currentModel} вернула ${reasonLabel}. Пробуем резервную активную модель ${candidateModels[i + 1]} через 1.5 сек...`);
-        await new Promise(r => setTimeout(r, 1500));
+      const latestMsg = lastErr?.message || String(lastErr);
+      const isKeyError = latestMsg.includes('API_KEY_INVALID') || latestMsg.includes('API key not valid');
+      if (isKeyError) {
+        break;
+      }
+
+      // Try next fallback model if we have more candidates
+      if (i < candidateModels.length - 1) {
+        console.warn(`[Gemini] Модель ${currentModel} не дала ответа (${latestMsg.slice(0, 120)}). Пробуем резервную модель ${candidateModels[i + 1]}...`);
+        await new Promise(r => setTimeout(r, 600));
         continue;
       }
 
-      // If last model or other error, break loop
       break;
     }
   }
@@ -362,20 +433,20 @@ async function generateAIResponse(promptText: string, options?: { model?: string
   // Handle final error formatting
   const finalMsg = lastErr?.message || String(lastErr);
   if (finalMsg.includes('503') || finalMsg.includes('high demand') || finalMsg.includes('UNAVAILABLE')) {
-    throw new Error(`❌ Сервис Google Gemini временно перегружен (HTTP 503 UNAVAILABLE / High Demand).\n\n💡 Модель испытывает пиковую нагрузку. Рекомендуем в «Настройках ИИ» выбрать стабильную модель gemini-3.1-flash-lite или gemini-flash-lite-latest, либо переключиться на OpenRouter.`);
+    throw new Error(`❌ Сервис Google Gemini временно перегружен (HTTP 503 UNAVAILABLE / High Demand).\n\n💡 Модель испытывает пиковую нагрузку. Рекомендуем в «Настройках ИИ» выбрать стабильную модель gemini-2.5-flash или gemini-flash-lite-latest, либо переключиться на OpenRouter.`);
   }
   if (finalMsg.includes('429') || finalMsg.includes('RESOURCE_EXHAUSTED') || finalMsg.includes('Quota exceeded')) {
     const retryMatch = finalMsg.match(/retry in\s+([0-9.]+\s*s(?:econds?)?)/i);
     const retryTime = retryMatch ? retryMatch[1] : '20-30 секунд';
-    throw new Error(`❌ Превышен лимит запросов Google Gemini (HTTP 429 RESOURCE_EXHAUSTED).\n\n💡 Google API Free Tier временно ограничил запросы (квота 15-20 req/min). Пожалуйста, подождите ${retryTime} перед повторной генерацией, либо выберите модель gemini-3.1-flash-lite / OpenRouter в настройках ИИ.`);
+    throw new Error(`❌ Превышен лимит запросов Google Gemini (HTTP 429 RESOURCE_EXHAUSTED).\n\n💡 Google API Free Tier временно ограничил запросы (квота 15-20 req/min). Пожалуйста, подождите ${retryTime} перед повторной генерацией, либо выберите модель gemini-2.5-flash / OpenRouter в настройках ИИ.`);
   }
 
   if (finalMsg.includes('is no longer available') || (finalMsg.includes('404') && finalMsg.includes('models/'))) {
-    throw new Error(`❌ Выбранная модель устарела или недоступна в Google API (HTTP 404).\n\n💡 Решение: В разделе «Настройки ИИ» выберите актуальную модель: gemini-3.1-flash-lite (рекомендуется), gemini-3.8-flash или gemini-flash-lite-latest.`);
+    throw new Error(`❌ Выбранная модель устарела или недоступна в Google API (HTTP 404).\n\n💡 Решение: В разделе «Настройки ИИ» выберите актуальную модель: gemini-2.5-flash (рекомендуется) или gemini-flash-lite-latest.`);
   }
 
   if (finalMsg.includes('User location is not supported') || finalMsg.includes('FAILED_PRECONDITION')) {
-    throw new Error('❌ Ошибка Google Gemini: Геолокация сервера ограничена Google (User location is not supported).\n\n💡 Решение:\n1. Переключитесь на OpenRouter (вкладка ИИ-Суммаризация -> Настройки ИИ) — работает без региональных ограничений.\n2. Или разверните Cloudflare Worker по инструкции и укажите его URL в Настройках.');
+    throw new Error('❌ Ошибка Google Gemini: Геолокация сервера ограничена Google (User location is not supported).\n\n💡 Решение:\n1. Переключитесь на OpenRouter (вкладка ИИ-Суммаризация -> Настройки ИИ) — работает без региональных ограничений.\n2. Или обновите код Cloudflare Worker по инструкции в Настройках (чтобы он проксировал /v1beta/*).');
   }
 
   throw lastErr;
@@ -3740,11 +3811,18 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
         : (settings?.geminiApiKey || process.env.GEMINI_API_KEY);
 
       if (!key) throw new Error('API-ключ Google Gemini не указан.');
-      let model = sanitizeGeminiModel(testModel || settings?.geminiModel || 'gemini-3.1-flash-lite');
+      let requestedModel = sanitizeGeminiModel(testModel || settings?.geminiModel || 'gemini-2.5-flash');
       if (testModel && !DEPRECATED_GEMINI_MODELS.has(testModel.trim())) {
-        model = testModel.trim();
+        requestedModel = testModel.trim();
       }
-      
+      const testCandidateModels = Array.from(new Set([
+        requestedModel,
+        'gemini-2.5-flash',
+        'gemini-3-flash-preview',
+        'gemini-3.1-flash-lite-preview',
+        'gemini-flash-lite-latest'
+      ]));
+
       let effectiveBase = getGeminiEffectiveBaseUrl({
         customBaseUrl: testBaseUrl,
         proxySource: testProxySource
@@ -3753,63 +3831,100 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
         effectiveBase = null;
       }
 
-      if (effectiveBase) {
-        usedProxyUrl = effectiveBase;
-        const cleanBase = effectiveBase.replace(/\/$/, '');
-        const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${key.trim()}`;
+      const tryDirectGemini = async (m: string): Promise<string> => {
+        const client = new GoogleGenAI({
+          apiKey: key.trim(),
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build'
+            }
+          }
+        });
+        const resp: any = await client.models.generateContent({
+          model: m,
+          contents: [{ role: 'user', parts: [{ text: testPrompt }] }],
+          config: {
+            safetySettings: GEMINI_SAFETY_SETTINGS as any
+          }
+        });
+        return extractTextFromGeminiPayload(resp) || resp?.text || '';
+      };
+
+      const tryProxyGemini = async (m: string, proxyBase: string): Promise<string> => {
+        const cleanBase = proxyBase.replace(/\/$/, '');
+        const url = `${cleanBase}/v1beta/models/${m}:generateContent?key=${key.trim()}`;
         const r = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ contents: [{ parts: [{ text: testPrompt }] }] })
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: testPrompt }] }],
+            safetySettings: GEMINI_SAFETY_SETTINGS
+          }),
+          signal: AbortSignal.timeout(30000)
         });
         if (!r.ok) {
           const t = await r.text();
           throw new Error(`Proxy (${cleanBase}) HTTP ${r.status}: ${t}`);
         }
         const data: any = await r.json();
-        resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      } else {
+        return extractTextFromGeminiPayload(data);
+      };
+
+      let lastTestErr: any = null;
+      for (const m of testCandidateModels) {
         try {
-          const client = new GoogleGenAI({
-            apiKey: key.trim(),
-            httpOptions: {
-              headers: {
-                'User-Agent': 'aistudio-build'
+          if (effectiveBase) {
+            try {
+              const txt = await tryProxyGemini(m, effectiveBase);
+              if (txt) {
+                resultText = txt;
+                usedProxyUrl = effectiveBase;
+                break;
               }
+            } catch (proxyErr: any) {
+              lastTestErr = proxyErr;
             }
-          });
-          const resp = await client.models.generateContent({
-            model,
-            contents: [{ role: 'user', parts: [{ text: testPrompt }] }]
-          });
-          resultText = resp.text || '';
-        } catch (directErr: any) {
-          const msg = directErr?.message || String(directErr);
-          if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
-            const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
-            if (fallbackProxy) {
-              console.log(`[Gemini Test] Direct failed by region. Testing detected proxy fallback: ${fallbackProxy}`);
-              const cleanBase = fallbackProxy.replace(/\/$/, '');
-              const url = `${cleanBase}/v1beta/models/${model}:generateContent?key=${key.trim()}`;
-              const r = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ parts: [{ text: testPrompt }] }] })
-              });
-              if (r.ok) {
-                const data: any = await r.json();
-                resultText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                usedProxyUrl = fallbackProxy;
-              } else {
-                throw directErr;
-              }
-            } else {
-              throw directErr;
+            // Fallback to direct if proxy returned empty or failed
+            const directTxt = await tryDirectGemini(m);
+            if (directTxt) {
+              resultText = directTxt;
+              usedProxyUrl = null;
+              break;
             }
           } else {
-            throw directErr;
+            try {
+              const directTxt = await tryDirectGemini(m);
+              if (directTxt) {
+                resultText = directTxt;
+                usedProxyUrl = null;
+                break;
+              }
+            } catch (directErr: any) {
+              lastTestErr = directErr;
+              const msg = directErr?.message || String(directErr);
+              if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
+                const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
+                if (fallbackProxy) {
+                  const proxyTxt = await tryProxyGemini(m, fallbackProxy);
+                  if (proxyTxt) {
+                    resultText = proxyTxt;
+                    usedProxyUrl = fallbackProxy;
+                    break;
+                  }
+                }
+              }
+            }
           }
+        } catch (iterErr: any) {
+          lastTestErr = iterErr;
         }
+      }
+
+      if (!resultText && lastTestErr) {
+        throw lastTestErr;
+      }
+      if (!resultText) {
+        throw new Error('Gemini вернул пустой ответ. Проверьте правильность API-ключа или URL прокси.');
       }
     }
 
