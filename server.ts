@@ -1069,7 +1069,18 @@ app.get('/api/chats', authenticateToken, (req, res) => res.json(chats));
 app.get('/api/bans', authenticateToken, (req, res) => res.json(bans));
 app.get('/api/filters', authenticateToken, (req, res) => res.json(filters));
 app.get('/api/logs', authenticateToken, (req, res) => res.json(logs));
-app.get('/api/settings', authenticateToken, (req, res) => res.json(settings));
+app.get('/api/settings', authenticateToken, (req, res) => {
+  const persistedDbCfg = db.getPersistedConfig();
+  res.json({
+    ...settings,
+    dbType: settings.dbType || persistedDbCfg.dbType || 'FIREBASE',
+    dbHost: settings.dbHost || persistedDbCfg.dbHost || 'localhost',
+    dbPort: Number(settings.dbPort) || Number(persistedDbCfg.dbPort) || 3306,
+    dbUser: settings.dbUser || persistedDbCfg.dbUser || 'root',
+    dbName: settings.dbName || persistedDbCfg.dbName || 'teleguard',
+    dbStatus: db.getStatus()
+  });
+});
 app.get('/api/tasks', authenticateToken, (req, res) => res.json(tasks));
 app.get('/api/whitelist', authenticateToken, (req, res) => res.json(whitelist));
 
@@ -2036,9 +2047,27 @@ app.put('/api/settings', authenticateToken, async (req, res) => {
     const oldToken = settings.botToken;
     const oldApiRoot = settings.telegramApiRoot;
     const newSettings = req.body;
-    console.log('Updating settings:', newSettings);
-    await db.collection('config').doc('settings').set(cleanData(newSettings));
-    settings = { ...settings, ...newSettings };
+    console.log('Updating settings:', { ...newSettings, dbPass: newSettings?.dbPass ? '***' : '' });
+    settings = {
+      ...settings,
+      ...newSettings,
+      dbType: (newSettings.dbType || settings.dbType || 'FIREBASE') as 'FIREBASE' | 'MYSQL',
+      dbPort: Number(newSettings.dbPort) || Number(settings.dbPort) || 3306
+    };
+
+    const dbStatus = await db.configure({
+      dbType: settings.dbType,
+      dbHost: settings.dbHost,
+      dbPort: settings.dbPort,
+      dbUser: settings.dbUser,
+      dbPass: settings.dbPass,
+      dbName: settings.dbName
+    });
+
+    await db.collection('config').doc('settings').set(cleanData(settings));
+    try {
+      await adminDb.collection('config').doc('settings').set(cleanData(settings));
+    } catch {}
 
     if (newSettings.botToken && (newSettings.botToken !== oldToken || newSettings.telegramApiRoot !== oldApiRoot)) {
       console.log('Bot token or Telegram API Root updated, auto-reinitializing bot instance...');
@@ -2056,13 +2085,89 @@ app.put('/api/settings', authenticateToken, async (req, res) => {
       type: 'SETTINGS',
       user: user.username,
       chat: 'System',
-      details: `Обновлены настройки системы.`
+      details: `Обновлены настройки системы (БД: ${dbStatus.activeEngine}).`
     });
     
-    res.json({ success: true });
+    res.json({ success: true, settings, dbStatus });
   } catch (err) {
     console.error('Failed to update settings:', err);
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+app.get('/api/settings/db-status', authenticateToken, (req, res) => {
+  res.json(db.getStatus());
+});
+
+app.post('/api/settings/db-setup', authenticateToken, async (req, res) => {
+  try {
+    const user = (req as any).user;
+    if (user.role !== 'SUPER_ADMIN') return res.status(403).json({ error: 'Access denied' });
+
+    const body = req.body || {};
+    const cfg = {
+      dbType: 'MYSQL' as const,
+      dbHost: (body.dbHost ?? settings.dbHost ?? 'localhost').trim(),
+      dbPort: Number(body.dbPort ?? settings.dbPort ?? 3306) || 3306,
+      dbUser: (body.dbUser ?? settings.dbUser ?? 'root').trim(),
+      dbPass: body.dbPass ?? settings.dbPass ?? '',
+      dbName: (body.dbName ?? settings.dbName ?? 'teleguard').trim()
+    };
+
+    settings = {
+      ...settings,
+      ...cfg
+    };
+
+    const seedCollections: Record<string, Array<{ id: string; data: any }>> = {
+      config: [
+        { id: 'settings', data: cleanData(settings) },
+        { id: 'moderation', data: cleanData(filters) },
+        { id: 'digest_configs', data: { configs: cleanData(digestConfigs) } },
+        { id: 'antiscam_keywords', data: cleanData(antiScamKeywordsConfig) }
+      ],
+      chats: chats.map(c => ({ id: String(c.id), data: cleanData(c) })),
+      shop_topics: shopTopics.map(t => ({ id: String(t.chatId), data: cleanData(t) })),
+      shop_vendors: shopVendors.map(v => ({ id: String(v.id), data: cleanData(v) })),
+      shop_publications: shopPublications.map(p => ({ id: String(p.id), data: cleanData(p) })),
+      whitelist: whitelist.map(w => ({ id: String(w.id), data: cleanData(w) })),
+      bans: bans.map(b => ({ id: String(b.id), data: cleanData(b) })),
+      reputations: reputations.map(r => ({ id: String(r.id || r.userId), data: cleanData(r) }))
+    };
+
+    const result = await db.testAndSetupMySQL(cfg, seedCollections);
+    await db.collection('config').doc('settings').set(cleanData(settings)).catch(() => {});
+    try {
+      await adminDb.collection('config').doc('settings').set(cleanData(settings));
+    } catch {}
+
+    if (!result.success) {
+      return res.status(400).json({
+        success: false,
+        error: result.message,
+        dbStatus: result.status,
+        settings
+      });
+    }
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SETTINGS',
+      user: user.username,
+      chat: 'System',
+      details: result.message
+    });
+
+    res.json({
+      success: true,
+      message: result.message,
+      dbStatus: result.status,
+      settings
+    });
+  } catch (err: any) {
+    console.error('Failed to setup MySQL DB:', err);
+    res.status(500).json({ error: err.message || 'Ошибка настройки MySQL', dbStatus: db.getStatus() });
   }
 });
 
@@ -2621,12 +2726,9 @@ app.post('/api/shop-topics/config', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Не указан ID чата' });
     }
 
-    const chatStr = String(chatId);
-    const chatObj = chats.find(c => String(c.id) === chatStr);
-    const existing = shopTopics.find(t => String(t.chatId) === chatStr);
-
-    let parsedThreadId: number | undefined = existing?.messageThreadId;
-    let resolvedLink: string | undefined = existing?.topicLink;
+    let chatStr = String(chatId);
+    let parsedThreadId: number | undefined;
+    let resolvedLink: string | undefined;
 
     if (topicLinkOrId !== undefined && String(topicLinkOrId).trim() !== '') {
       const parsed = parseTopicLinkOrId(String(topicLinkOrId));
@@ -2636,9 +2738,39 @@ app.post('/api/shop-topics/config', authenticateToken, async (req, res) => {
         });
       }
       parsedThreadId = parsed.threadId;
-      resolvedLink = parsed.normalizedLink || buildTopicLinkForChat(chatStr, parsedThreadId, chatObj?.username);
-    } else if (parsedThreadId) {
-      resolvedLink = buildTopicLinkForChat(chatStr, parsedThreadId, chatObj?.username);
+
+      // Auto-match target chat if link contains chat ID or @username from another connected community
+      if (parsed.chatIdFromLink) {
+        const matchedByLinkId = chats.find(c => String(c.id) === String(parsed.chatIdFromLink));
+        if (matchedByLinkId) {
+          chatStr = String(matchedByLinkId.id);
+        }
+      } else if (parsed.chatUsernameFromLink) {
+        const cleanLinkUser = parsed.chatUsernameFromLink.replace(/^@/, '').toLowerCase();
+        const matchedByUsername = chats.find(c => (c.username || '').replace(/^@/, '').toLowerCase() === cleanLinkUser);
+        if (matchedByUsername) {
+          chatStr = String(matchedByUsername.id);
+        }
+      }
+
+      const targetChatObj = chats.find(c => String(c.id) === chatStr);
+      resolvedLink = parsed.normalizedLink || buildTopicLinkForChat(chatStr, parsedThreadId, targetChatObj?.username);
+    }
+
+    const chatObj = chats.find(c => String(c.id) === chatStr);
+    const existing = shopTopics.find(t => String(t.chatId) === chatStr);
+
+    if (parsedThreadId === undefined) {
+      parsedThreadId = existing?.messageThreadId;
+    }
+    if (!resolvedLink && parsedThreadId) {
+      resolvedLink = existing?.topicLink || buildTopicLinkForChat(chatStr, parsedThreadId, chatObj?.username);
+    }
+
+    // Ensure the chat is marked active so bot moderation does not skip it
+    if (chatObj && !chatObj.active) {
+      chatObj.active = true;
+      await updateChat(chatObj, true);
     }
 
     const configObj: ShopTopicConfig = {
@@ -4645,7 +4777,12 @@ function getCurrentMondayDateStr(dateInput: Date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
-function parseTopicLinkOrId(input: string): { threadId: number | null; normalizedLink?: string } {
+function parseTopicLinkOrId(input: string): {
+  threadId: number | null;
+  normalizedLink?: string;
+  chatIdFromLink?: string;
+  chatUsernameFromLink?: string;
+} {
   const raw = (input || '').trim();
   if (!raw) return { threadId: null };
 
@@ -4656,24 +4793,36 @@ function parseTopicLinkOrId(input: string): { threadId: number | null; normalize
     return { threadId: id > 0 ? id : null };
   }
 
+  // Check query param ?thread=42 or ?topic=42 (e.g. https://t.me/chat/105?thread=42)
+  const queryThreadMatch = raw.match(/[?&](?:thread|topic)=(\d+)/i);
+  const queryThreadId = queryThreadMatch ? parseInt(queryThreadMatch[1], 10) : null;
+
   // Private supergroup link: https://t.me/c/1887901789/42 or https://t.me/c/1887901789/42/123
-  const privateMatch = raw.match(/t\.me\/c\/(\d+)\/(\d+)(?:\/\d+)?/i);
+  const privateMatch = raw.match(/t\.me\/c\/(\d+)\/(\d+)(?:\/(\d+))?/i);
   if (privateMatch) {
-    const threadId = parseInt(privateMatch[2], 10);
+    const rawChatDigits = privateMatch[1];
+    const threadId = queryThreadId && queryThreadId > 0 ? queryThreadId : parseInt(privateMatch[2], 10);
     return {
       threadId: threadId > 0 ? threadId : null,
-      normalizedLink: `https://t.me/c/${privateMatch[1]}/${threadId}`
+      normalizedLink: `https://t.me/c/${rawChatDigits}/${threadId}`,
+      chatIdFromLink: `-100${rawChatDigits}`
     };
   }
 
   // Public group link: https://t.me/my_moto_chat/42 or https://t.me/my_moto_chat/42/123
-  const publicMatch = raw.match(/t\.me\/([a-zA-Z0-9_]+)\/(\d+)(?:\/\d+)?/i);
+  const publicMatch = raw.match(/t\.me\/([a-zA-Z0-9_]+)\/(\d+)(?:\/(\d+))?/i);
   if (publicMatch && publicMatch[1].toLowerCase() !== 'c') {
-    const threadId = parseInt(publicMatch[2], 10);
+    const username = publicMatch[1];
+    const threadId = queryThreadId && queryThreadId > 0 ? queryThreadId : parseInt(publicMatch[2], 10);
     return {
       threadId: threadId > 0 ? threadId : null,
-      normalizedLink: `https://t.me/${publicMatch[1]}/${threadId}`
+      normalizedLink: `https://t.me/${username}/${threadId}`,
+      chatUsernameFromLink: username
     };
+  }
+
+  if (queryThreadId && queryThreadId > 0) {
+    return { threadId: queryThreadId };
   }
 
   return { threadId: null };
@@ -5375,6 +5524,8 @@ function formatSummaryForTelegramHtml(
   // Remove any remaining lines with message/user counts if model generated them
   out = out.replace(/^[^\n]*?(?:сообщений|сообщения|участников|участника|сообщение|участник)\s*:\s*\d+[^\n]*?\n?/gim, '');
   out = out.replace(/^[^\n]*?(?:💬|👥)\s*[^\n]*?(?:Сообщений|Участников|Обработано)[^\n]*?\n?/gim, '');
+  // Remove "Причина: Реакция 👍/❤️ на сообщение" or any "Причина: ..." lines in digests
+  out = out.replace(/^[ \t]*(?:<i>)?Причина:\s*[^\n]*(?:<\/i>)?\n?/gim, '');
 
   // Strip @ from usernames to prevent accidental user tagging/notifications (except explicit MotoBlackList reference)
   out = out.replace(/(?<!https?:\/\/t\.me\/)@([a-zA-Z0-9_]{3,})/g, (match, username) => {
@@ -5528,10 +5679,6 @@ function getDailyReputationSummaryHtml(chatIdStr: string, hoursBack = 24): strin
     const handleStr = u.username ? ` (@${u.username})` : '';
     const scoreFormatted = u.currentScore > 0 ? `+${u.currentScore}` : `${u.currentScore}`;
     block += `• <b>${escapeHtml(u.fullName)}</b>${escapeHtml(handleStr)}: <b>${sign}</b> ⭐️ (рейтинг: <code>${scoreFormatted}</code>)\n`;
-    if (u.reasons.length > 0) {
-      const sampleReasons = u.reasons.slice(0, 2).map(r => escapeHtml(r)).join('; ');
-      block += `  <i>Причина: ${sampleReasons}</i>\n`;
-    }
   }
 
   block += `</blockquote>`;
@@ -5992,10 +6139,12 @@ let filters: FilterSettings = {
 let settings = {
   botToken: process.env.TELEGRAM_BOT_TOKEN || '',
   adminPassword: '',
-  dbHost: 'localhost',
-  dbUser: 'root',
-  dbPass: '',
-  dbName: 'teleguard',
+  dbType: (db.getPersistedConfig().dbType || 'FIREBASE') as 'FIREBASE' | 'MYSQL',
+  dbHost: db.getPersistedConfig().dbHost || 'localhost',
+  dbPort: Number(db.getPersistedConfig().dbPort) || 3306,
+  dbUser: db.getPersistedConfig().dbUser || 'root',
+  dbPass: db.getPersistedConfig().dbPass || '',
+  dbName: db.getPersistedConfig().dbName || 'teleguard',
   maintenanceMode: false,
   infoChatId: '',
   cfWorkerUrl: process.env.CF_WORKER_URL || '',
@@ -6136,9 +6285,20 @@ async function syncData() {
     });
 
     await safeLoad('config/settings', async () => {
+      const persistedDbCfg = db.getPersistedConfig();
       const settingsDoc = await db.collection('config').doc('settings').get();
       if (settingsDoc.exists) {
-        settings = { ...settings, ...settingsDoc.data() as any };
+        const docData = settingsDoc.data() as any;
+        settings = {
+          ...settings,
+          ...docData,
+          dbType: (persistedDbCfg.dbType || docData.dbType || settings.dbType || 'FIREBASE') as 'FIREBASE' | 'MYSQL',
+          dbHost: persistedDbCfg.dbHost || docData.dbHost || settings.dbHost || 'localhost',
+          dbPort: Number(persistedDbCfg.dbPort || docData.dbPort || settings.dbPort || 3306) || 3306,
+          dbUser: persistedDbCfg.dbUser || docData.dbUser || settings.dbUser || 'root',
+          dbPass: persistedDbCfg.dbPass ?? docData.dbPass ?? settings.dbPass ?? '',
+          dbName: persistedDbCfg.dbName || docData.dbName || settings.dbName || 'teleguard'
+        };
         if (settings.lastSetMenuButtonUrl) {
           lastSetMenuButtonUrl = settings.lastSetMenuButtonUrl;
         }
@@ -6148,8 +6308,16 @@ async function syncData() {
         if (settings.geminiModel) {
           settings.geminiModel = sanitizeGeminiModel(settings.geminiModel);
         }
-        console.log('Loaded settings (geminiModel:', settings.geminiModel, ')');
+        console.log('Loaded settings (geminiModel:', settings.geminiModel, ', dbType:', settings.dbType, ')');
       }
+      await db.configure({
+        dbType: settings.dbType,
+        dbHost: settings.dbHost,
+        dbPort: settings.dbPort,
+        dbUser: settings.dbUser,
+        dbPass: settings.dbPass,
+        dbName: settings.dbName
+      });
     });
 
     await safeLoad('stats', async () => {
@@ -6157,6 +6325,22 @@ async function syncData() {
       const tzOffset = typeof settings?.timezoneOffset === 'number' ? settings.timezoneOffset : 3;
       statsHistory = snap.docs.map(d => {
         const item = { id: d.id, ...d.data() } as any;
+        if (typeof item.chatStats === 'string') {
+          try { item.chatStats = JSON.parse(item.chatStats); } catch { item.chatStats = {}; }
+        }
+        if (!item.chatStats || typeof item.chatStats !== 'object') item.chatStats = {};
+        if (typeof item.hourly === 'string') {
+          try { item.hourly = JSON.parse(item.hourly); } catch { item.hourly = {}; }
+        }
+        if (!item.hourly || typeof item.hourly !== 'object') item.hourly = {};
+        if (typeof item.activeUsers === 'string') {
+          try { item.activeUsers = JSON.parse(item.activeUsers); } catch { item.activeUsers = []; }
+        }
+        if (!Array.isArray(item.activeUsers)) item.activeUsers = [];
+        if (typeof item.onlineUsers === 'string') {
+          try { item.onlineUsers = JSON.parse(item.onlineUsers); } catch { item.onlineUsers = []; }
+        }
+        if (!Array.isArray(item.onlineUsers)) item.onlineUsers = [];
         if (!item.tzAdjusted) {
           if (item.hourly) {
             item.hourly = shiftHourlyStats(item.hourly, tzOffset);
@@ -6241,22 +6425,24 @@ async function syncData() {
           if (/(?:📅|🗓️)/i.test(item.summary)) {
             item.summary = item.summary.replace(/(?:📅|🗓️)\s*(?:<i>)?[^\n]*(?:<\/i>)?/i, `📅 <i>${realDayLabel}</i>`);
           }
+          item.summary = item.summary.replace(/^[ \t]*(?:<i>)?Причина:\s*[^\n]*(?:<\/i>)?\n?/gim, '');
         }
         return item;
       });
       console.log(`Loaded ${chatDigests.length} chat digests`);
 
-      // One-time self-healing background update for stored digests with wrong dates
+      // One-time self-healing background update for stored digests with wrong dates or reaction reason lines
       (async () => {
         try {
           let updatedCount = 0;
           for (const d of snap.docs) {
             const data = d.data();
             const summary = data.summary || '';
-            if (summary.includes('2024') || summary.includes('2023') || summary.includes('24 мая')) {
+            if (summary.includes('2024') || summary.includes('2023') || summary.includes('24 мая') || summary.includes('Причина:')) {
               const createdDate = data.createdAt ? new Date(data.createdAt) : new Date();
               const realDayLabel = getProjectDateFormatted(createdDate);
-              const fixedSummary = summary.replace(/(?:📅|🗓️)\s*(?:<i>)?[^\n]*(?:<\/i>)?/i, `📅 <i>${realDayLabel}</i>`);
+              let fixedSummary = summary.replace(/(?:📅|🗓️)\s*(?:<i>)?[^\n]*(?:<\/i>)?/i, `📅 <i>${realDayLabel}</i>`);
+              fixedSummary = fixedSummary.replace(/^[ \t]*(?:<i>)?Причина:\s*[^\n]*(?:<\/i>)?\n?/gim, '');
               if (fixedSummary !== summary) {
                 queueWrite('chat_digests', d.id, { ...cleanData(data), summary: fixedSummary });
                 updatedCount++;
@@ -6337,10 +6523,12 @@ async function syncData() {
     // Polling for config updates instead of unstable onSnapshot
     const syncConfig = async () => {
       try {
-        const [modDoc, setDoc, digestDoc] = await Promise.all([
+        const [modDoc, setDoc, digestDoc, shopTopicsSnap, shopVendorsSnap] = await Promise.all([
           db.collection('config').doc('moderation').get(),
           db.collection('config').doc('settings').get(),
-          db.collection('config').doc('digest_configs').get()
+          db.collection('config').doc('digest_configs').get(),
+          db.collection('shop_topics').get().catch(() => null),
+          db.collection('shop_vendors').get().catch(() => null)
         ]);
 
         if (modDoc.exists) {
@@ -6354,11 +6542,24 @@ async function syncData() {
           }
         }
 
+        if (shopTopicsSnap && shopTopicsSnap.docs.length > 0) {
+          shopTopics = shopTopicsSnap.docs.map(d => ({ chatId: String(d.id), ...d.data() } as ShopTopicConfig));
+        }
+
+        if (shopVendorsSnap && shopVendorsSnap.docs.length > 0) {
+          shopVendors = shopVendorsSnap.docs.map(d => ({ id: String(d.id), ...d.data() } as ShopVendor));
+        }
+
         if (setDoc.exists) {
           const newSettings = setDoc.data() as any;
+          const persistedDbCfg = db.getPersistedConfig();
           const tokenChanged = newSettings.botToken !== settings.botToken;
           const apiRootChanged = newSettings.telegramApiRoot !== settings.telegramApiRoot;
-          settings = { ...settings, ...newSettings };
+          settings = {
+            ...settings,
+            ...newSettings,
+            dbType: (persistedDbCfg.dbType || newSettings.dbType || settings.dbType || 'FIREBASE') as 'FIREBASE' | 'MYSQL'
+          };
           if (tokenChanged || apiRootChanged) {
             console.log('Bot token or Telegram API Root updated from database (via polling), restarting...');
             initBot(settings.botToken);
@@ -6747,6 +6948,18 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
     };
   } else {
     today.tzAdjusted = true;
+    if (typeof today.chatStats === 'string') {
+      try { today.chatStats = JSON.parse(today.chatStats); } catch { today.chatStats = {}; }
+    }
+    if (typeof today.hourly === 'string') {
+      try { today.hourly = JSON.parse(today.hourly); } catch { today.hourly = {}; }
+    }
+    if (typeof today.activeUsers === 'string') {
+      try { today.activeUsers = JSON.parse(today.activeUsers); } catch { today.activeUsers = []; }
+    }
+    if (typeof today.onlineUsers === 'string') {
+      try { today.onlineUsers = JSON.parse(today.onlineUsers); } catch { today.onlineUsers = []; }
+    }
   }
 
   if (type === 'joins') today.joins = (today.joins || 0) + amount;
@@ -6754,7 +6967,7 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
   if (type === 'msgs') today.msgs = (today.msgs || 0) + amount;
 
   // Track hourly activity for today
-  if (!today.hourly) today.hourly = {};
+  if (!today.hourly || typeof today.hourly !== 'object') today.hourly = {};
   if (!today.hourly[currentHour]) {
     today.hourly[currentHour] = { msgs: 0, joins: 0, leaves: 0, activeUsers: [] };
   }
@@ -6762,8 +6975,8 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
   if (type === 'joins') today.hourly[currentHour].joins = (today.hourly[currentHour].joins || 0) + amount;
   if (type === 'leaves') today.hourly[currentHour].leaves = (today.hourly[currentHour].leaves || 0) + amount;
 
-  if (!today.chatStats) today.chatStats = {};
-  if (!today.chatStats[chatId]) {
+  if (!today.chatStats || typeof today.chatStats !== 'object') today.chatStats = {};
+  if (!today.chatStats[chatId] || typeof today.chatStats[chatId] !== 'object') {
     today.chatStats[chatId] = { joins: 0, leaves: 0, msgs: 0, activeUsers: [], onlineUsers: [], hourly: {} };
   }
   
@@ -6771,7 +6984,7 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
   if (type === 'leaves') today.chatStats[chatId].leaves += amount;
   if (type === 'msgs') today.chatStats[chatId].msgs += amount;
 
-  if (!today.chatStats[chatId].hourly) today.chatStats[chatId].hourly = {};
+  if (!today.chatStats[chatId].hourly || typeof today.chatStats[chatId].hourly !== 'object') today.chatStats[chatId].hourly = {};
   if (!today.chatStats[chatId].hourly[currentHour]) {
     today.chatStats[chatId].hourly[currentHour] = { msgs: 0, joins: 0, leaves: 0, activeUsers: [] };
   }
@@ -6781,7 +6994,7 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
 
   if (userId) {
     if (type === 'msgs' || type === 'joins') {
-      if (!today.activeUsers) today.activeUsers = [];
+      if (!Array.isArray(today.activeUsers)) today.activeUsers = [];
       if (!today.activeUsers.includes(userId)) today.activeUsers.push(userId);
       
       if (!today.chatStats[chatId].activeUsers) today.chatStats[chatId].activeUsers = [];
@@ -8104,16 +8317,44 @@ async function initBot(token: string) {
         // ====================================================================
         // Commercial Topic Moderation: «Объявления магазинов»
         // ====================================================================
-        const msgThreadId = (ctx.message as any)?.message_thread_id;
+        const msgAny = ctx.message as any;
+        const msgThreadId =
+          msgAny?.message_thread_id ||
+          msgAny?.reply_to_message?.message_thread_id ||
+          (msgAny?.is_topic_message && msgAny?.reply_to_message?.message_id ? msgAny.reply_to_message.message_id : undefined);
+        const detectedTopicName = String(
+          msgAny?.reply_to_message?.forum_topic_created?.name ||
+          msgAny?.forum_topic_created?.name ||
+          ''
+        ).trim();
+
         const shopTopicConfig = shopTopics.find(t => String(t.chatId) === String(chatId));
-        if (
-          shopTopicConfig &&
-          shopTopicConfig.enabled &&
-          shopTopicConfig.messageThreadId &&
-          msgThreadId &&
-          Number(msgThreadId) === Number(shopTopicConfig.messageThreadId)
-        ) {
-          const msgAny = ctx.message as any;
+        let isInShopTopic = false;
+
+        if (shopTopicConfig && shopTopicConfig.enabled) {
+          if (shopTopicConfig.messageThreadId && msgThreadId && Number(msgThreadId) === Number(shopTopicConfig.messageThreadId)) {
+            isInShopTopic = true;
+          } else if (msgThreadId && detectedTopicName) {
+            const cfgTitle = (shopTopicConfig.topicTitle || 'Объявления магазинов').trim().toLowerCase();
+            const detLower = detectedTopicName.toLowerCase();
+            if (
+              detLower === cfgTitle ||
+              detLower.includes('объявления магазинов') ||
+              detLower.includes('объявление магазинов')
+            ) {
+              isInShopTopic = true;
+              // Auto-heal messageThreadId if the user pasted a regular message ID instead of the topic creation ID
+              if (Number(shopTopicConfig.messageThreadId) !== Number(msgThreadId)) {
+                console.log(`[ShopTopic] Auto-updating messageThreadId for chat ${chatId} from ${shopTopicConfig.messageThreadId} to ${msgThreadId} (matched topic title "${detectedTopicName}")`);
+                shopTopicConfig.messageThreadId = Number(msgThreadId);
+                shopTopicConfig.updatedAt = new Date().toISOString();
+                db.collection('shop_topics').doc(String(chatId)).set(cleanData(shopTopicConfig)).catch(() => {});
+              }
+            }
+          }
+        }
+
+        if (shopTopicConfig && isInShopTopic) {
           const isTopicServiceMsg = Boolean(
             msgAny?.forum_topic_created ||
             msgAny?.forum_topic_edited ||
@@ -8126,17 +8367,21 @@ async function initBot(token: string) {
           const isShopCommand = typeof rawText === 'string' && /^\/(set_shop_topic|shop_status|unset_shop_topic)(?:@\w+)?/i.test(rawText.trim());
 
           if (!isTopicServiceMsg && !isShopCommand) {
-            const isSenderChatAdmin = isCurrentAdmin || await isModeratorOrAdmin(ctx, chatId, ctx.from.id);
+            // Check if sent on behalf of the group itself (anonymous chat admin) vs an external channel
+            const isAnonymousGroupAdmin = Boolean(msgAny?.sender_chat && String(msgAny.sender_chat.id) === String(chatId));
+            const isSenderChatAdmin = isAnonymousGroupAdmin || isCurrentAdmin || await isModeratorOrAdmin(ctx, chatId, ctx.from.id);
 
             // Administrators of the chat can write in the topic without restrictions
             if (!isSenderChatAdmin) {
               const currentMonday = getCurrentMondayDateStr();
-              const cleanSenderUsername = (username || '').replace(/^@/, '').toLowerCase();
+              const senderChatUsername = (msgAny?.sender_chat?.username || '').replace(/^@/, '').toLowerCase();
+              const cleanSenderUsername = ((username || '').replace(/^@/, '') || senderChatUsername).toLowerCase();
+              const effectiveSenderId = msgAny?.sender_chat?.id ? String(msgAny.sender_chat.id) : String(userId);
 
               // Find matching vendor in this chat by Telegram ID or @username
               const vendorIdx = shopVendors.findIndex(v => {
                 if (String(v.chatId) !== String(chatId)) return false;
-                if (v.userId && String(v.userId) === String(userId)) return true;
+                if (v.userId && (String(v.userId) === String(userId) || String(v.userId) === effectiveSenderId)) return true;
                 if (v.username && cleanSenderUsername && v.username.replace(/^@/, '').toLowerCase() === cleanSenderUsername) return true;
                 return false;
               });
@@ -8144,9 +8389,9 @@ async function initBot(token: string) {
               if (vendorIdx === -1) {
                 // Unauthorized user in shop topic -> immediately delete message
                 try {
-                  await ctx.deleteMessage();
+                  await ctx.telegram.deleteMessage(chatId, ctx.message.message_id);
                 } catch (delErr: any) {
-                  console.error(`[ShopTopic] Failed to delete unauthorized message in ${chatId}:`, delErr?.message || delErr);
+                  console.error(`[ShopTopic] Failed to delete unauthorized message in ${chatId} (thread ${msgThreadId}):`, delErr?.message || delErr);
                 }
                 await addLog({
                   id: Math.random().toString(36).substr(2, 9),
@@ -8191,7 +8436,7 @@ async function initBot(token: string) {
                   await db.collection('shop_vendors').doc(vendor.id).set(cleanData(vendor)).catch(() => {});
                 }
                 try {
-                  await ctx.deleteMessage();
+                  await ctx.telegram.deleteMessage(chatId, ctx.message.message_id);
                 } catch (delErr: any) {
                   console.error(`[ShopTopic] Failed to delete expired vendor message in ${chatId}:`, delErr?.message || delErr);
                 }

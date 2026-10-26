@@ -1,15 +1,59 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import Database from 'better-sqlite3';
+import mysql from 'mysql2/promise';
 import fs from 'fs';
 import path from 'path';
 import { adminDb as firebaseDb } from './firebase-admin';
 import { CHATS_CATALOG, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 
-const DB_TYPE = (process.env.DB_TYPE || 'HYBRID').toUpperCase();
 const SQLITE_PATH = process.env.SQLITE_PATH || './data/database.sqlite';
+const DB_CONFIG_PATH = './data/db-config.json';
 
-console.log(`[Database] Selected type: ${DB_TYPE}`);
+export interface DbConnectionConfig {
+  dbType: 'FIREBASE' | 'MYSQL';
+  dbHost: string;
+  dbPort: number;
+  dbUser: string;
+  dbPass: string;
+  dbName: string;
+}
+
+export interface DbStatusInfo {
+  configuredType: 'FIREBASE' | 'MYSQL';
+  activeEngine: 'FIREBASE' | 'MYSQL' | 'SQLITE';
+  mysqlConnected: boolean;
+  mysqlError: string | null;
+  mysqlHost: string;
+  mysqlPort: number;
+  mysqlDatabase: string;
+  mysqlUser: string;
+  firebaseConnected: boolean;
+  quotaExhausted: boolean;
+  tablesCount?: number;
+}
+
+const ALL_COLLECTIONS = [
+  'stats', 'broadcast_history', 'whitelist', 'users', 'chats',
+  'global_bans', 'chat_bans', 'filters', 'logs', 'memberships',
+  'tasks', 'config', 'chat_digests', 'chat_messages', 'reputations',
+  'warnings', 'active_mutes', 'scam_alert_logs', 'pinned_messages',
+  'shop_topics', 'shop_vendors', 'shop_publications'
+];
+
+const JSON_COLUMNS = new Set([
+  'chatStats', 'hourly', 'activeUsers', 'onlineUsers',
+  'assignedChatIds', 'forbiddenWords', 'buttons', 'chatIds',
+  'messageIds', 'pinResults', 'history', 'chatScores', 'settings',
+  'configs', 'items', 'messages', 'keywords'
+]);
+
+const BOOLEAN_COLUMNS = new Set([
+  'active', 'enabled', 'isAdmin', 'tzAdjusted', 'sentToTelegram',
+  'isForward', 'muteNewcomers', 'autoApprove', 'pin', 'silent',
+  'unpinned', 'hasMedia', 'deleteMessage', 'notifyInGroup',
+  'notifyVendorOnDelete', 'autoSendTelegram'
+]);
 
 export function isFirestoreQuotaExceeded(err: any): boolean {
   if (!err) return false;
@@ -26,6 +70,48 @@ export function isFirestoreQuotaExceeded(err: any): boolean {
   );
 }
 
+function normalizeSQLiteRow(row: any, id: string): any {
+  if (!row) return null;
+  let res: any = { ...row };
+
+  if (row.data) {
+    try {
+      const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+      if (parsed && typeof parsed === 'object') {
+        res = { ...res, ...parsed };
+      }
+    } catch (e) {}
+  }
+
+  delete res.data;
+
+  for (const key of Object.keys(res)) {
+    const val = res[key];
+    if (typeof val === 'string') {
+      const trimmed = val.trim();
+      if (
+        JSON_COLUMNS.has(key) ||
+        ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+          (trimmed.startsWith('[') && trimmed.endsWith(']')))
+      ) {
+        try {
+          res[key] = JSON.parse(trimmed);
+        } catch (e) {}
+      }
+    } else if (typeof val === 'number' && BOOLEAN_COLUMNS.has(key)) {
+      res[key] = val === 1;
+    }
+  }
+
+  res.id = String(id);
+  return res;
+}
+
+function sanitizeTableName(name: string): string {
+  const mapped = name === 'bans' ? 'global_bans' : name;
+  return mapped.replace(/[^a-zA-Z0-9_]/g, '');
+}
+
 export class SQLiteDoc {
   private db: Database.Database;
   private tableName: string;
@@ -33,7 +119,7 @@ export class SQLiteDoc {
 
   constructor(db: Database.Database, tableName: string, id: string) {
     this.db = db;
-    this.tableName = tableName;
+    this.tableName = sanitizeTableName(tableName);
     this.id = String(id);
   }
 
@@ -47,20 +133,11 @@ export class SQLiteDoc {
           data: () => null
         };
       }
+      const parsedData = normalizeSQLiteRow(row, this.id);
       return {
         id: this.id,
         exists: true,
-        data: () => {
-          let res: any = { ...row };
-          if (row.data) {
-            try {
-              const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-              res = { ...res, ...parsed };
-            } catch (e) {}
-          }
-          res.id = this.id;
-          return res;
-        }
+        data: () => parsedData
       };
     } catch (e) {
       return { id: this.id, exists: false, data: () => null };
@@ -69,10 +146,8 @@ export class SQLiteDoc {
 
   async set(data: any) {
     if (!data) return;
-    const clean = { ...data };
-    clean.id = this.id;
+    const clean = { ...data, id: this.id };
 
-    // Ensure table exists
     try {
       this.db.prepare(`SELECT 1 FROM ${this.tableName} LIMIT 1`).get();
     } catch (e) {
@@ -80,20 +155,17 @@ export class SQLiteDoc {
     }
 
     const columns = (this.db.prepare(`PRAGMA table_info(${this.tableName})`).all() as any[]).map(c => c.name);
-
-    if (columns.includes('data')) {
-      clean.data = JSON.stringify(data);
-    }
-
-    const validFields = Object.keys(clean).filter(k => columns.includes(k));
-    if (validFields.length === 0) {
-      if (!columns.includes('data')) {
+    if (!columns.includes('data')) {
+      try {
         this.db.prepare(`ALTER TABLE ${this.tableName} ADD COLUMN data TEXT`).run();
         columns.push('data');
-      }
-      clean.data = JSON.stringify(data);
-      validFields.push('id', 'data');
+      } catch (e) {}
     }
+
+    clean.data = JSON.stringify(data);
+
+    const validFields = Object.keys(clean).filter(k => columns.includes(k));
+    if (!validFields.includes('id')) validFields.unshift('id');
 
     const placeholders = validFields.map(() => '?').join(', ');
     const colList = validFields.join(', ');
@@ -134,7 +206,7 @@ export class SQLiteCollection {
 
   constructor(db: Database.Database, tableName: string, constraints: Array<{ type: string; field: string; op?: string; value?: any; dir?: string }> = []) {
     this.db = db;
-    this.tableName = tableName;
+    this.tableName = sanitizeTableName(tableName);
     this.queryConstraints = [...constraints];
   }
 
@@ -175,7 +247,6 @@ export class SQLiteCollection {
     const params: any[] = [];
     const whereClauses: string[] = [];
 
-    // Ensure table exists
     try {
       this.db.prepare(`SELECT 1 FROM ${this.tableName} LIMIT 1`).get();
     } catch (e) {
@@ -220,25 +291,225 @@ export class SQLiteCollection {
       return {
         empty: rows.length === 0,
         size: rows.length,
-        docs: rows.map((row: any) => ({
-          id: String(row.id),
-          data: () => {
-            let res: any = { ...row };
-            if (row.data) {
-              try {
-                const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-                res = { ...res, ...parsed };
-              } catch (e) {}
-            }
-            res.id = String(row.id);
-            return res;
-          },
-          exists: true
-        }))
+        docs: rows.map((row: any) => {
+          const docId = String(row.id);
+          const parsedData = normalizeSQLiteRow(row, docId);
+          return {
+            id: docId,
+            ref: this.doc(docId),
+            data: () => parsedData,
+            exists: true
+          };
+        })
       };
     } catch (e) {
       console.error(`SQLite get error for ${this.tableName}:`, e);
       return { empty: true, size: 0, docs: [] };
+    }
+  }
+}
+
+export class MySQLDoc {
+  private pool: mysql.Pool;
+  private tableName: string;
+  private id: string;
+  private sqliteFallbackDoc: SQLiteDoc;
+
+  constructor(pool: mysql.Pool, tableName: string, id: string, sqliteFallbackDoc: SQLiteDoc) {
+    this.pool = pool;
+    this.tableName = sanitizeTableName(tableName);
+    this.id = String(id);
+    this.sqliteFallbackDoc = sqliteFallbackDoc;
+  }
+
+  async ensureTable() {
+    await this.pool.execute(`
+      CREATE TABLE IF NOT EXISTS \`${this.tableName}\` (
+        \`id\` VARCHAR(255) NOT NULL PRIMARY KEY,
+        \`data\` LONGTEXT NOT NULL,
+        \`updatedAt\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+    `);
+  }
+
+  async get() {
+    try {
+      await this.ensureTable();
+      const [rows]: any = await this.pool.execute(
+        `SELECT \`id\`, \`data\` FROM \`${this.tableName}\` WHERE \`id\` = ? LIMIT 1`,
+        [this.id]
+      );
+      if (!rows || rows.length === 0) {
+        return {
+          id: this.id,
+          exists: false,
+          data: () => null
+        };
+      }
+      const row = rows[0];
+      let parsed: any = {};
+      try {
+        parsed = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+      } catch (e) {}
+      parsed.id = this.id;
+      this.sqliteFallbackDoc.set(parsed).catch(() => {});
+      return {
+        id: this.id,
+        exists: true,
+        data: () => parsed
+      };
+    } catch (err) {
+      console.warn(`[MySQL] Read error on ${this.tableName}/${this.id}, using SQLite mirror:`, (err as any)?.message);
+      return this.sqliteFallbackDoc.get();
+    }
+  }
+
+  async set(data: any) {
+    if (!data) return;
+    const payload = { ...data, id: this.id };
+    await this.sqliteFallbackDoc.set(payload);
+    await this.ensureTable();
+    const jsonStr = JSON.stringify(payload);
+    await this.pool.execute(
+      `INSERT INTO \`${this.tableName}\` (\`id\`, \`data\`) VALUES (?, ?) ON DUPLICATE KEY UPDATE \`data\` = VALUES(\`data\`)`,
+      [this.id, jsonStr]
+    );
+  }
+
+  async update(data: any) {
+    if (!data) return;
+    const existing = await this.get();
+    const currentData = existing.exists ? existing.data() || {} : {};
+    return this.set({ ...currentData, ...data });
+  }
+
+  async delete() {
+    await this.sqliteFallbackDoc.delete();
+    await this.ensureTable();
+    await this.pool.execute(`DELETE FROM \`${this.tableName}\` WHERE \`id\` = ?`, [this.id]);
+  }
+
+  onSnapshot(callback: (doc: any) => void) {
+    this.get().then(callback);
+    return () => {};
+  }
+}
+
+export class MySQLCollection {
+  private pool: mysql.Pool;
+  private tableName: string;
+  private sqliteCol: SQLiteCollection;
+  private queryConstraints: Array<{ type: string; field: string; op?: string; value?: any; dir?: string }> = [];
+
+  constructor(
+    pool: mysql.Pool,
+    tableName: string,
+    sqliteCol: SQLiteCollection,
+    constraints: Array<{ type: string; field: string; op?: string; value?: any; dir?: string }> = []
+  ) {
+    this.pool = pool;
+    this.tableName = sanitizeTableName(tableName);
+    this.sqliteCol = sqliteCol;
+    this.queryConstraints = [...constraints];
+  }
+
+  doc(id: string) {
+    return new MySQLDoc(this.pool, this.tableName, id, this.sqliteCol.doc(id));
+  }
+
+  where(field: string, op: string, value: any) {
+    return new MySQLCollection(this.pool, this.tableName, this.sqliteCol.where(field, op, value), [
+      ...this.queryConstraints,
+      { type: 'where', field, op, value }
+    ]);
+  }
+
+  orderBy(field: string, dir: 'asc' | 'desc' = 'asc') {
+    return new MySQLCollection(this.pool, this.tableName, this.sqliteCol.orderBy(field, dir), [
+      ...this.queryConstraints,
+      { type: 'orderBy', field, dir }
+    ]);
+  }
+
+  limit(n: number) {
+    return new MySQLCollection(this.pool, this.tableName, this.sqliteCol.limit(n), [
+      ...this.queryConstraints,
+      { type: 'limit', field: '', value: n }
+    ]);
+  }
+
+  async add(data: any) {
+    const id = data.id || Math.random().toString(36).substr(2, 9);
+    const docRef = this.doc(id);
+    await docRef.set(data);
+    return docRef;
+  }
+
+  async get() {
+    try {
+      await this.pool.execute(`
+        CREATE TABLE IF NOT EXISTS \`${this.tableName}\` (
+          \`id\` VARCHAR(255) NOT NULL PRIMARY KEY,
+          \`data\` LONGTEXT NOT NULL,
+          \`updatedAt\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+
+      const [rows]: any = await this.pool.execute(`SELECT \`id\`, \`data\` FROM \`${this.tableName}\``);
+      let items: Array<{ id: string; data: any }> = (rows || []).map((row: any) => {
+        let parsed: any = {};
+        try {
+          parsed = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
+        } catch (e) {}
+        parsed.id = String(row.id);
+        return { id: String(row.id), data: parsed };
+      });
+
+      // Apply where filters in memory for full compatibility with arbitrary JSON fields
+      for (const c of this.queryConstraints) {
+        if (c.type === 'where') {
+          items = items.filter(item => {
+            const fieldVal = item.data[c.field];
+            if (c.op === '==' || c.op === '=') return String(fieldVal) === String(c.value);
+            if (c.op === '>=') return fieldVal >= c.value;
+            if (c.op === '<=') return fieldVal <= c.value;
+            if (c.op === '>') return fieldVal > c.value;
+            if (c.op === '<') return fieldVal < c.value;
+            if (c.op === '!=') return fieldVal !== c.value;
+            return true;
+          });
+        }
+      }
+
+      const orderBy = this.queryConstraints.find(c => c.type === 'orderBy');
+      if (orderBy) {
+        const dirMult = orderBy.dir?.toLowerCase() === 'desc' ? -1 : 1;
+        items.sort((a, b) => {
+          const va = a.data[orderBy.field];
+          const vb = b.data[orderBy.field];
+          if (va === vb) return 0;
+          return (va > vb ? 1 : -1) * dirMult;
+        });
+      }
+
+      const limitConstraint = this.queryConstraints.find(c => c.type === 'limit');
+      if (limitConstraint && typeof limitConstraint.value === 'number') {
+        items = items.slice(0, limitConstraint.value);
+      }
+
+      return {
+        empty: items.length === 0,
+        size: items.length,
+        docs: items.map(item => ({
+          id: item.id,
+          ref: this.doc(item.id),
+          data: () => item.data,
+          exists: true
+        }))
+      };
+    } catch (err) {
+      console.warn(`[MySQL] Collection get error on ${this.tableName}, falling back to SQLite:`, (err as any)?.message);
+      return this.sqliteCol.get();
     }
   }
 }
@@ -261,21 +532,19 @@ export class SQLiteDB {
       this.db.exec(sql);
     }
 
-    // Ensure all collection tables exist
-    const collections = [
-      'stats', 'broadcast_history', 'whitelist', 'users', 'chats', 
-      'global_bans', 'chat_bans', 'filters', 'logs', 'memberships', 
-      'tasks', 'config', 'chat_digests', 'chat_messages', 'reputations', 
-      'warnings', 'active_mutes', 'scam_alert_logs', 'pinned_messages',
-      'shop_topics', 'shop_vendors', 'shop_publications'
-    ];
-
-    for (const c of collections) {
+    // Ensure all collection tables exist AND have a `data TEXT` column
+    for (const c of ALL_COLLECTIONS) {
       try {
         this.db.prepare(`SELECT 1 FROM ${c} LIMIT 1`).get();
       } catch (e) {
         this.db.prepare(`CREATE TABLE IF NOT EXISTS ${c} (id TEXT PRIMARY KEY, data TEXT)`).run();
       }
+      try {
+        const cols = (this.db.prepare(`PRAGMA table_info(${c})`).all() as any[]).map(col => col.name);
+        if (!cols.includes('data')) {
+          this.db.prepare(`ALTER TABLE ${c} ADD COLUMN data TEXT`).run();
+        }
+      } catch (e) {}
     }
 
     // Auto-seed chats from CHATS_CATALOG if empty
@@ -283,24 +552,20 @@ export class SQLiteDB {
       const chatCount = (this.db.prepare('SELECT count(*) as count FROM chats').get() as any)?.count || 0;
       if (chatCount === 0 && Array.isArray(CHATS_CATALOG)) {
         console.log(`[SQLiteDB] Seeding ${CHATS_CATALOG.length} moto communities from catalog...`);
-        const insertStmt = this.db.prepare(`
-          INSERT OR REPLACE INTO chats (id, title, members, active, username, category, description, avatarUrl)
-          VALUES (?, ?, ?, 1, ?, ?, ?, ?)
-        `);
         for (const item of CHATS_CATALOG) {
           const mapping = CHAT_TO_DB_MAPPING[item.slug];
           const chatId = mapping?.id || `chat_${item.slug}`;
-          try {
-            insertStmt.run(
-              chatId,
-              item.title,
-              item.estimatedMembers || 100,
-              item.username,
-              item.category,
-              item.shortDesc,
-              item.image
-            );
-          } catch (err) {}
+          const chatData = {
+            id: chatId,
+            title: item.title,
+            members: item.estimatedMembers || 100,
+            active: true,
+            username: item.username,
+            category: item.category,
+            description: item.shortDesc,
+            avatarUrl: item.image
+          };
+          new SQLiteDoc(this.db, 'chats', chatId).set(chatData).catch(() => {});
         }
       }
     } catch (e) {
@@ -327,9 +592,7 @@ export class SQLiteDB {
   }
 
   collection(name: string) {
-    let tableName = name;
-    if (name === 'bans') tableName = 'global_bans';
-
+    const tableName = sanitizeTableName(name);
     try {
       this.db.prepare(`SELECT 1 FROM ${tableName} LIMIT 1`).get();
     } catch (e) {
@@ -351,24 +614,267 @@ export class SQLiteDB {
 
 class HybridDatabase {
   public sqlite: SQLiteDB;
-  private isQuotaExhausted: boolean = true; // Active failover protection while free read quota is exhausted
-  private quotaCooldownUntil: number = Date.now() + 60 * 60 * 1000;
+  private isQuotaExhausted: boolean = false;
+  private quotaCooldownUntil: number = 0;
+
+  private configuredType: 'FIREBASE' | 'MYSQL' = 'FIREBASE';
+  private mysqlConfig: DbConnectionConfig = {
+    dbType: (process.env.DB_TYPE?.toUpperCase() === 'MYSQL' ? 'MYSQL' : 'FIREBASE'),
+    dbHost: process.env.DB_HOST || 'localhost',
+    dbPort: Number(process.env.DB_PORT) || 3306,
+    dbUser: process.env.DB_USER || 'root',
+    dbPass: process.env.DB_PASS || '',
+    dbName: process.env.DB_NAME || 'teleguard'
+  };
+  private mysqlPool: mysql.Pool | null = null;
+  private mysqlConnected: boolean = false;
+  private mysqlError: string | null = null;
 
   constructor() {
     this.sqlite = new SQLiteDB();
-    console.log('[HybridDatabase] 🛡️ Initialized with SQLite fallback engine active.');
+    this.loadPersistedConfig();
+    console.log(`[HybridDatabase] Initialized. Configured mode: ${this.configuredType}`);
+  }
+
+  private loadPersistedConfig() {
+    try {
+      if (fs.existsSync(DB_CONFIG_PATH)) {
+        const raw = JSON.parse(fs.readFileSync(DB_CONFIG_PATH, 'utf8'));
+        if (raw && typeof raw === 'object') {
+          this.mysqlConfig = {
+            dbType: raw.dbType === 'MYSQL' ? 'MYSQL' : 'FIREBASE',
+            dbHost: raw.dbHost || this.mysqlConfig.dbHost,
+            dbPort: Number(raw.dbPort) || 3306,
+            dbUser: raw.dbUser || this.mysqlConfig.dbUser,
+            dbPass: raw.dbPass !== undefined ? raw.dbPass : this.mysqlConfig.dbPass,
+            dbName: raw.dbName || this.mysqlConfig.dbName
+          };
+          this.configuredType = this.mysqlConfig.dbType;
+        }
+      }
+    } catch (e) {
+      console.warn('[HybridDatabase] Could not read persisted db-config.json:', (e as any)?.message);
+    }
+  }
+
+  public getPersistedConfig(): DbConnectionConfig {
+    this.loadPersistedConfig();
+    return { ...this.mysqlConfig };
+  }
+
+  public savePersistedConfig(cfg: Partial<DbConnectionConfig>) {
+    try {
+      const dir = path.dirname(DB_CONFIG_PATH);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      this.mysqlConfig = {
+        dbType: cfg.dbType === 'MYSQL' ? 'MYSQL' : (cfg.dbType === 'FIREBASE' ? 'FIREBASE' : this.mysqlConfig.dbType),
+        dbHost: cfg.dbHost !== undefined ? String(cfg.dbHost).trim() : this.mysqlConfig.dbHost,
+        dbPort: Number(cfg.dbPort) || this.mysqlConfig.dbPort || 3306,
+        dbUser: cfg.dbUser !== undefined ? String(cfg.dbUser).trim() : this.mysqlConfig.dbUser,
+        dbPass: cfg.dbPass !== undefined ? String(cfg.dbPass) : this.mysqlConfig.dbPass,
+        dbName: cfg.dbName !== undefined ? String(cfg.dbName).trim() : this.mysqlConfig.dbName
+      };
+      this.configuredType = this.mysqlConfig.dbType;
+      fs.writeFileSync(DB_CONFIG_PATH, JSON.stringify(this.mysqlConfig, null, 2), 'utf8');
+    } catch (e) {
+      console.error('[HybridDatabase] Failed to save db-config.json:', e);
+    }
+  }
+
+  public async configure(settingsObj: any): Promise<DbStatusInfo> {
+    if (!settingsObj) return this.getStatus();
+
+    const nextType = settingsObj.dbType === 'MYSQL' ? 'MYSQL' : 'FIREBASE';
+    this.savePersistedConfig({
+      dbType: nextType,
+      dbHost: settingsObj.dbHost,
+      dbPort: settingsObj.dbPort,
+      dbUser: settingsObj.dbUser,
+      dbPass: settingsObj.dbPass,
+      dbName: settingsObj.dbName
+    });
+
+    if (nextType === 'MYSQL') {
+      await this.connectMySQLPool();
+    } else {
+      if (this.mysqlPool) {
+        try {
+          await this.mysqlPool.end();
+        } catch (e) {}
+        this.mysqlPool = null;
+      }
+      this.mysqlConnected = false;
+      this.mysqlError = null;
+    }
+
+    return this.getStatus();
+  }
+
+  private async connectMySQLPool(): Promise<boolean> {
+    try {
+      if (this.mysqlPool) {
+        try {
+          await this.mysqlPool.end();
+        } catch (e) {}
+        this.mysqlPool = null;
+      }
+
+      const { dbHost, dbPort, dbUser, dbPass, dbName } = this.mysqlConfig;
+      if (!dbHost || !dbUser || !dbName) {
+        throw new Error('Не указаны обязательные параметры MySQL (Host, User, Database Name)');
+      }
+
+      // First try connecting without database name to create DB if needed
+      try {
+        const initConn = await mysql.createConnection({
+          host: dbHost,
+          port: Number(dbPort) || 3306,
+          user: dbUser,
+          password: dbPass,
+          connectTimeout: 7000
+        });
+        const safeDbName = dbName.replace(/[^a-zA-Z0-9_$]/g, '');
+        if (safeDbName) {
+          await initConn.query(`CREATE DATABASE IF NOT EXISTS \`${safeDbName}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+        }
+        await initConn.end();
+      } catch (createDbErr) {
+        // Ignore if user only has privileges for existing database
+      }
+
+      const pool = mysql.createPool({
+        host: dbHost,
+        port: Number(dbPort) || 3306,
+        user: dbUser,
+        password: dbPass,
+        database: dbName,
+        waitForConnections: true,
+        connectionLimit: 10,
+        queueLimit: 0,
+        connectTimeout: 7000
+      });
+
+      const conn = await pool.getConnection();
+      await conn.ping();
+      conn.release();
+
+      this.mysqlPool = pool;
+      this.mysqlConnected = true;
+      this.mysqlError = null;
+      console.log(`[HybridDatabase] ✅ Connected to MySQL (${dbUser}@${dbHost}:${dbPort}/${dbName})`);
+      return true;
+    } catch (err: any) {
+      this.mysqlConnected = false;
+      this.mysqlError = err?.message || String(err);
+      console.error(`[HybridDatabase] ❌ MySQL connection failed:`, this.mysqlError);
+      return false;
+    }
+  }
+
+  public async testAndSetupMySQL(
+    cfg: Partial<DbConnectionConfig>,
+    seedCollections?: Record<string, Array<{ id: string; data: any }>>
+  ): Promise<{ success: boolean; message: string; tablesCreated: number; recordsMigrated: number; status: DbStatusInfo }> {
+    this.savePersistedConfig({
+      ...cfg,
+      dbType: 'MYSQL'
+    });
+
+    const ok = await this.connectMySQLPool();
+    if (!ok || !this.mysqlPool) {
+      return {
+        success: false,
+        message: `Не удалось подключиться к MySQL (${this.mysqlConfig.dbHost}:${this.mysqlConfig.dbPort}): ${this.mysqlError || 'Ошибка соединения'}`,
+        tablesCreated: 0,
+        recordsMigrated: 0,
+        status: this.getStatus()
+      };
+    }
+
+    let tablesCreated = 0;
+    let recordsMigrated = 0;
+
+    for (const colName of ALL_COLLECTIONS) {
+      const tableName = sanitizeTableName(colName);
+      await this.mysqlPool.execute(`
+        CREATE TABLE IF NOT EXISTS \`${tableName}\` (
+          \`id\` VARCHAR(255) NOT NULL PRIMARY KEY,
+          \`data\` LONGTEXT NOT NULL,
+          \`updatedAt\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+      `);
+      tablesCreated++;
+    }
+
+    if (seedCollections) {
+      for (const [colName, docs] of Object.entries(seedCollections)) {
+        if (!Array.isArray(docs) || docs.length === 0) continue;
+        const tableName = sanitizeTableName(colName);
+        for (const item of docs) {
+          if (!item || !item.id) continue;
+          const payload = { ...item.data, id: String(item.id) };
+          await this.mysqlPool.execute(
+            `INSERT INTO \`${tableName}\` (\`id\`, \`data\`) VALUES (?, ?) ON DUPLICATE KEY UPDATE \`data\` = VALUES(\`data\`)`,
+            [String(item.id), JSON.stringify(payload)]
+          );
+          recordsMigrated++;
+        }
+      }
+    }
+
+    return {
+      success: true,
+      message: `Подключение к MySQL (${this.mysqlConfig.dbHost}:${this.mysqlConfig.dbPort}/${this.mysqlConfig.dbName}) успешно установлено! Создано таблиц: ${tablesCreated}, синхронизировано записей: ${recordsMigrated}.`,
+      tablesCreated,
+      recordsMigrated,
+      status: this.getStatus()
+    };
+  }
+
+  public getStatus(): DbStatusInfo {
+    const activeEngine: 'FIREBASE' | 'MYSQL' | 'SQLITE' =
+      this.configuredType === 'MYSQL' && this.mysqlConnected
+        ? 'MYSQL'
+        : !this.isQuotaExhausted
+        ? 'FIREBASE'
+        : 'SQLITE';
+
+    return {
+      configuredType: this.configuredType,
+      activeEngine,
+      mysqlConnected: this.mysqlConnected,
+      mysqlError: this.mysqlError,
+      mysqlHost: this.mysqlConfig.dbHost,
+      mysqlPort: this.mysqlConfig.dbPort,
+      mysqlDatabase: this.mysqlConfig.dbName,
+      mysqlUser: this.mysqlConfig.dbUser,
+      firebaseConnected: !this.isQuotaExhausted,
+      quotaExhausted: this.isQuotaExhausted
+    };
   }
 
   markQuotaExhausted(reason?: string) {
     this.isQuotaExhausted = true;
-    this.quotaCooldownUntil = Date.now() + 60 * 60 * 1000;
-    console.warn(`[HybridDatabase] ⚠️ Firestore Free Read Quota limit reached (50k daily units). Seamlessly routed to local SQLite engine. Reason: ${reason || 'quota check'}`);
+    this.quotaCooldownUntil = Date.now() + 15 * 60 * 1000;
+    console.warn(`[HybridDatabase] ⚠️ Firestore Free Read Quota limit reached. Routed to local SQLite engine for 15m. Reason: ${reason || 'quota check'}`);
   }
 
-  collection(name: string) {
+  collection(name: string): any {
     const sqliteCol = this.sqlite.collection(name);
 
-    if (DB_TYPE === 'SQLITE' || (this.isQuotaExhausted && Date.now() < this.quotaCooldownUntil)) {
+    // If MySQL is configured and connected, use MySQL as primary engine
+    if (this.configuredType === 'MYSQL' && this.mysqlConnected && this.mysqlPool) {
+      return new MySQLCollection(this.mysqlPool, name, sqliteCol);
+    }
+
+    // If quota cooldown has expired, reset flag so Firebase is active again
+    if (this.isQuotaExhausted && Date.now() >= this.quotaCooldownUntil) {
+      this.isQuotaExhausted = false;
+    }
+
+    if (this.isQuotaExhausted) {
       return sqliteCol;
     }
 
@@ -393,6 +899,16 @@ class HybridDatabase {
               const snap = await fbDoc.get();
               if (snap.exists) {
                 sqliteDoc.set(snap.data()).catch(() => {});
+                return snap;
+              }
+              // Fallback to SQLite if doc was written locally while offline
+              const localSnap = await sqliteDoc.get();
+              if (localSnap.exists) {
+                const localData = localSnap.data();
+                if (localData) {
+                  fbDoc.set(localData).catch(() => {});
+                }
+                return localSnap;
               }
               return snap;
             } catch (err: any) {
@@ -400,34 +916,48 @@ class HybridDatabase {
                 self.markQuotaExhausted(err.message);
                 return sqliteDoc.get();
               }
-              throw err;
+              return sqliteDoc.get();
             }
           },
 
           async set(data: any) {
             await sqliteDoc.set(data);
             if (!self.isQuotaExhausted) {
-              fbDoc.set(data).catch((err: any) => {
+              try {
+                await fbDoc.set(data);
+              } catch (err: any) {
                 if (isFirestoreQuotaExceeded(err)) self.markQuotaExhausted(err.message);
-              });
+              }
             }
           },
 
           async update(data: any) {
             await sqliteDoc.update(data);
             if (!self.isQuotaExhausted) {
-              fbDoc.update(data).catch((err: any) => {
-                if (isFirestoreQuotaExceeded(err)) self.markQuotaExhausted(err.message);
-              });
+              try {
+                await fbDoc.update(data);
+              } catch (err: any) {
+                if (isFirestoreQuotaExceeded(err)) {
+                  self.markQuotaExhausted(err.message);
+                } else {
+                  // If document didn't exist in Firestore yet, set full merged doc
+                  const merged = await sqliteDoc.get();
+                  if (merged.exists) {
+                    await fbDoc.set(merged.data()).catch(() => {});
+                  }
+                }
+              }
             }
           },
 
           async delete() {
             await sqliteDoc.delete();
             if (!self.isQuotaExhausted) {
-              fbDoc.delete().catch((err: any) => {
+              try {
+                await fbDoc.delete();
+              } catch (err: any) {
                 if (isFirestoreQuotaExceeded(err)) self.markQuotaExhausted(err.message);
-              });
+              }
             }
           },
 
@@ -477,10 +1007,19 @@ class HybridDatabase {
         }
         try {
           const snap = await fbCol.get();
-          if (snap && snap.docs) {
+          if (snap && snap.docs && snap.docs.length > 0) {
             for (const doc of snap.docs) {
               sqliteCol.doc(doc.id).set(doc.data()).catch(() => {});
             }
+            return snap;
+          }
+          // If Firestore collection is empty, check if SQLite has local records (e.g. shop_topics saved while offline) and sync them up
+          const localSnap = await sqliteCol.get();
+          if (localSnap && localSnap.docs && localSnap.docs.length > 0) {
+            for (const doc of localSnap.docs) {
+              fbCol.doc(doc.id).set(doc.data()).catch(() => {});
+            }
+            return localSnap;
           }
           return snap;
         } catch (err: any) {
@@ -488,7 +1027,7 @@ class HybridDatabase {
             self.markQuotaExhausted(err.message);
             return sqliteCol.get();
           }
-          throw err;
+          return sqliteCol.get();
         }
       }
     };
@@ -518,7 +1057,7 @@ class HybridDatabase {
             self.markQuotaExhausted(err.message);
             return sqliteQuery.get();
           }
-          throw err;
+          return sqliteQuery.get();
         }
       }
     };

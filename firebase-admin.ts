@@ -15,8 +15,8 @@ import {
   updateDoc,
   writeBatch,
   setLogLevel,
-  QueryConstraint,
-  OrderByDirection
+  type QueryConstraint,
+  type OrderByDirection
 } from "firebase/firestore";
 import fs from "fs";
 

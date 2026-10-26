@@ -86,6 +86,33 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
   const [menuButtonResult, setMenuButtonResult] = useState<{ success: boolean; message: string } | null>(null);
   const [copiedAppUrl, setCopiedAppUrl] = useState(false);
 
+  const [dbStatus, setDbStatus] = useState<{
+    configuredType: 'FIREBASE' | 'MYSQL';
+    activeEngine: 'FIREBASE' | 'MYSQL' | 'SQLITE_FALLBACK';
+    mysqlConnected: boolean;
+    mysqlHost?: string;
+    mysqlDatabase?: string;
+    lastError?: string | null;
+  } | null>((settings as any)?.dbStatus || null);
+  const [isSettingUpDb, setIsSettingUpDb] = useState(false);
+
+  const fetchDbStatus = React.useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/settings/db-status', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setDbStatus(data);
+      }
+    } catch {}
+  }, []);
+
+  React.useEffect(() => {
+    fetchDbStatus();
+  }, [fetchDbStatus]);
+
   const handleUpdateMenuButton = async () => {
     setIsUpdatingMenuButton(true);
     setMenuButtonResult(null);
@@ -330,6 +357,7 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
     setIsSaving(true);
     try {
       await onUpdateSettings(localSettings);
+      await fetchDbStatus();
       setStatusMessage({ text: 'Настройки сохранены', type: 'success' });
       setTimeout(() => setStatusMessage(null), 3000);
     } catch (e: any) {
@@ -365,20 +393,40 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
 
   const handleDbSetup = async () => {
     const token = localStorage.getItem('token');
+    setIsSettingUpDb(true);
     try {
       const res = await fetch('/api/settings/db-setup', {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${token}` }
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          dbType: DatabaseType.MYSQL,
+          dbHost: localSettings.dbHost,
+          dbPort: localSettings.dbPort || 3306,
+          dbUser: localSettings.dbUser,
+          dbPass: localSettings.dbPass,
+          dbName: localSettings.dbName
+        })
       });
       const data = await res.json().catch(() => ({ error: 'Некорректный ответ сервера' }));
-      if (res.ok) {
-        setStatusMessage({ text: 'База данных успешно настроена', type: 'success' });
-      } else {
-        setStatusMessage({ text: data.error || 'Ошибка настройки БД', type: 'error' });
+      if (data.dbStatus) {
+        setDbStatus(data.dbStatus);
       }
-      setTimeout(() => setStatusMessage(null), 3000);
+      if (res.ok && data.success) {
+        const updated = { ...localSettings, ...(data.settings || {}), dbType: DatabaseType.MYSQL };
+        setLocalSettings(updated);
+        await onUpdateSettings(updated);
+        setStatusMessage({ text: data.message || 'База данных MySQL успешно подключена и настроена', type: 'success' });
+      } else {
+        setStatusMessage({ text: data.error || 'Ошибка настройки MySQL', type: 'error' });
+      }
+      setTimeout(() => setStatusMessage(null), 5000);
     } catch (e) {
       setStatusMessage({ text: 'Ошибка сети при настройке БД', type: 'error' });
+    } finally {
+      setIsSettingUpDb(false);
     }
   };
 
@@ -1984,26 +2032,51 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
 
         {/* Database Connection */}
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2">
-          <div className="flex items-center justify-between mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
                 <Database className="w-6 h-6" />
               </div>
-              <h3 className="text-lg font-bold text-white">База данных</h3>
+              <div>
+                <h3 className="text-lg font-bold text-white">База данных</h3>
+                {dbStatus && (
+                  <div className="flex flex-wrap items-center gap-2 mt-1 text-xs">
+                    <span className="text-slate-400">Активный источник сейчас:</span>
+                    {dbStatus.activeEngine === 'MYSQL' ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-semibold">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        MySQL ({dbStatus.mysqlHost}/{dbStatus.mysqlDatabase})
+                      </span>
+                    ) : dbStatus.activeEngine === 'FIREBASE' ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-orange-500/15 text-orange-300 border border-orange-500/30 font-semibold">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-orange-400" />
+                        Firebase Firestore (+ локальный кэш SQLite)
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30 font-semibold">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                        Локальная SQLite (Резервный режим)
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
             
-            <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800">
+            <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 self-start sm:self-auto">
               <button
+                type="button"
                 onClick={() => setLocalSettings({ ...localSettings, dbType: DatabaseType.FIREBASE })}
-                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                  localSettings.dbType === DatabaseType.FIREBASE ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                  (localSettings.dbType || DatabaseType.FIREBASE) === DatabaseType.FIREBASE ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
                 Firebase
               </button>
               <button
+                type="button"
                 onClick={() => setLocalSettings({ ...localSettings, dbType: DatabaseType.MYSQL })}
-                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
                   localSettings.dbType === DatabaseType.MYSQL ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'
                 }`}
               >
@@ -2011,6 +2084,16 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
               </button>
             </div>
           </div>
+
+          {dbStatus?.lastError && localSettings.dbType === DatabaseType.MYSQL && (
+            <div className="mb-5 p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+              <div>
+                <div className="font-bold">Ошибка подключения к MySQL (система временно работает через резервную БД):</div>
+                <div className="font-mono mt-1 text-rose-200">{dbStatus.lastError}</div>
+              </div>
+            </div>
+          )}
           
           {localSettings.dbType === DatabaseType.MYSQL ? (
             <div className="space-y-6">
@@ -2021,8 +2104,9 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                   </label>
                   <input
                     type="text"
-                    value={localSettings.dbHost}
+                    value={localSettings.dbHost || ''}
                     onChange={(e) => setLocalSettings({ ...localSettings, dbHost: e.target.value })}
+                    placeholder="localhost или IP сервера"
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-sm"
                   />
                 </div>
@@ -2032,8 +2116,8 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                   </label>
                   <input
                     type="number"
-                    value={localSettings.dbPort}
-                    onChange={(e) => setLocalSettings({ ...localSettings, dbPort: parseInt(e.target.value) })}
+                    value={localSettings.dbPort || 3306}
+                    onChange={(e) => setLocalSettings({ ...localSettings, dbPort: parseInt(e.target.value) || 3306 })}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-sm"
                   />
                 </div>
@@ -2043,8 +2127,9 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                   </label>
                   <input
                     type="text"
-                    value={localSettings.dbName}
+                    value={localSettings.dbName || ''}
                     onChange={(e) => setLocalSettings({ ...localSettings, dbName: e.target.value })}
+                    placeholder="teleguard"
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-sm"
                   />
                 </div>
@@ -2054,8 +2139,9 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                   </label>
                   <input
                     type="text"
-                    value={localSettings.dbUser}
+                    value={localSettings.dbUser || ''}
                     onChange={(e) => setLocalSettings({ ...localSettings, dbUser: e.target.value })}
+                    placeholder="root"
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-sm"
                   />
                 </div>
@@ -2065,33 +2151,54 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                   </label>
                   <input
                     type="password"
-                    value={localSettings.dbPass}
+                    value={localSettings.dbPass || ''}
                     onChange={(e) => setLocalSettings({ ...localSettings, dbPass: e.target.value })}
                     className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 transition-all font-mono text-sm"
                   />
                 </div>
               </div>
 
-              <div className="flex justify-center pt-4">
+              <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
                 <button
+                  type="button"
                   onClick={handleDbSetup}
-                  className="flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 px-6 py-3 rounded-xl font-bold transition-all"
+                  disabled={isSettingUpDb}
+                  className="flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 px-6 py-3 rounded-xl font-bold transition-all cursor-pointer disabled:opacity-50"
                 >
-                  <RefreshCw className="w-5 h-5" />
-                  Первичная настройка MySQL
+                  <RefreshCw className={`w-5 h-5 ${isSettingUpDb ? 'animate-spin' : ''}`} />
+                  {isSettingUpDb ? 'Подключение и создание таблиц...' : 'Проверить, создать таблицы и включить MySQL'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={isSaving}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-bold transition-all cursor-pointer disabled:opacity-50"
+                >
+                  <Save className="w-5 h-5" />
+                  Сохранить выбор БД
                 </button>
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center py-10 text-center">
+            <div className="flex flex-col items-center justify-center py-8 text-center">
               <div className="w-16 h-16 bg-orange-500/10 rounded-2xl flex items-center justify-center text-orange-500 mb-4">
                 <Database size={32} />
               </div>
-              <h4 className="text-white font-bold mb-2">Используется Firebase</h4>
-              <p className="text-slate-500 text-sm max-w-md">
-                Все данные синхронизируются с облачной базой данных Firebase Firestore. 
-                Настройки подключения не требуются.
+              <h4 className="text-white font-bold mb-2">Используется Firebase Firestore</h4>
+              <p className="text-slate-400 text-sm max-w-md mb-4">
+                Все данные синхронизируются с облачной базой данных Firebase Firestore и дублируются в локальный кэш SQLite для мгновенного отклика.
               </p>
+              {dbStatus?.configuredType === 'MYSQL' && (
+                <button
+                  type="button"
+                  onClick={handleSave}
+                  disabled={isSaving}
+                  className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  Применить переключение на Firebase
+                </button>
+              )}
             </div>
           )}
         </div>

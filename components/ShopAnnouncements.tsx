@@ -43,6 +43,12 @@ function extractThreadIdFromInput(input: string): number | null {
     return n > 0 ? n : null;
   }
 
+  const queryMatch = raw.match(/[?&](?:thread|topic)=(\d+)/i);
+  if (queryMatch) {
+    const n = parseInt(queryMatch[1], 10);
+    if (n > 0) return n;
+  }
+
   const privateMatch = raw.match(/t\.me\/c\/(\d+)\/(\d+)(?:\/\d+)?/i);
   if (privateMatch) {
     const n = parseInt(privateMatch[2], 10);
@@ -225,9 +231,12 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
       });
       const data = await res.json();
       if (res.ok && data.success) {
+        if (data.config?.chatId && String(data.config.chatId) !== String(selectedChatId)) {
+          setSelectedChatId(String(data.config.chatId));
+        }
         setTopicFeedback({
           type: 'success',
-          text: `Привязка сохранена! ID темы (message_thread_id): ${data.config.messageThreadId || 'не указан'}`
+          text: `Привязка сохранена для чата «${data.config.chatTitle || selectedChatId}»! ID темы (message_thread_id): ${data.config.messageThreadId || 'не указан'}`
         });
         await loadShopData(true);
       } else {
