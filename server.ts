@@ -7660,7 +7660,18 @@ async function processCompanionGroupMessage(
       console.log(`[CompanionBot] Generating reply in "${chatTitle || chatId}" (${responseTrigger}) for message: "${rawText.slice(0, 80)}"...`);
       try {
         await companionBot.telegram.sendChatAction(chatId, 'typing', (msg as any).message_thread_id ? { message_thread_id: (msg as any).message_thread_id } : undefined);
-      } catch (e) {}
+      } catch (typingErr: any) {
+        const errMsg = typingErr?.message || String(typingErr);
+        if (
+          errMsg.includes('not a member') ||
+          errMsg.includes('chat not found') ||
+          errMsg.includes('bot was kicked') ||
+          errMsg.includes('Forbidden')
+        ) {
+          console.warn(`[CompanionBot] Second bot is not in chat "${chatTitle || chatId}" (${errMsg}). Skipping reply — only second bot is allowed to converse.`);
+          return;
+        }
+      }
 
       const replyText = await generateCompanionBotResponse(
         chatTitle || 'Чат',
@@ -7691,8 +7702,8 @@ async function processCompanionGroupMessage(
             await companionBot.telegram.sendMessage(chatId, cleanReply, fallbackExtra);
             sentSuccessfully = true;
           } catch (secondErr: any) {
-            console.warn('[CompanionBot] Direct sendMessage failed, trying Cloudflare Worker relay / main bot fallback:', secondErr?.message || secondErr);
-            // Try sending via Cloudflare Worker /webhook?target= relay if configured
+            console.warn('[CompanionBot] Direct sendMessage failed, trying Cloudflare Worker relay:', secondErr?.message || secondErr);
+            // Try sending via Cloudflare Worker /webhook?target= relay if configured (strictly with companion bot token)
             const cfUrl = settings?.cfWorkerUrl || process.env.CF_WORKER_URL;
             if (cfUrl && currentCfg.botToken) {
               try {
@@ -7718,18 +7729,18 @@ async function processCompanionGroupMessage(
                 const rJson: any = await r.json().catch(() => null);
                 if (r.ok && rJson?.ok) {
                   sentSuccessfully = true;
+                } else {
+                  console.warn('[CompanionBot] CF Worker relay Telegram response:', rJson?.description || r.statusText);
                 }
               } catch (cfSendErr: any) {
                 console.warn('[CompanionBot] CF Worker sendMessage relay failed:', cfSendErr?.message);
               }
             }
 
-            // Last-resort fallback: if the second bot hasn't been added to the group chat yet, send via main bot
-            if (!sentSuccessfully && bot) {
-              try {
-                await bot.telegram.sendMessage(chatId, cleanReply, sendExtra);
-                sentSuccessfully = true;
-              } catch {}
+            // CRITICAL: We NEVER fall back to the main bot here.
+            // Conversational messages must ONLY come from the second bot (Companion Bot).
+            if (!sentSuccessfully) {
+              console.warn(`[CompanionBot] Could not send message to "${chatTitle || chatId}". Ensure the second bot (@${companionBotInfo?.username || currentCfg.botUsername || 'companion bot'}) is added as a member in that chat. Main bot will NOT send companion messages.`);
             }
           }
         }
