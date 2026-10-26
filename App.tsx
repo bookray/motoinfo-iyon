@@ -372,14 +372,21 @@ const App: React.FC = () => {
   }, [token, currentUser, selectedChatIds, dateRange]);
 
   const handleUpdateChat = async (updatedChat: Chat) => {
+    const previousChats = chats;
+    setChats(prev => prev.map(c => c && String(c.id) === String(updatedChat.id) ? updatedChat : c));
     try {
       const res = await authenticatedFetch(`${API_BASE_URL}/chats/${updatedChat.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedChat)
       });
-      if (res.ok) setChats(chats.map(c => c && c.id === updatedChat.id ? updatedChat : c));
-    } catch (e) { console.error(e); }
+      if (!res.ok) {
+        setChats(previousChats);
+      }
+    } catch (e) {
+      console.error(e);
+      setChats(previousChats);
+    }
   };
 
   const handleRemoveChat = async (id: string) => {

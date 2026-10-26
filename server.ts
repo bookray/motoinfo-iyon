@@ -2721,7 +2721,20 @@ app.get('/api/shop-topics', authenticateToken, async (req, res) => {
 
 app.post('/api/shop-topics/config', authenticateToken, async (req, res) => {
   try {
-    const { chatId, topicLinkOrId, topicTitle, enabled, defaultWeeklyLimit, defaultDurationDays, notifyVendorOnDelete } = req.body;
+    const {
+      chatId,
+      topicLinkOrId,
+      topicTitle,
+      enabled,
+      defaultWeeklyLimit,
+      defaultDurationDays,
+      notifyVendorOnDelete,
+      notifyInTopicOnDelete,
+      deleteWarningText,
+      deleteWarningButtons,
+      deleteWarningCooldownSec,
+      deleteWarningAutoDeleteSec
+    } = req.body;
     if (!chatId) {
       return res.status(400).json({ error: 'Не указан ID чата' });
     }
@@ -2773,6 +2786,12 @@ app.post('/api/shop-topics/config', authenticateToken, async (req, res) => {
       await updateChat(chatObj, true);
     }
 
+    const sanitizedButtons = Array.isArray(deleteWarningButtons)
+      ? deleteWarningButtons
+          .filter((b: any) => b && typeof b.text === 'string' && b.text.trim() && typeof b.url === 'string' && b.url.trim())
+          .map((b: any) => ({ text: b.text.trim(), url: b.url.trim() }))
+      : (existing?.deleteWarningButtons || []);
+
     const configObj: ShopTopicConfig = {
       chatId: chatStr,
       chatTitle: chatObj?.title || existing?.chatTitle || chatStr,
@@ -2783,6 +2802,11 @@ app.post('/api/shop-topics/config', authenticateToken, async (req, res) => {
       defaultWeeklyLimit: Number(defaultWeeklyLimit) > 0 ? Number(defaultWeeklyLimit) : (existing?.defaultWeeklyLimit || 5),
       defaultDurationDays: Number(defaultDurationDays) > 0 ? Number(defaultDurationDays) : (existing?.defaultDurationDays || 30),
       notifyVendorOnDelete: notifyVendorOnDelete !== undefined ? Boolean(notifyVendorOnDelete) : (existing?.notifyVendorOnDelete ?? false),
+      notifyInTopicOnDelete: notifyInTopicOnDelete !== undefined ? Boolean(notifyInTopicOnDelete) : (existing?.notifyInTopicOnDelete ?? true),
+      deleteWarningText: deleteWarningText !== undefined ? String(deleteWarningText) : (existing?.deleteWarningText ?? '⚠️ <b>Внимание!</b> В этой теме публиковать объявления могут только одобренные магазины и продавцы.'),
+      deleteWarningButtons: sanitizedButtons,
+      deleteWarningCooldownSec: deleteWarningCooldownSec !== undefined ? Math.max(0, Number(deleteWarningCooldownSec) || 0) : (existing?.deleteWarningCooldownSec ?? 300),
+      deleteWarningAutoDeleteSec: deleteWarningAutoDeleteSec !== undefined ? Math.max(0, Number(deleteWarningAutoDeleteSec) || 0) : (existing?.deleteWarningAutoDeleteSec ?? 60),
       updatedAt: new Date().toISOString()
     };
 
@@ -2793,7 +2817,9 @@ app.post('/api/shop-topics/config', authenticateToken, async (req, res) => {
       shopTopics.push(configObj);
     }
 
-    await db.collection('shop_topics').doc(chatStr).set(cleanData(configObj));
+    db.collection('shop_topics').doc(chatStr).set(cleanData(configObj)).catch(err => {
+      console.error('Failed to persist shop_topics config:', err);
+    });
 
     await addLog({
       id: Math.random().toString(36).substr(2, 9),
@@ -6555,6 +6581,8 @@ async function syncData() {
           const persistedDbCfg = db.getPersistedConfig();
           const tokenChanged = newSettings.botToken !== settings.botToken;
           const apiRootChanged = newSettings.telegramApiRoot !== settings.telegramApiRoot;
+          const prevCompanionToken = (settings as any).companionBot?.botToken;
+          const prevCompanionEnabled = Boolean((settings as any).companionBot?.enabled);
           settings = {
             ...settings,
             ...newSettings,
@@ -6563,6 +6591,14 @@ async function syncData() {
           if (tokenChanged || apiRootChanged) {
             console.log('Bot token or Telegram API Root updated from database (via polling), restarting...');
             initBot(settings.botToken);
+          }
+          const nextCompanion = (settings as any).companionBot;
+          if (nextCompanion?.enabled && nextCompanion?.botToken) {
+            if (!companionBot || prevCompanionToken !== nextCompanion.botToken || !prevCompanionEnabled || apiRootChanged) {
+              initCompanionBot(nextCompanion).catch(e => console.error('[CompanionBot] Sync init error:', e?.message));
+            }
+          } else if (prevCompanionEnabled && !nextCompanion?.enabled) {
+            stopCompanionBot().catch(() => {});
           }
         }
       } catch (err) {
@@ -6877,7 +6913,6 @@ async function updateChat(chat: any, immediate = false) {
     if (!chat.id) throw new Error('Chat ID is required for update');
     const chatIdStr = String(chat.id).trim();
     const chatNormalized = { ...chat, id: chatIdStr };
-    const cleaned = cleanData(chatNormalized);
     
     const idx = chats.findIndex(c => String(c.id) === chatIdStr);
     if (idx !== -1) {
@@ -6886,10 +6921,15 @@ async function updateChat(chat: any, immediate = false) {
       chats.push(chatNormalized);
     }
 
+    const cleaned = cleanData(idx !== -1 ? chats[idx] : chatNormalized);
+
     if (immediate || idx === -1) {
-      console.log(`Saving chat ${chatIdStr} to database:`, cleaned);
-      await db.collection('chats').doc(chatIdStr).set(cleaned);
       chatLastWrite.set(chatIdStr, Date.now());
+      // Persist to database asynchronously so UI actions (like activating a chat) complete instantaneously
+      db.collection('chats').doc(chatIdStr).set(cleaned).catch(err => {
+        console.error(`Async database save failed for chat ${chatIdStr}, queuing retry:`, err?.message || err);
+        queueWrite('chats', chatIdStr, cleaned);
+      });
     } else {
       const lastWrite = chatLastWrite.get(chatIdStr) || 0;
       if (Date.now() - lastWrite > 2 * 60 * 1000) {
@@ -7175,9 +7215,11 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
 let companionBot: Telegraf | null = null;
 let companionBotInfo: { id: number; username: string; first_name?: string } | null = null;
 let isCompanionBotPollingActive: boolean = false;
+let isInitializingCompanionBot: boolean = false;
 let companionBotRepliesCount: number = 0;
 const companionRecentMessages = new Map<string, Array<{ sender: string; text: string; time: string; isBot: boolean }>>();
 const lastCompanionReplyTime = new Map<string, number>();
+const processedCompanionMessages = new Set<string>();
 
 async function generateCompanionBotResponse(
   chatTitle: string,
@@ -7243,6 +7285,172 @@ ${historyFormatted || '(нет предыдущих сообщений)'}
   return await callAiService(prompt, { model: currentCfg.model || 'gemini-3.1-flash-lite' });
 }
 
+async function processCompanionGroupMessage(
+  chatId: string,
+  chatTitle: string,
+  msg: any,
+  fromUser: any
+) {
+  try {
+    if (!msg || !fromUser || fromUser.is_bot) return;
+
+    const currentCfg = (settings as any).companionBot;
+    if (!currentCfg || !currentCfg.enabled || !currentCfg.botToken || !currentCfg.botToken.trim()) {
+      return;
+    }
+
+    // Deduplicate messages seen by both main bot and companionBot
+    const dedupKey = `${chatId}_${msg.message_id}`;
+    if (processedCompanionMessages.has(dedupKey)) return;
+    processedCompanionMessages.add(dedupKey);
+    if (processedCompanionMessages.size > 2000) {
+      const firstKey = processedCompanionMessages.values().next().value;
+      if (firstKey) processedCompanionMessages.delete(firstKey);
+    }
+
+    if (Array.isArray(currentCfg.enabledChatIds) && currentCfg.enabledChatIds.length > 0) {
+      const normChatId = String(chatId).replace(/^-100/, '');
+      const isAllowed = currentCfg.enabledChatIds.some(
+        (id: string) => String(id) === String(chatId) || String(id).replace(/^-100/, '') === normChatId
+      );
+      if (!isAllowed) return;
+    }
+
+    // Lazily initialize companionBot if it was not started yet
+    if (!companionBot && !isInitializingCompanionBot) {
+      await initCompanionBot(currentCfg);
+    }
+    if (!companionBot) return;
+
+    const rawText = ('text' in msg ? msg.text : ('caption' in msg ? msg.caption : '')) || '';
+    const senderName = fromUser.first_name || fromUser.username || `User ${fromUser.id}`;
+
+    let history = companionRecentMessages.get(chatId) || [];
+    history.push({
+      sender: senderName,
+      text: rawText,
+      time: new Date().toISOString(),
+      isBot: false
+    });
+    const maxHistory = currentCfg.useContextCount || 10;
+    if (history.length > maxHistory) {
+      history = history.slice(-maxHistory);
+    }
+    companionRecentMessages.set(chatId, history);
+
+    if (!rawText.trim()) return;
+
+    const knownUsernames = [
+      companionBotInfo?.username,
+      currentCfg.botUsername
+    ]
+      .filter(Boolean)
+      .map(u => String(u).replace(/^@/, '').toLowerCase());
+
+    const textLower = rawText.toLowerCase();
+    const isDirectMention = knownUsernames.some(
+      u => u && (textLower.includes(`@${u}`) || textLower.includes(u))
+    );
+
+    const replyToMsg = (msg as any).reply_to_message;
+    const replyFromUsername = replyToMsg?.from?.username ? String(replyToMsg.from.username).replace(/^@/, '').toLowerCase() : '';
+    const isReplyToBot = Boolean(
+      replyToMsg &&
+        ((companionBotInfo?.id && replyToMsg.from?.id === companionBotInfo.id) ||
+          (replyFromUsername && knownUsernames.includes(replyFromUsername)))
+    );
+
+    const containsQuestion = rawText.includes('?');
+
+    const now = Date.now();
+    const lastReply = lastCompanionReplyTime.get(chatId) || 0;
+    const cooldownMs = (currentCfg.minDelayBetweenRepliesSeconds ?? 180) * 1000;
+    const cooldownPassed = (now - lastReply) >= cooldownMs;
+
+    let shouldRespond = false;
+    let responseTrigger = '';
+
+    if (isReplyToBot) {
+      shouldRespond = true;
+      responseTrigger = 'ответ на сообщение бота';
+    } else if (isDirectMention && currentCfg.replyToDirectMentions !== false) {
+      shouldRespond = true;
+      responseTrigger = 'прямое обращение';
+    } else if (cooldownPassed) {
+      if (containsQuestion && currentCfg.replyToQuestions !== false) {
+        const qChance = Math.max(Number(currentCfg.replyProbability) || 15, 35);
+        if (Math.random() * 100 < qChance) {
+          shouldRespond = true;
+          responseTrigger = 'вопрос в чате (?)';
+        }
+      } else {
+        const prob = Number(currentCfg.replyProbability) || 15;
+        if (Math.random() * 100 < prob) {
+          shouldRespond = true;
+          responseTrigger = `случайный ответ (${prob}%)`;
+        }
+      }
+    }
+
+    if (shouldRespond) {
+      console.log(`[CompanionBot] Generating reply in "${chatTitle || chatId}" (${responseTrigger}) for message: "${rawText.slice(0, 80)}"...`);
+      try {
+        await companionBot.telegram.sendChatAction(chatId, 'typing', (msg as any).message_thread_id ? { message_thread_id: (msg as any).message_thread_id } : undefined);
+      } catch (e) {}
+
+      const replyText = await generateCompanionBotResponse(
+        chatTitle || 'Чат',
+        { sender: senderName, text: rawText },
+        history.slice(0, -1),
+        currentCfg
+      );
+
+      if (replyText && replyText.trim()) {
+        const sendExtra: any = {
+          reply_parameters: { message_id: msg.message_id }
+        };
+        if ((msg as any).message_thread_id) {
+          sendExtra.message_thread_id = (msg as any).message_thread_id;
+        }
+
+        try {
+          await companionBot.telegram.sendMessage(chatId, replyText.trim(), sendExtra);
+        } catch (replyErr) {
+          const fallbackExtra: any = {};
+          if ((msg as any).message_thread_id) {
+            fallbackExtra.message_thread_id = (msg as any).message_thread_id;
+          }
+          await companionBot.telegram.sendMessage(chatId, replyText.trim(), fallbackExtra).catch(e =>
+            console.error('[CompanionBot] Reply failed:', e?.message || e)
+          );
+        }
+
+        lastCompanionReplyTime.set(chatId, Date.now());
+        companionBotRepliesCount++;
+
+        history.push({
+          sender: companionBotInfo?.first_name || currentCfg.botName || 'CompanionBot',
+          text: replyText.trim(),
+          time: new Date().toISOString(),
+          isBot: true
+        });
+        companionRecentMessages.set(chatId, history.slice(-maxHistory));
+
+        await addLog({
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().toISOString(),
+          type: 'SYSTEM',
+          user: companionBotInfo?.username ? `@${companionBotInfo.username}` : (currentCfg.botUsername ? `@${currentCfg.botUsername}` : 'CompanionBot'),
+          chat: chatTitle || chatId,
+          details: `[ИИ-Собеседник] Ответ на сообщение (${responseTrigger}): "${replyText.substring(0, 90)}${replyText.length > 90 ? '...' : ''}"`
+        });
+      }
+    }
+  } catch (err: any) {
+    console.error('[CompanionBot] Message processing error:', err?.message || err);
+  }
+}
+
 async function stopCompanionBot() {
   if (companionBot) {
     try {
@@ -7264,9 +7472,14 @@ async function initCompanionBot(companionConfig?: any) {
     return null;
   }
 
-  await stopCompanionBot();
+  if (isInitializingCompanionBot) {
+    return companionBot;
+  }
+  isInitializingCompanionBot = true;
 
   try {
+    await stopCompanionBot();
+
     const token = cfg.botToken.trim();
     const apiRoot = settings.telegramApiRoot || process.env.TELEGRAM_API_ROOT;
     const telegrafOptions: any = { handlerTimeout: 180000 };
@@ -7275,131 +7488,34 @@ async function initCompanionBot(companionConfig?: any) {
     }
 
     const newBot = new Telegraf(token, telegrafOptions);
-    const me = await newBot.telegram.getMe();
+    try {
+      const me = await newBot.telegram.getMe();
+      companionBotInfo = { id: me.id, username: me.username, first_name: me.first_name };
+      console.log(`[CompanionBot] Connected as @${me.username} (${me.first_name || 'Бот'})`);
+    } catch (getMeErr: any) {
+      const fallbackId = Number(token.split(':')[0]) || 0;
+      companionBotInfo = {
+        id: fallbackId,
+        username: (cfg.botUsername || 'CompanionBot').replace(/^@/, ''),
+        first_name: cfg.botName || 'Бот-собеседник'
+      };
+      console.warn(`[CompanionBot] getMe fallback activated for @${companionBotInfo.username}:`, getMeErr?.message);
+    }
+
     companionBot = newBot;
-    companionBotInfo = { id: me.id, username: me.username, first_name: me.first_name };
-    console.log(`[CompanionBot] Connected as @${me.username} (${me.first_name || 'Бот'})`);
 
     newBot.on('message', async (ctx) => {
-      try {
-        const msg = ctx.message;
-        if (!msg) return;
-        const chatType = ctx.chat?.type;
-        const isGroup = chatType === 'group' || chatType === 'supergroup';
-        if (!isGroup) return;
-
-        const chatId = String(ctx.chat.id);
-        const fromUser = ctx.from;
-        if (!fromUser || fromUser.is_bot) return; // Do not reply to bots
-
-        const currentCfg = (settings as any).companionBot || cfg;
-        if (!currentCfg.enabled) return;
-        if (Array.isArray(currentCfg.enabledChatIds) && currentCfg.enabledChatIds.length > 0) {
-          if (!currentCfg.enabledChatIds.includes(chatId)) return;
-        }
-
-        const rawText = ('text' in msg ? msg.text : ('caption' in msg ? msg.caption : '')) || '';
-        const senderName = fromUser.first_name || fromUser.username || `User ${fromUser.id}`;
-
-        let history = companionRecentMessages.get(chatId) || [];
-        history.push({
-          sender: senderName,
-          text: rawText,
-          time: new Date().toISOString(),
-          isBot: false
-        });
-        const maxHistory = currentCfg.useContextCount || 10;
-        if (history.length > maxHistory) {
-          history = history.slice(-maxHistory);
-        }
-        companionRecentMessages.set(chatId, history);
-
-        if (!rawText.trim()) return;
-
-        const botUsername = companionBotInfo?.username?.toLowerCase() || '';
-        const textLower = rawText.toLowerCase();
-
-        const isDirectMention = botUsername && (textLower.includes(`@${botUsername}`) || textLower.includes(botUsername));
-        const replyToMsg = (msg as any).reply_to_message;
-        const isReplyToBot = replyToMsg && replyToMsg.from?.id === companionBotInfo?.id;
-        const containsQuestion = rawText.includes('?');
-
-        const now = Date.now();
-        const lastReply = lastCompanionReplyTime.get(chatId) || 0;
-        const cooldownMs = (currentCfg.minDelayBetweenRepliesSeconds || 180) * 1000;
-        const cooldownPassed = (now - lastReply) >= cooldownMs;
-
-        let shouldRespond = false;
-        let responseTrigger = '';
-
-        if (isReplyToBot) {
-          shouldRespond = true;
-          responseTrigger = 'ответ на сообщение бота';
-        } else if (isDirectMention && currentCfg.replyToDirectMentions !== false) {
-          shouldRespond = true;
-          responseTrigger = 'прямое обращение';
-        } else if (cooldownPassed) {
-          if (containsQuestion && currentCfg.replyToQuestions !== false) {
-            const qChance = Math.max(Number(currentCfg.replyProbability) || 15, 35);
-            if (Math.random() * 100 < qChance) {
-              shouldRespond = true;
-              responseTrigger = 'вопрос в чате (?)';
-            }
-          } else {
-            const prob = Number(currentCfg.replyProbability) || 15;
-            if (Math.random() * 100 < prob) {
-              shouldRespond = true;
-              responseTrigger = `случайный ответ (${prob}%)`;
-            }
-          }
-        }
-
-        if (shouldRespond) {
-          console.log(`[CompanionBot] Generating reply in "${ctx.chat.title || chatId}" (${responseTrigger})...`);
-          try {
-            await ctx.sendChatAction('typing');
-          } catch (e) {}
-
-          const replyText = await generateCompanionBotResponse(
-            ctx.chat.title || 'Чат',
-            { sender: senderName, text: rawText },
-            history.slice(0, -1),
-            currentCfg
-          );
-
-          if (replyText && replyText.trim()) {
-            try {
-              await ctx.reply(replyText.trim(), {
-                reply_parameters: { message_id: msg.message_id }
-              });
-            } catch (replyErr) {
-              await ctx.reply(replyText.trim()).catch(e => console.error('[CompanionBot] Reply failed:', e));
-            }
-
-            lastCompanionReplyTime.set(chatId, Date.now());
-            companionBotRepliesCount++;
-
-            history.push({
-              sender: companionBotInfo?.first_name || 'CompanionBot',
-              text: replyText.trim(),
-              time: new Date().toISOString(),
-              isBot: true
-            });
-            companionRecentMessages.set(chatId, history.slice(-maxHistory));
-
-            await addLog({
-              id: Math.random().toString(36).substr(2, 9),
-              timestamp: new Date().toISOString(),
-              type: 'SYSTEM',
-              user: companionBotInfo?.username ? `@${companionBotInfo.username}` : 'CompanionBot',
-              chat: ctx.chat.title || chatId,
-              details: `[ИИ-Собеседник] Ответ на сообщение (${responseTrigger}): "${replyText.substring(0, 90)}${replyText.length > 90 ? '...' : ''}"`
-            });
-          }
-        }
-      } catch (err: any) {
-        console.error('[CompanionBot] Message error:', err?.message || err);
-      }
+      const msg = ctx.message;
+      if (!msg) return;
+      const chatType = ctx.chat?.type;
+      const isGroup = chatType === 'group' || chatType === 'supergroup';
+      if (!isGroup) return;
+      await processCompanionGroupMessage(
+        String(ctx.chat.id),
+        ('title' in ctx.chat && ctx.chat.title) ? ctx.chat.title : String(ctx.chat.id),
+        msg,
+        ctx.from
+      );
     });
 
     try {
@@ -7407,14 +7523,14 @@ async function initCompanionBot(companionConfig?: any) {
     } catch (e) {}
 
     isCompanionBotPollingActive = true;
-    console.log(`[CompanionBot] Starting Long Polling as @${me.username}...`);
+    console.log(`[CompanionBot] Starting Long Polling as @${companionBotInfo?.username}...`);
 
     newBot.launch({
       dropPendingUpdates: false,
       allowedUpdates: ['message', 'edited_message']
     }).then(() => {
       isCompanionBotPollingActive = false;
-      console.log(`[CompanionBot] Polling ended for @${me.username}`);
+      console.log(`[CompanionBot] Polling ended for @${companionBotInfo?.username}`);
     }).catch(err => {
       isCompanionBotPollingActive = false;
       console.error('[CompanionBot] Launch error:', err?.message || err);
@@ -7426,6 +7542,8 @@ async function initCompanionBot(companionConfig?: any) {
     companionBot = null;
     companionBotInfo = null;
     return null;
+  } finally {
+    isInitializingCompanionBot = false;
   }
 }
 
@@ -8386,6 +8504,55 @@ async function initBot(token: string) {
                 return false;
               });
 
+              const sendShopTopicWarningInChat = async () => {
+                if (shopTopicConfig.notifyInTopicOnDelete === false) return;
+                const warnKey = `${chatId}_${msgThreadId || shopTopicConfig.messageThreadId || '0'}`;
+                const cooldownSec = shopTopicConfig.deleteWarningCooldownSec !== undefined ? Number(shopTopicConfig.deleteWarningCooldownSec) : 300;
+                const nowMs = Date.now();
+                const lastSent = (globalThis as any).__shopWarningLastSentMap?.get(warnKey) || 0;
+                if (!(globalThis as any).__shopWarningLastSentMap) {
+                  (globalThis as any).__shopWarningLastSentMap = new Map<string, number>();
+                }
+                if (cooldownSec > 0 && nowMs - lastSent < cooldownSec * 1000) {
+                  return;
+                }
+                (globalThis as any).__shopWarningLastSentMap.set(warnKey, nowMs);
+
+                const warnText = (shopTopicConfig.deleteWarningText && shopTopicConfig.deleteWarningText.trim())
+                  ? shopTopicConfig.deleteWarningText.trim()
+                  : `⚠️ <b>Внимание!</b> В теме «${escapeHtml(shopTopicConfig.topicTitle || 'Объявления магазинов')}» публиковать объявления могут только одобренные магазины и продавцы.`;
+
+                const sendExtra: any = {
+                  parse_mode: 'HTML',
+                  link_preview_options: { is_disabled: true }
+                };
+                const targetThread = msgThreadId ? Number(msgThreadId) : (shopTopicConfig.messageThreadId ? Number(shopTopicConfig.messageThreadId) : undefined);
+                if (targetThread) {
+                  sendExtra.message_thread_id = targetThread;
+                }
+
+                if (Array.isArray(shopTopicConfig.deleteWarningButtons) && shopTopicConfig.deleteWarningButtons.length > 0) {
+                  const validBtns = shopTopicConfig.deleteWarningButtons
+                    .filter(b => b && b.text && b.text.trim() && b.url && b.url.trim())
+                    .map(b => [{ text: b.text.trim(), url: fixUrl(b.url.trim()) }]);
+                  if (validBtns.length > 0) {
+                    sendExtra.reply_markup = { inline_keyboard: validBtns };
+                  }
+                }
+
+                try {
+                  const sentWarn = await ctx.telegram.sendMessage(chatId, warnText, sendExtra);
+                  const autoDelSec = shopTopicConfig.deleteWarningAutoDeleteSec !== undefined ? Number(shopTopicConfig.deleteWarningAutoDeleteSec) : 60;
+                  if (autoDelSec > 0 && sentWarn?.message_id) {
+                    setTimeout(() => {
+                      ctx.telegram.deleteMessage(chatId, sentWarn.message_id).catch(() => {});
+                    }, autoDelSec * 1000);
+                  }
+                } catch (warnErr: any) {
+                  console.warn(`[ShopTopic] Could not send delete warning in ${chatId}:`, warnErr?.message || warnErr);
+                }
+              };
+
               if (vendorIdx === -1) {
                 // Unauthorized user in shop topic -> immediately delete message
                 try {
@@ -8393,6 +8560,7 @@ async function initBot(token: string) {
                 } catch (delErr: any) {
                   console.error(`[ShopTopic] Failed to delete unauthorized message in ${chatId} (thread ${msgThreadId}):`, delErr?.message || delErr);
                 }
+                await sendShopTopicWarningInChat();
                 await addLog({
                   id: Math.random().toString(36).substr(2, 9),
                   timestamp: new Date().toISOString(),
@@ -8440,6 +8608,7 @@ async function initBot(token: string) {
                 } catch (delErr: any) {
                   console.error(`[ShopTopic] Failed to delete expired vendor message in ${chatId}:`, delErr?.message || delErr);
                 }
+                await sendShopTopicWarningInChat();
                 await addLog({
                   id: Math.random().toString(36).substr(2, 9),
                   timestamp: new Date().toISOString(),
@@ -8475,6 +8644,7 @@ async function initBot(token: string) {
                 } catch (delErr: any) {
                   console.error(`[ShopTopic] Failed to delete over-limit vendor message in ${chatId}:`, delErr?.message || delErr);
                 }
+                await sendShopTopicWarningInChat();
                 await addLog({
                   id: Math.random().toString(36).substr(2, 9),
                   timestamp: new Date().toISOString(),
@@ -9748,6 +9918,16 @@ async function initBot(token: string) {
                   timestamp: new Date().toISOString()
                 });
               }
+            }
+
+            // Bridge group message to AI Companion Bot (in case Companion Bot has Privacy Mode enabled in BotFather or isn't receiving group updates directly)
+            if ((settings as any).companionBot?.enabled && (settings as any).companionBot?.botToken) {
+              processCompanionGroupMessage(
+                String(chatId),
+                chat?.title || ('title' in ctx.chat && ctx.chat.title ? ctx.chat.title : String(chatId)),
+                ctx.message,
+                ctx.from
+              ).catch(e => console.error('[CompanionBot] Bridge error:', e?.message));
             }
           }
         }
@@ -11887,6 +12067,15 @@ async function startServer() {
             initBot(settings.botToken).catch(e => console.error('[BotSupervisor] Soft reconnection error:', e?.message));
           }
         });
+      }
+    }
+
+    // Companion Bot Watchdog: ensure second bot is initialized if enabled
+    const companionCfg = (settings as any).companionBot;
+    if (companionCfg?.enabled && companionCfg?.botToken && companionCfg.botToken.trim()) {
+      if (!companionBot && !isInitializingCompanionBot) {
+        console.log('[CompanionBot] Watchdog: initializing companion bot...');
+        initCompanionBot(companionCfg).catch(e => console.error('[CompanionBot] Watchdog init error:', e?.message));
       }
     }
 

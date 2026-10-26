@@ -309,6 +309,43 @@ export class SQLiteCollection {
   }
 }
 
+const mysqlTableColumnsCache = new Map<string, Set<string>>();
+
+async function ensureMySQLTableAndColumns(pool: mysql.Pool, tableName: string): Promise<Set<string>> {
+  const cached = mysqlTableColumnsCache.get(tableName);
+  if (cached && cached.has('data')) {
+    return cached;
+  }
+
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS \`${tableName}\` (
+      \`id\` VARCHAR(255) NOT NULL PRIMARY KEY,
+      \`data\` LONGTEXT NULL,
+      \`updatedAt\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  const [colRows]: any = await pool.query(`SHOW COLUMNS FROM \`${tableName}\``);
+  const cols = new Set<string>((colRows || []).map((r: any) => String(r.Field)));
+
+  if (!cols.has('data')) {
+    try {
+      await pool.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`data\` LONGTEXT NULL`);
+      cols.add('data');
+      console.log(`[MySQL] Auto-migrated table \`${tableName}\`: added \`data\` LONGTEXT column`);
+    } catch (alterErr: any) {
+      if (String(alterErr?.code) === 'ER_DUP_FIELDNAME' || String(alterErr?.message).includes('Duplicate column')) {
+        cols.add('data');
+      } else {
+        console.warn(`[MySQL] Warning adding \`data\` column to \`${tableName}\`:`, alterErr?.message);
+      }
+    }
+  }
+
+  mysqlTableColumnsCache.set(tableName, cols);
+  return cols;
+}
+
 export class MySQLDoc {
   private pool: mysql.Pool;
   private tableName: string;
@@ -322,21 +359,15 @@ export class MySQLDoc {
     this.sqliteFallbackDoc = sqliteFallbackDoc;
   }
 
-  async ensureTable() {
-    await this.pool.execute(`
-      CREATE TABLE IF NOT EXISTS \`${this.tableName}\` (
-        \`id\` VARCHAR(255) NOT NULL PRIMARY KEY,
-        \`data\` LONGTEXT NOT NULL,
-        \`updatedAt\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
+  async ensureTable(): Promise<Set<string>> {
+    return ensureMySQLTableAndColumns(this.pool, this.tableName);
   }
 
   async get() {
     try {
       await this.ensureTable();
       const [rows]: any = await this.pool.execute(
-        `SELECT \`id\`, \`data\` FROM \`${this.tableName}\` WHERE \`id\` = ? LIMIT 1`,
+        `SELECT * FROM \`${this.tableName}\` WHERE \`id\` = ? LIMIT 1`,
         [this.id]
       );
       if (!rows || rows.length === 0) {
@@ -347,11 +378,7 @@ export class MySQLDoc {
         };
       }
       const row = rows[0];
-      let parsed: any = {};
-      try {
-        parsed = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
-      } catch (e) {}
-      parsed.id = this.id;
+      const parsed = normalizeSQLiteRow(row, this.id);
       this.sqliteFallbackDoc.set(parsed).catch(() => {});
       return {
         id: this.id,
@@ -368,12 +395,96 @@ export class MySQLDoc {
     if (!data) return;
     const payload = { ...data, id: this.id };
     await this.sqliteFallbackDoc.set(payload);
-    await this.ensureTable();
+
+    let cols = await this.ensureTable();
     const jsonStr = JSON.stringify(payload);
-    await this.pool.execute(
-      `INSERT INTO \`${this.tableName}\` (\`id\`, \`data\`) VALUES (?, ?) ON DUPLICATE KEY UPDATE \`data\` = VALUES(\`data\`)`,
-      [this.id, jsonStr]
-    );
+
+    const record: Record<string, any> = {
+      ...payload,
+      id: this.id,
+      data: jsonStr
+    };
+
+    // Provide safe defaults for legacy NOT NULL columns if present in the existing MySQL table
+    if (cols.has('title') && (record.title === undefined || record.title === null)) {
+      record.title = String(record.chatTitle || record.name || this.id);
+    }
+    if (cols.has('date') && (record.date === undefined || record.date === null)) {
+      record.date = String(this.id);
+    }
+    if (cols.has('chatId') && (record.chatId === undefined || record.chatId === null)) {
+      record.chatId = '';
+    }
+    if (cols.has('userId') && (record.userId === undefined || record.userId === null)) {
+      record.userId = String(this.id);
+    }
+    if (cols.has('text') && (record.text === undefined || record.text === null)) {
+      record.text = String(record.message || '');
+    }
+    if (cols.has('message') && (record.message === undefined || record.message === null)) {
+      record.message = String(record.text || '');
+    }
+    if (cols.has('summary') && (record.summary === undefined || record.summary === null)) {
+      record.summary = '';
+    }
+    if (cols.has('type') && (record.type === undefined || record.type === null)) {
+      record.type = 'SYSTEM';
+    }
+    if (cols.has('status') && (record.status === undefined || record.status === null)) {
+      record.status = 'active';
+    }
+    if (cols.has('pattern') && (record.pattern === undefined || record.pattern === null)) {
+      record.pattern = '';
+    }
+    if (cols.has('action') && (record.action === undefined || record.action === null)) {
+      record.action = 'NONE';
+    }
+    if (cols.has('username') && (record.username === undefined || record.username === null) && this.tableName === 'users') {
+      record.username = String(this.id);
+    }
+    if (cols.has('role') && (record.role === undefined || record.role === null) && this.tableName === 'users') {
+      record.role = 'MODERATOR';
+    }
+
+    const buildAndExecuteUpsert = async (columnSet: Set<string>) => {
+      const validFields = Object.keys(record).filter(
+        k => columnSet.has(k) && k !== 'updatedAt' && record[k] !== undefined
+      );
+      if (!validFields.includes('id')) validFields.unshift('id');
+
+      const colList = validFields.map(f => `\`${f}\``).join(', ');
+      const placeholders = validFields.map(() => '?').join(', ');
+      const updateAssignments = validFields
+        .filter(f => f !== 'id')
+        .map(f => `\`${f}\` = VALUES(\`${f}\`)`)
+        .join(', ');
+
+      const values = validFields.map(f => {
+        const val = record[f];
+        if (val === null) return null;
+        if (typeof val === 'boolean') return val ? 1 : 0;
+        if (typeof val === 'object') return JSON.stringify(val);
+        return val;
+      });
+
+      const sql = updateAssignments
+        ? `INSERT INTO \`${this.tableName}\` (${colList}) VALUES (${placeholders}) ON DUPLICATE KEY UPDATE ${updateAssignments}`
+        : `INSERT IGNORE INTO \`${this.tableName}\` (${colList}) VALUES (${placeholders})`;
+
+      await this.pool.execute(sql, values);
+    };
+
+    try {
+      await buildAndExecuteUpsert(cols);
+    } catch (err: any) {
+      if (err?.code === 'ER_BAD_FIELD_ERROR' || err?.errno === 1054) {
+        mysqlTableColumnsCache.delete(this.tableName);
+        cols = await this.ensureTable();
+        await buildAndExecuteUpsert(cols);
+      } else {
+        throw err;
+      }
+    }
   }
 
   async update(data: any) {
@@ -447,22 +558,13 @@ export class MySQLCollection {
 
   async get() {
     try {
-      await this.pool.execute(`
-        CREATE TABLE IF NOT EXISTS \`${this.tableName}\` (
-          \`id\` VARCHAR(255) NOT NULL PRIMARY KEY,
-          \`data\` LONGTEXT NOT NULL,
-          \`updatedAt\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-      `);
+      await ensureMySQLTableAndColumns(this.pool, this.tableName);
 
-      const [rows]: any = await this.pool.execute(`SELECT \`id\`, \`data\` FROM \`${this.tableName}\``);
+      const [rows]: any = await this.pool.execute(`SELECT * FROM \`${this.tableName}\``);
       let items: Array<{ id: string; data: any }> = (rows || []).map((row: any) => {
-        let parsed: any = {};
-        try {
-          parsed = typeof row.data === 'string' ? JSON.parse(row.data) : (row.data || {});
-        } catch (e) {}
-        parsed.id = String(row.id);
-        return { id: String(row.id), data: parsed };
+        const docId = String(row.id);
+        const parsed = normalizeSQLiteRow(row, docId);
+        return { id: docId, data: parsed };
       });
 
       // Apply where filters in memory for full compatibility with arbitrary JSON fields

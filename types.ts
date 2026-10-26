@@ -586,6 +586,11 @@ export interface ShopTopicConfig {
   defaultWeeklyLimit?: number;
   defaultDurationDays?: number;
   notifyVendorOnDelete?: boolean;
+  notifyInTopicOnDelete?: boolean;
+  deleteWarningText?: string;
+  deleteWarningButtons?: Array<{ text: string; url: string }>;
+  deleteWarningCooldownSec?: number;
+  deleteWarningAutoDeleteSec?: number;
   updatedAt: string;
 }
 
