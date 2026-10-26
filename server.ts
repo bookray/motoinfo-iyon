@@ -180,7 +180,7 @@ function getGeminiEffectiveBaseUrl(options?: { customBaseUrl?: string; proxySour
     return settings.geminiBaseUrl.trim();
   }
 
-  if (source === 'cf_worker' && settings?.cfWorkerUrl && !settings.disableCloudflare) {
+  if (source === 'cf_worker' && settings?.cfWorkerUrl) {
     return settings.cfWorkerUrl.trim();
   }
 
@@ -193,13 +193,131 @@ function getGeminiEffectiveBaseUrl(options?: { customBaseUrl?: string; proxySour
     return null;
   }
 
-  // Use Cloudflare Worker if available (it proxies /v1beta/* to Google)
-  if (settings?.cfWorkerUrl && !settings.disableCloudflare) {
+  // Use Cloudflare Worker if available (even if disableCloudflare is true for Telegram webhooks, Gemini can still use cfWorkerUrl!)
+  if (settings?.cfWorkerUrl && settings.cfWorkerUrl.trim()) {
     return settings.cfWorkerUrl.trim();
+  }
+
+  if (process.env.CF_WORKER_URL && process.env.CF_WORKER_URL.trim()) {
+    return process.env.CF_WORKER_URL.trim();
   }
 
   // NOTE: We do NOT use telegramApiRoot as a Gemini proxy because Telegram API proxies return 404 for Google endpoints!
   return null;
+}
+
+function mapGeminiModelForRest(model: string): string {
+  const m = (model || '').trim();
+  if (m === 'gemini-3.1-flash-lite') return 'gemini-2.5-flash';
+  if (m === 'gemini-3.5-flash-lite') return 'gemini-2.5-flash-lite';
+  if (m === 'gemini-3.8-flash') return 'gemini-2.5-flash';
+  return m || 'gemini-2.5-flash';
+}
+
+async function callGeminiViaProxyOrWorker(
+  baseUrl: string,
+  modelToUse: string,
+  apiKey: string,
+  promptText: string
+): Promise<string> {
+  const cleanBase = baseUrl.trim().replace(/\/$/, '');
+  let cleanOrigin = cleanBase;
+  try {
+    cleanOrigin = new URL(cleanBase).origin;
+  } catch {}
+
+  const restModel = mapGeminiModelForRest(modelToUse);
+  const requestBodyStr = JSON.stringify({
+    contents: [{ role: 'user', parts: [{ text: promptText }] }],
+    safetySettings: GEMINI_SAFETY_SETTINGS
+  });
+
+  const targetGoogleUrl = `https://generativelanguage.googleapis.com/v1beta/models/${restModel}:generateContent?key=${apiKey.trim()}`;
+
+  // Try:
+  // 1. Universal /v1beta/models/... path on Worker/Proxy origin
+  // 2. Existing /webhook?target=<googleUrl> relay (supported by all deployed TeleGuard Cloudflare Workers without updating Worker code!)
+  // 3. /telegram?target=<googleUrl> or custom path relay
+  const candidateUrls = Array.from(
+    new Set([
+      `${cleanOrigin}/v1beta/models/${restModel}:generateContent?key=${apiKey.trim()}`,
+      `${cleanOrigin}/webhook?target=${encodeURIComponent(targetGoogleUrl)}`,
+      `${cleanBase}/webhook?target=${encodeURIComponent(targetGoogleUrl)}`,
+      `${cleanBase}?target=${encodeURIComponent(targetGoogleUrl)}`
+    ])
+  );
+
+  let lastProxyErr: any = null;
+
+  for (const url of candidateUrls) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: requestBodyStr,
+        signal: AbortSignal.timeout(45000)
+      });
+
+      const rawBody = await response.text();
+      if (!response.ok) {
+        let parsedErr: any = null;
+        try {
+          parsedErr = JSON.parse(rawBody);
+        } catch {}
+        if (parsedErr?.error) {
+          const apiErrMsg = parsedErr.error.message || JSON.stringify(parsedErr.error);
+          const errObj: any = new Error(`Gemini Proxy API Error (${restModel}): ${apiErrMsg}`);
+          errObj.status = parsedErr.error.code || response.status;
+          throw errObj;
+        }
+        lastProxyErr = new Error(`Gemini Proxy (${cleanOrigin}) HTTP ${response.status}: ${rawBody.slice(0, 180)}`);
+        continue;
+      }
+
+      let data: any = null;
+      try {
+        data = JSON.parse(rawBody);
+      } catch {
+        lastProxyErr = new Error(`Gemini Proxy (${cleanOrigin}) вернул некорректный JSON: ${rawBody.slice(0, 180)}`);
+        continue;
+      }
+
+      if (data?.error) {
+        const errObj: any = new Error(`Gemini Proxy API Error (${restModel}): ${data.error.message || JSON.stringify(data.error)}`);
+        errObj.status = data.error.code || 400;
+        throw errObj;
+      }
+
+      // If an older webhook-only Cloudflare Worker returned its root status JSON ({"status":"online","message":"..."}),
+      // it won't have candidates or promptFeedback — continue immediately to the /webhook?target= relay URL!
+      const isGeminiPayload =
+        Array.isArray(data?.candidates) ||
+        Boolean(data?.promptFeedback) ||
+        Boolean(data?.modelVersion);
+
+      if (!isGeminiPayload) {
+        lastProxyErr = new Error(`Прокси (${url.split('?')[0]}) вернул статус-ответ вместо ответа Gemini`);
+        continue;
+      }
+
+      const text = extractTextFromGeminiPayload(data);
+      if (!text) {
+        const blockReason = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '';
+        const errObj: any = new Error(`Gemini вернул пустой ответ через прокси${blockReason ? ` (${blockReason})` : ''}`);
+        errObj.isEmptyProxy = true;
+        throw errObj;
+      }
+
+      return text;
+    } catch (err: any) {
+      if (err?.status || err?.isEmptyProxy) {
+        throw err;
+      }
+      lastProxyErr = err;
+    }
+  }
+
+  throw lastProxyErr || new Error(`Не удалось получить ответ от Gemini через прокси (${cleanOrigin})`);
 }
 
 async function generateAIResponse(promptText: string, options?: { model?: string }): Promise<string> {
@@ -308,44 +426,7 @@ async function generateAIResponse(promptText: string, options?: { model?: string
 
   const executeGeminiSingle = async (modelToUse: string, baseUrl: string | null): Promise<string> => {
     if (baseUrl) {
-      const cleanBase = baseUrl.replace(/\/$/, '');
-      const url = `${cleanBase}/v1beta/models/${modelToUse}:generateContent?key=${geminiKey.trim()}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: promptText }] }],
-          safetySettings: GEMINI_SAFETY_SETTINGS
-        }),
-        signal: AbortSignal.timeout(60000)
-      });
-      if (!response.ok) {
-        const errText = await response.text();
-        const errObj: any = new Error(`Gemini Proxy (${cleanBase}) HTTP ${response.status}: ${errText}`);
-        errObj.status = response.status;
-        errObj.raw = errText;
-        throw errObj;
-      }
-      const rawBody = await response.text();
-      let data: any = null;
-      try {
-        data = JSON.parse(rawBody);
-      } catch {
-        throw new Error(`Gemini Proxy (${cleanBase}) вернул некорректный JSON: ${rawBody.slice(0, 180)}`);
-      }
-      if (data?.error) {
-        const errObj: any = new Error(`Gemini Proxy (${cleanBase}) API Error: ${data.error.message || JSON.stringify(data.error)}`);
-        errObj.status = data.error.code || 400;
-        throw errObj;
-      }
-      const text = extractTextFromGeminiPayload(data);
-      if (!text) {
-        const blockReason = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason || '';
-        const errObj: any = new Error(`Gemini вернул пустой ответ через прокси${blockReason ? ` (${blockReason})` : ''}`);
-        errObj.isEmptyProxy = true;
-        throw errObj;
-      }
-      return text;
+      return await callGeminiViaProxyOrWorker(baseUrl, modelToUse, geminiKey, promptText);
     } else {
       const client = getGeminiClient();
       const response: any = await client.models.generateContent({
@@ -380,7 +461,7 @@ async function generateAIResponse(promptText: string, options?: { model?: string
       lastErr = err;
       const msg = err?.message || String(err);
 
-      // If proxy failed (e.g. webhook-only Cloudflare Worker returning empty/non-Gemini response, 404, 502, etc.), try direct SDK for this model
+      // If proxy failed, try direct SDK for this model
       if (effectiveBaseUrl) {
         const isKeyInvalid = msg.includes('API_KEY_INVALID') || msg.includes('API key not valid');
         if (!isKeyInvalid) {
@@ -389,7 +470,6 @@ async function generateAIResponse(promptText: string, options?: { model?: string
             return await executeGeminiSingle(currentModel, null);
           } catch (directErr: any) {
             const directMsg = directErr?.message || String(directErr);
-            // Keep whichever error is more informative (unless direct is just region-blocked)
             if (!directMsg.includes('User location is not supported') && !directMsg.includes('FAILED_PRECONDITION')) {
               lastErr = directErr;
             }
@@ -402,7 +482,10 @@ async function generateAIResponse(promptText: string, options?: { model?: string
 
       // If direct connection was blocked by region and a fallback proxy is available, try proxy for this model
       if (isRegionError) {
-        const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
+        const fallbackProxy =
+          (settings?.cfWorkerUrl ? settings.cfWorkerUrl.trim() : null) ||
+          (settings?.geminiBaseUrl ? settings.geminiBaseUrl.trim() : null) ||
+          (process.env.CF_WORKER_URL ? process.env.CF_WORKER_URL.trim() : null);
         if (fallbackProxy) {
           console.log(`[Gemini] Direct connection blocked by region. Trying via proxy (${fallbackProxy}) for model ${currentModel}...`);
           try {
@@ -3401,9 +3484,59 @@ app.post('/api/companion-bot/verify', authenticateToken, async (req, res) => {
       telegrafOptions.telegram = { apiRoot: apiRoot.replace(/\/$/, '') };
     }
 
-    const tempBot = new Telegraf(token, telegrafOptions);
-    const me = await tempBot.telegram.getMe();
-    
+    let me: any = null;
+    try {
+      const tempBot = new Telegraf(token, telegrafOptions);
+      me = await tempBot.telegram.getMe();
+    } catch (directErr: any) {
+      // Fallback via Cloudflare Worker /webhook?target= if configured
+      const cfUrl = settings?.cfWorkerUrl || process.env.CF_WORKER_URL;
+      if (cfUrl) {
+        let cfOrigin = cfUrl.trim().replace(/\/$/, '');
+        try {
+          cfOrigin = new URL(cfOrigin).origin;
+        } catch {}
+        const targetTg = `https://api.telegram.org/bot${token}/getMe`;
+        const r = await fetch(`${cfOrigin}/webhook?target=${encodeURIComponent(targetTg)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+          signal: AbortSignal.timeout(15000)
+        });
+        const tgData: any = await r.json();
+        if (tgData?.ok && tgData?.result) {
+          me = tgData.result;
+        } else {
+          throw directErr;
+        }
+      } else {
+        throw directErr;
+      }
+    }
+
+    // Automatically persist verified companion bot into settings and start it immediately
+    const prevCompanion = (settings as any).companionBot || {};
+    const updatedCompanion = {
+      ...prevCompanion,
+      enabled: prevCompanion.enabled ?? true,
+      botToken: token,
+      botUsername: me.username,
+      botName: me.first_name,
+      replyProbability: prevCompanion.replyProbability ?? 15,
+      replyToDirectMentions: prevCompanion.replyToDirectMentions ?? true,
+      replyToQuestions: prevCompanion.replyToQuestions ?? true,
+      minDelayBetweenRepliesSeconds: prevCompanion.minDelayBetweenRepliesSeconds ?? 180,
+      humorLevel: prevCompanion.humorLevel || 'high',
+      banterLevel: prevCompanion.banterLevel || 'friendly',
+      personaPreset: prevCompanion.personaPreset || 'biker_veteran',
+      model: prevCompanion.model || settings.geminiModel || 'gemini-2.5-flash',
+      useContextCount: prevCompanion.useContextCount || 10
+    };
+    (settings as any).companionBot = updatedCompanion;
+    companionBotInfo = { id: me.id, username: me.username, first_name: me.first_name };
+    await db.collection('config').doc('settings').set(cleanData(settings)).catch(() => {});
+    initCompanionBot(updatedCompanion).catch(e => console.error('[CompanionBot] Auto-start after verify error:', e?.message));
+
     res.json({
       success: true,
       bot: {
@@ -3424,6 +3557,18 @@ app.post('/api/companion-bot/test', authenticateToken, async (req, res) => {
   try {
     const { prompt, settings: customSettings, chatTitle } = req.body;
     const targetSettings = customSettings || (settings as any).companionBot || {};
+
+    // Persist companion bot settings if passed during test so the user doesn't lose changes
+    if (customSettings && typeof customSettings === 'object' && customSettings.botToken) {
+      (settings as any).companionBot = {
+        ...((settings as any).companionBot || {}),
+        ...customSettings
+      };
+      await db.collection('config').doc('settings').set(cleanData(settings)).catch(() => {});
+      if (!companionBot && (settings as any).companionBot.enabled) {
+        initCompanionBot((settings as any).companionBot).catch(() => {});
+      }
+    }
 
     const dummyMessage = {
       sender: 'УчастникЧАТА',
@@ -3851,23 +3996,7 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
       };
 
       const tryProxyGemini = async (m: string, proxyBase: string): Promise<string> => {
-        const cleanBase = proxyBase.replace(/\/$/, '');
-        const url = `${cleanBase}/v1beta/models/${m}:generateContent?key=${key.trim()}`;
-        const r = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: testPrompt }] }],
-            safetySettings: GEMINI_SAFETY_SETTINGS
-          }),
-          signal: AbortSignal.timeout(30000)
-        });
-        if (!r.ok) {
-          const t = await r.text();
-          throw new Error(`Proxy (${cleanBase}) HTTP ${r.status}: ${t}`);
-        }
-        const data: any = await r.json();
-        return extractTextFromGeminiPayload(data);
+        return await callGeminiViaProxyOrWorker(proxyBase, m, key, testPrompt);
       };
 
       let lastTestErr: any = null;
@@ -3903,7 +4032,10 @@ app.post('/api/ai/test', authenticateToken, async (req, res) => {
               lastTestErr = directErr;
               const msg = directErr?.message || String(directErr);
               if (msg.includes('User location is not supported') || msg.includes('FAILED_PRECONDITION')) {
-                const fallbackProxy = (settings?.cfWorkerUrl && !settings.disableCloudflare ? settings.cfWorkerUrl : null) || (settings?.geminiBaseUrl ? settings.geminiBaseUrl : null);
+                const fallbackProxy =
+                  (settings?.cfWorkerUrl ? settings.cfWorkerUrl.trim() : null) ||
+                  (settings?.geminiBaseUrl ? settings.geminiBaseUrl.trim() : null) ||
+                  (process.env.CF_WORKER_URL ? process.env.CF_WORKER_URL.trim() : null);
                 if (fallbackProxy) {
                   const proxyTxt = await tryProxyGemini(m, fallbackProxy);
                   if (proxyTxt) {
@@ -7460,12 +7592,29 @@ async function processCompanionGroupMessage(
       currentCfg.botUsername
     ]
       .filter(Boolean)
-      .map(u => String(u).replace(/^@/, '').toLowerCase());
+      .map(u => String(u).replace(/^@/, '').toLowerCase())
+      .filter(u => u && u !== 'companionbot');
 
     const textLower = rawText.toLowerCase();
-    const isDirectMention = knownUsernames.some(
+    let isDirectMention = knownUsernames.some(
       u => u && (textLower.includes(`@${u}`) || textLower.includes(u))
     );
+
+    // If companionBot username wasn't cached yet, detect @...bot mentions that are NOT the main moderator bot
+    if (!isDirectMention) {
+      const botMentionMatches = rawText.match(/@([a-zA-Z0-9_]+bot)\b/gi) || [];
+      const mainBotUser = (botInfo?.username || '').replace(/^@/, '').toLowerCase();
+      for (const m of botMentionMatches) {
+        const mentionedUser = m.replace(/^@/, '').toLowerCase();
+        if (mentionedUser && mentionedUser !== mainBotUser) {
+          isDirectMention = true;
+          if (knownUsernames.length === 0 && companionBotInfo) {
+            companionBotInfo.username = m.replace(/^@/, '');
+          }
+          break;
+        }
+      }
+    }
 
     const replyToMsg = (msg as any).reply_to_message;
     const replyFromUsername = replyToMsg?.from?.username ? String(replyToMsg.from.username).replace(/^@/, '').toLowerCase() : '';
@@ -7521,6 +7670,7 @@ async function processCompanionGroupMessage(
       );
 
       if (replyText && replyText.trim()) {
+        const cleanReply = replyText.trim();
         const sendExtra: any = {
           reply_parameters: { message_id: msg.message_id }
         };
@@ -7528,37 +7678,83 @@ async function processCompanionGroupMessage(
           sendExtra.message_thread_id = (msg as any).message_thread_id;
         }
 
+        let sentSuccessfully = false;
         try {
-          await companionBot.telegram.sendMessage(chatId, replyText.trim(), sendExtra);
-        } catch (replyErr) {
+          await companionBot.telegram.sendMessage(chatId, cleanReply, sendExtra);
+          sentSuccessfully = true;
+        } catch (replyErr: any) {
           const fallbackExtra: any = {};
           if ((msg as any).message_thread_id) {
             fallbackExtra.message_thread_id = (msg as any).message_thread_id;
           }
-          await companionBot.telegram.sendMessage(chatId, replyText.trim(), fallbackExtra).catch(e =>
-            console.error('[CompanionBot] Reply failed:', e?.message || e)
-          );
+          try {
+            await companionBot.telegram.sendMessage(chatId, cleanReply, fallbackExtra);
+            sentSuccessfully = true;
+          } catch (secondErr: any) {
+            console.warn('[CompanionBot] Direct sendMessage failed, trying Cloudflare Worker relay / main bot fallback:', secondErr?.message || secondErr);
+            // Try sending via Cloudflare Worker /webhook?target= relay if configured
+            const cfUrl = settings?.cfWorkerUrl || process.env.CF_WORKER_URL;
+            if (cfUrl && currentCfg.botToken) {
+              try {
+                let cfOrigin = cfUrl.trim().replace(/\/$/, '');
+                try {
+                  cfOrigin = new URL(cfOrigin).origin;
+                } catch {}
+                const targetTg = `https://api.telegram.org/bot${currentCfg.botToken.trim()}/sendMessage`;
+                const tgPayload: any = {
+                  chat_id: chatId,
+                  text: cleanReply,
+                  reply_parameters: { message_id: msg.message_id }
+                };
+                if ((msg as any).message_thread_id) {
+                  tgPayload.message_thread_id = (msg as any).message_thread_id;
+                }
+                const r = await fetch(`${cfOrigin}/webhook?target=${encodeURIComponent(targetTg)}`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(tgPayload),
+                  signal: AbortSignal.timeout(15000)
+                });
+                const rJson: any = await r.json().catch(() => null);
+                if (r.ok && rJson?.ok) {
+                  sentSuccessfully = true;
+                }
+              } catch (cfSendErr: any) {
+                console.warn('[CompanionBot] CF Worker sendMessage relay failed:', cfSendErr?.message);
+              }
+            }
+
+            // Last-resort fallback: if the second bot hasn't been added to the group chat yet, send via main bot
+            if (!sentSuccessfully && bot) {
+              try {
+                await bot.telegram.sendMessage(chatId, cleanReply, sendExtra);
+                sentSuccessfully = true;
+              } catch {}
+            }
+          }
         }
 
-        lastCompanionReplyTime.set(chatId, Date.now());
-        companionBotRepliesCount++;
+        if (sentSuccessfully) {
+          lastCompanionReplyTime.set(chatId, Date.now());
+          companionBotRepliesCount++;
 
-        history.push({
-          sender: companionBotInfo?.first_name || currentCfg.botName || 'CompanionBot',
-          text: replyText.trim(),
-          time: new Date().toISOString(),
-          isBot: true
-        });
-        companionRecentMessages.set(chatId, history.slice(-maxHistory));
+          history.push({
+            sender: companionBotInfo?.first_name || currentCfg.botName || 'CompanionBot',
+            text: cleanReply,
+            time: new Date().toISOString(),
+            isBot: true
+          });
+          companionRecentMessages.set(chatId, history.slice(-maxHistory));
 
-        await addLog({
-          id: Math.random().toString(36).substr(2, 9),
-          timestamp: new Date().toISOString(),
-          type: 'SYSTEM',
-          user: companionBotInfo?.username ? `@${companionBotInfo.username}` : (currentCfg.botUsername ? `@${currentCfg.botUsername}` : 'CompanionBot'),
-          chat: chatTitle || chatId,
-          details: `[ИИ-Собеседник] Ответ на сообщение (${responseTrigger}): "${replyText.substring(0, 90)}${replyText.length > 90 ? '...' : ''}"`
-        });
+          await addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'SYSTEM',
+            user: companionBotInfo?.username ? `@${companionBotInfo.username}` : (currentCfg.botUsername ? `@${currentCfg.botUsername}` : 'CompanionBot'),
+            chat: chatTitle || chatId,
+            details: `[ИИ-Собеседник] Ответ на сообщение (${responseTrigger}): "${cleanReply.substring(0, 90)}${cleanReply.length > 90 ? '...' : ''}"`
+          });
+        }
       }
     }
   } catch (err: any) {
@@ -10045,6 +10241,14 @@ async function initBot(token: string) {
               ).catch(e => console.error('[CompanionBot] Bridge error:', e?.message));
             }
           }
+        } else if (isGroup && !ctx.from?.is_bot && (settings as any).companionBot?.enabled && (settings as any).companionBot?.botToken) {
+          // Even if moderation is inactive for this chat, allow AI Companion Bot to respond if allowed
+          processCompanionGroupMessage(
+            String(chatId),
+            chat?.title || ('title' in ctx.chat && ctx.chat.title ? ctx.chat.title : String(chatId)),
+            ctx.message,
+            ctx.from
+          ).catch(e => console.error('[CompanionBot] Bridge error:', e?.message));
         }
       }
 

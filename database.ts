@@ -74,6 +74,13 @@ function normalizeSQLiteRow(row: any, id: string): any {
   if (!row) return null;
   let res: any = { ...row };
 
+  // Convert any raw MySQL Date objects in base columns before merging JSON data
+  for (const key of Object.keys(res)) {
+    if (res[key] instanceof Date) {
+      res[key] = (res[key] as Date).toISOString();
+    }
+  }
+
   if (row.data) {
     try {
       const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
@@ -87,7 +94,9 @@ function normalizeSQLiteRow(row: any, id: string): any {
 
   for (const key of Object.keys(res)) {
     const val = res[key];
-    if (typeof val === 'string') {
+    if (val instanceof Date) {
+      res[key] = val.toISOString();
+    } else if (typeof val === 'string') {
       const trimmed = val.trim();
       if (
         JSON_COLUMNS.has(key) ||
@@ -100,6 +109,8 @@ function normalizeSQLiteRow(row: any, id: string): any {
       }
     } else if (typeof val === 'number' && BOOLEAN_COLUMNS.has(key)) {
       res[key] = val === 1;
+    } else if (typeof val === 'number' && (key === 'activeUsers' || key === 'onlineUsers')) {
+      res[key] = [];
     }
   }
 
@@ -310,10 +321,26 @@ export class SQLiteCollection {
 }
 
 const mysqlTableColumnsCache = new Map<string, Set<string>>();
+const mysqlTableColumnTypesCache = new Map<string, Map<string, string>>();
+
+function toMySQLDateTime(val: any, isDateOnly = false): string {
+  try {
+    const d = val instanceof Date ? val : new Date(val);
+    if (!isNaN(d.getTime())) {
+      const iso = d.toISOString();
+      return isDateOnly ? iso.slice(0, 10) : iso.slice(0, 19).replace('T', ' ');
+    }
+  } catch {}
+  const str = String(val || '');
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(str)) {
+    return isDateOnly ? str.slice(0, 10) : str.slice(0, 19).replace('T', ' ');
+  }
+  return isDateOnly ? new Date().toISOString().slice(0, 10) : new Date().toISOString().slice(0, 19).replace('T', ' ');
+}
 
 async function ensureMySQLTableAndColumns(pool: mysql.Pool, tableName: string): Promise<Set<string>> {
   const cached = mysqlTableColumnsCache.get(tableName);
-  if (cached && cached.has('data')) {
+  if (cached && cached.has('data') && mysqlTableColumnTypesCache.has(tableName)) {
     return cached;
   }
 
@@ -326,16 +353,25 @@ async function ensureMySQLTableAndColumns(pool: mysql.Pool, tableName: string): 
   `);
 
   const [colRows]: any = await pool.query(`SHOW COLUMNS FROM \`${tableName}\``);
-  const cols = new Set<string>((colRows || []).map((r: any) => String(r.Field)));
+  const cols = new Set<string>();
+  const colTypes = new Map<string, string>();
+  for (const r of colRows || []) {
+    const fieldName = String(r.Field);
+    const fieldType = String(r.Type || '').toLowerCase();
+    cols.add(fieldName);
+    colTypes.set(fieldName, fieldType);
+  }
 
   if (!cols.has('data')) {
     try {
       await pool.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`data\` LONGTEXT NULL`);
       cols.add('data');
+      colTypes.set('data', 'longtext');
       console.log(`[MySQL] Auto-migrated table \`${tableName}\`: added \`data\` LONGTEXT column`);
     } catch (alterErr: any) {
       if (String(alterErr?.code) === 'ER_DUP_FIELDNAME' || String(alterErr?.message).includes('Duplicate column')) {
         cols.add('data');
+        colTypes.set('data', 'longtext');
       } else {
         console.warn(`[MySQL] Warning adding \`data\` column to \`${tableName}\`:`, alterErr?.message);
       }
@@ -343,6 +379,7 @@ async function ensureMySQLTableAndColumns(pool: mysql.Pool, tableName: string): 
   }
 
   mysqlTableColumnsCache.set(tableName, cols);
+  mysqlTableColumnTypesCache.set(tableName, colTypes);
   return cols;
 }
 
@@ -446,9 +483,10 @@ export class MySQLDoc {
       record.role = 'MODERATOR';
     }
 
-    const buildAndExecuteUpsert = async (columnSet: Set<string>) => {
+    const buildAndExecuteUpsert = async (columnSet: Set<string>, excludedCols?: Set<string>) => {
+      const colTypes = mysqlTableColumnTypesCache.get(this.tableName) || new Map<string, string>();
       const validFields = Object.keys(record).filter(
-        k => columnSet.has(k) && k !== 'updatedAt' && record[k] !== undefined
+        k => columnSet.has(k) && k !== 'updatedAt' && record[k] !== undefined && (!excludedCols || !excludedCols.has(k))
       );
       if (!validFields.includes('id')) validFields.unshift('id');
 
@@ -461,7 +499,42 @@ export class MySQLDoc {
 
       const values = validFields.map(f => {
         const val = record[f];
+        if (f === 'data') return jsonStr;
         if (val === null) return null;
+
+        const cType = (colTypes.get(f) || '').toLowerCase();
+        const isNumericCol =
+          cType.startsWith('int') ||
+          cType.startsWith('tinyint') ||
+          cType.startsWith('smallint') ||
+          cType.startsWith('mediumint') ||
+          cType.startsWith('bigint') ||
+          cType.startsWith('decimal') ||
+          cType.startsWith('float') ||
+          cType.startsWith('double');
+
+        const isDateCol =
+          cType.includes('datetime') ||
+          cType.includes('timestamp') ||
+          cType === 'date';
+
+        if (isDateCol) {
+          return toMySQLDateTime(val, cType === 'date');
+        }
+
+        // Also convert ISO-8601 datetime strings (e.g. '2026-10-26T10:43:05.559Z') to MySQL format 'YYYY-MM-DD HH:MM:SS'
+        if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?$/.test(val)) {
+          return toMySQLDateTime(val, false);
+        }
+
+        if (isNumericCol) {
+          if (typeof val === 'boolean') return val ? 1 : 0;
+          if (Array.isArray(val)) return val.length;
+          if (typeof val === 'object') return Object.keys(val).length;
+          const num = Number(val);
+          return isNaN(num) ? 0 : num;
+        }
+
         if (typeof val === 'boolean') return val ? 1 : 0;
         if (typeof val === 'object') return JSON.stringify(val);
         return val;
@@ -479,8 +552,24 @@ export class MySQLDoc {
     } catch (err: any) {
       if (err?.code === 'ER_BAD_FIELD_ERROR' || err?.errno === 1054) {
         mysqlTableColumnsCache.delete(this.tableName);
+        mysqlTableColumnTypesCache.delete(this.tableName);
         cols = await this.ensureTable();
         await buildAndExecuteUpsert(cols);
+      } else if (
+        err?.errno === 1292 ||
+        err?.errno === 1366 ||
+        err?.code === 'ER_TRUNCATED_WRONG_VALUE' ||
+        err?.code === 'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD'
+      ) {
+        mysqlTableColumnsCache.delete(this.tableName);
+        mysqlTableColumnTypesCache.delete(this.tableName);
+        cols = await this.ensureTable();
+        const excluded = new Set<string>();
+        const colMatch = String(err?.sqlMessage || err?.message || '').match(/for column '([^']+)'/i);
+        if (colMatch && colMatch[1] && colMatch[1] !== 'id' && colMatch[1] !== 'data') {
+          excluded.add(colMatch[1]);
+        }
+        await buildAndExecuteUpsert(cols, excluded);
       } else {
         throw err;
       }
