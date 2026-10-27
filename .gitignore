@@ -28,3 +28,11 @@ migrated_prompt_history
 .env
 .env.*
 !.env.example
+
+# Local databases and runtime data
+data/
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.db
+*.db-journal

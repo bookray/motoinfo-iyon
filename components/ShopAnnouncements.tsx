@@ -83,15 +83,20 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [topicLinkInput, setTopicLinkInput] = useState<string>('');
   const [topicTitleInput, setTopicTitleInput] = useState<string>('Объявления магазинов');
   const [topicEnabledInput, setTopicEnabledInput] = useState<boolean>(true);
-  const [notifyInTopicOnDelete, setNotifyInTopicOnDelete] = useState<boolean>(true);
-  const [deleteWarningText, setDeleteWarningText] = useState<string>(
-    '⚠️ <b>Внимание!</b> В этой теме публиковать объявления могут только одобренные магазины и продавцы.'
-  );
-  const [deleteWarningButtons, setDeleteWarningButtons] = useState<Array<{ text: string; url: string }>>([]);
-  const [deleteWarningCooldownSec, setDeleteWarningCooldownSec] = useState<number>(300);
-  const [deleteWarningAutoDeleteSec, setDeleteWarningAutoDeleteSec] = useState<number>(60);
   const [isSavingTopic, setIsSavingTopic] = useState<boolean>(false);
   const [topicFeedback, setTopicFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Global Warning Settings for ALL chats at once
+  const [globalNotifyInTopic, setGlobalNotifyInTopic] = useState<boolean>(true);
+  const [globalWarningText, setGlobalWarningText] = useState<string>(
+    '⚠️ <b>Внимание!</b> В этой теме публиковать объявления могут только одобренные магазины и продавцы.'
+  );
+  const [globalWarningButtons, setGlobalWarningButtons] = useState<Array<{ text: string; url: string }>>([]);
+  const [globalWarningCooldownSec, setGlobalWarningCooldownSec] = useState<number>(300);
+  const [globalWarningAutoDeleteSec, setGlobalWarningAutoDeleteSec] = useState<number>(60);
+  const [isSavingGlobalWarning, setIsSavingGlobalWarning] = useState<boolean>(false);
+  const [globalWarningFeedback, setGlobalWarningFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isGlobalWarningCardOpen, setIsGlobalWarningCardOpen] = useState<boolean>(true);
 
   // Add vendor modal / form state
   const [isAddVendorOpen, setIsAddVendorOpen] = useState<boolean>(false);
@@ -128,6 +133,21 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
         setTopics(Array.isArray(data.topics) ? data.topics : []);
         setVendors(Array.isArray(data.vendors) ? data.vendors : []);
         setPublications(Array.isArray(data.publications) ? data.publications : []);
+        if (data.globalWarningConfig) {
+          setGlobalNotifyInTopic(data.globalWarningConfig.notifyInTopicOnDelete !== false);
+          if (data.globalWarningConfig.deleteWarningText) {
+            setGlobalWarningText(data.globalWarningConfig.deleteWarningText);
+          }
+          if (Array.isArray(data.globalWarningConfig.deleteWarningButtons)) {
+            setGlobalWarningButtons(data.globalWarningConfig.deleteWarningButtons);
+          }
+          if (data.globalWarningConfig.deleteWarningCooldownSec !== undefined) {
+            setGlobalWarningCooldownSec(Number(data.globalWarningConfig.deleteWarningCooldownSec));
+          }
+          if (data.globalWarningConfig.deleteWarningAutoDeleteSec !== undefined) {
+            setGlobalWarningAutoDeleteSec(Number(data.globalWarningConfig.deleteWarningAutoDeleteSec));
+          }
+        }
       }
     } catch (e) {
       console.error('Failed to load shop topics:', e);
@@ -142,7 +162,7 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
     return () => clearInterval(interval);
   }, []);
 
-  // Sync form fields when selectedChatId or topics change
+  // Sync per-chat form fields when selectedChatId or topics change
   useEffect(() => {
     if (!selectedChatId) return;
     const currentConfig = topics.find(t => String(t.chatId) === String(selectedChatId));
@@ -153,31 +173,10 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
       );
       setTopicTitleInput(currentConfig.topicTitle || 'Объявления магазинов');
       setTopicEnabledInput(currentConfig.enabled !== false);
-      setNotifyInTopicOnDelete(currentConfig.notifyInTopicOnDelete !== false);
-      setDeleteWarningText(
-        currentConfig.deleteWarningText ||
-          '⚠️ <b>Внимание!</b> В этой теме публиковать объявления могут только одобренные магазины и продавцы.'
-      );
-      setDeleteWarningButtons(
-        Array.isArray(currentConfig.deleteWarningButtons) ? currentConfig.deleteWarningButtons : []
-      );
-      setDeleteWarningCooldownSec(
-        currentConfig.deleteWarningCooldownSec !== undefined ? Number(currentConfig.deleteWarningCooldownSec) : 300
-      );
-      setDeleteWarningAutoDeleteSec(
-        currentConfig.deleteWarningAutoDeleteSec !== undefined ? Number(currentConfig.deleteWarningAutoDeleteSec) : 60
-      );
     } else {
       setTopicLinkInput('');
       setTopicTitleInput('Объявления магазинов');
       setTopicEnabledInput(true);
-      setNotifyInTopicOnDelete(true);
-      setDeleteWarningText(
-        '⚠️ <b>Внимание!</b> В этой теме публиковать объявления могут только одобренные магазины и продавцы.'
-      );
-      setDeleteWarningButtons([]);
-      setDeleteWarningCooldownSec(300);
-      setDeleteWarningAutoDeleteSec(60);
     }
     setTopicFeedback(null);
   }, [selectedChatId, topics]);
@@ -240,6 +239,45 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
     setTimeout(() => setCopiedCmd(null), 2000);
   };
 
+  const handleSaveGlobalWarning = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingGlobalWarning(true);
+    setGlobalWarningFeedback(null);
+    try {
+      const res = await authenticatedFetch('/api/shop-topics/global-warning', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          notifyInTopicOnDelete: globalNotifyInTopic,
+          deleteWarningText: globalWarningText,
+          deleteWarningButtons: globalWarningButtons,
+          deleteWarningCooldownSec: globalWarningCooldownSec,
+          deleteWarningAutoDeleteSec: globalWarningAutoDeleteSec
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setGlobalWarningFeedback({
+          type: 'success',
+          text: 'Единые настройки уведомления сохранены и успешно применены ко всем чатам!'
+        });
+        await loadShopData(true);
+      } else {
+        setGlobalWarningFeedback({
+          type: 'error',
+          text: data.error || 'Ошибка при сохранении единых настроек'
+        });
+      }
+    } catch (err: any) {
+      setGlobalWarningFeedback({
+        type: 'error',
+        text: err.message || 'Ошибка сети при обращении к серверу'
+      });
+    } finally {
+      setIsSavingGlobalWarning(false);
+    }
+  };
+
   const handleSaveTopicBinding = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedChatId) return;
@@ -254,12 +292,7 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           chatId: selectedChatId,
           topicLinkOrId: topicLinkInput.trim(),
           topicTitle: topicTitleInput.trim() || 'Объявления магазинов',
-          enabled: topicEnabledInput,
-          notifyInTopicOnDelete,
-          deleteWarningText,
-          deleteWarningButtons,
-          deleteWarningCooldownSec,
-          deleteWarningAutoDeleteSec
+          enabled: topicEnabledInput
         })
       });
       const data = await res.json();
@@ -558,6 +591,229 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
         )}
       </div>
 
+      {/* Global Warning Settings (One unified setting for all chats) */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+              <ShieldCheck className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-white">
+                  Единые настройки уведомления при удалении
+                </h3>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                  Для всех чатов сразу
+                </span>
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Настройте текст предупреждения, кнопки связи с админом и антиспам один раз — они автоматически действуют во всех темах «Объявления магазинов».
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setIsGlobalWarningCardOpen(!isGlobalWarningCardOpen)}
+            className="p-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition-colors cursor-pointer self-start sm:self-auto"
+            title={isGlobalWarningCardOpen ? 'Свернуть' : 'Развернуть'}
+          >
+            {isGlobalWarningCardOpen ? (
+              <ChevronUp className="w-4 h-4" />
+            ) : (
+              <ChevronDown className="w-4 h-4" />
+            )}
+          </button>
+        </div>
+
+        {isGlobalWarningCardOpen && (
+          <form onSubmit={handleSaveGlobalWarning} className="space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-slate-950/80 border border-slate-800">
+              <label className="inline-flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={globalNotifyInTopic}
+                  onChange={e => setGlobalNotifyInTopic(e.target.checked)}
+                  className="w-4 h-4 rounded accent-blue-500"
+                />
+                <span className="text-xs font-bold text-white">
+                  Отправлять уведомление в тему при удалении сообщения не из списка одобренных
+                </span>
+              </label>
+              <span className="text-[11px] text-slate-400">
+                Защита от спама + автоудаление бота
+              </span>
+            </div>
+
+            {globalNotifyInTopic && (
+              <div className="space-y-4 pt-1">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1.5">
+                    Текст предупреждения в чате (поддерживается HTML: &lt;b&gt;, &lt;i&gt;, &lt;a href="..."&gt;)
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={globalWarningText}
+                    onChange={e => setGlobalWarningText(e.target.value)}
+                    placeholder="⚠️ Внимание! В этой теме могут писать только одобренные магазины и продавцы..."
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
+                    <label className="block text-xs font-bold text-slate-300 mb-1">
+                      Повторять не чаще чем через (сек.) — защита от спама
+                    </label>
+                    <p className="text-[11px] text-slate-400 mb-2">
+                      Если несколько нарушителей пишут подряд, бот не будет забивать тему повторными уведомлениями.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        max={86400}
+                        value={globalWarningCooldownSec}
+                        onChange={e => setGlobalWarningCooldownSec(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                      />
+                      <span className="text-xs text-slate-400 shrink-0 font-medium">
+                        {globalWarningCooldownSec > 0 ? `(${Math.round(globalWarningCooldownSec / 60 * 10) / 10} мин.)` : '(всегда)'}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
+                    <label className="block text-xs font-bold text-slate-300 mb-1">
+                      Удалять уведомление бота через (сек., 0 = не удалять)
+                    </label>
+                    <p className="text-[11px] text-slate-400 mb-2">
+                      Бот автоматически сотрет свое предупреждение через указанное время, чтобы тема оставалась чистой.
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        max={86400}
+                        value={globalWarningAutoDeleteSec}
+                        onChange={e => setGlobalWarningAutoDeleteSec(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                      />
+                      <span className="text-xs text-slate-400 shrink-0 font-medium">
+                        {globalWarningAutoDeleteSec > 0 ? `${globalWarningAutoDeleteSec} сек.` : 'не удалять'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Inline Buttons Builder */}
+                <div className="bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <label className="text-xs font-bold text-slate-300 block">
+                        Кнопки под сообщением (для всех чатов)
+                      </label>
+                      <span className="text-[11px] text-slate-400">
+                        Например, ссылка на связь с администратором или покупку размещения
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setGlobalWarningButtons(prev => [...prev, { text: 'Связаться с админом', url: 'https://t.me/' }])
+                      }
+                      className="px-2.5 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Добавить кнопку</span>
+                    </button>
+                  </div>
+
+                  {globalWarningButtons.length > 0 ? (
+                    <div className="space-y-2 pt-1">
+                      {globalWarningButtons.map((btn, idx) => (
+                        <div key={idx} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                          <input
+                            type="text"
+                            value={btn.text}
+                            onChange={e => {
+                              const val = e.target.value;
+                              setGlobalWarningButtons(prev =>
+                                prev.map((item, i) => (i === idx ? { ...item, text: val } : item))
+                              );
+                            }}
+                            placeholder="Текст кнопки (например: Купить размещение)"
+                            className="sm:w-5/12 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                          />
+                          <input
+                            type="text"
+                            value={btn.url}
+                            onChange={e => {
+                              const val = e.target.value;
+                              setGlobalWarningButtons(prev =>
+                                prev.map((item, i) => (i === idx ? { ...item, url: val } : item))
+                              );
+                            }}
+                            placeholder="Ссылка (например: https://t.me/username)"
+                            className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setGlobalWarningButtons(prev => prev.filter((_, i) => i !== idx))
+                            }
+                            className="p-2 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 cursor-pointer self-end sm:self-auto transition-colors"
+                            title="Удалить кнопку"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-500 italic">
+                      Кнопки не добавлены. Нажмите «Добавить кнопку», чтобы прикрепить ссылку на Telegram или сайт.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+              <span className="text-xs text-slate-400">
+                Сохранение сразу обновит правила уведомления во всех подключенных темах магазинов.
+              </span>
+              <button
+                type="submit"
+                disabled={isSavingGlobalWarning}
+                className="px-5 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 text-white text-xs font-bold rounded-xl transition-all shadow-lg shadow-amber-900/30 cursor-pointer flex items-center gap-2"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>{isSavingGlobalWarning ? 'Сохранение...' : 'Сохранить для всех чатов'}</span>
+              </button>
+            </div>
+
+            {globalWarningFeedback && (
+              <div
+                className={`p-3 rounded-xl text-xs font-medium flex items-center gap-2 ${
+                  globalWarningFeedback.type === 'success'
+                    ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
+                    : 'bg-rose-500/10 text-rose-300 border border-rose-500/30'
+                }`}
+              >
+                {globalWarningFeedback.type === 'success' ? (
+                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                )}
+                <span>{globalWarningFeedback.text}</span>
+              </div>
+            )}
+          </form>
+        )}
+      </div>
+
       {/* Main Workspace Grid: Left Chat Selector + Right Config & Vendors */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         {/* Left Column: Connected Chats List */}
@@ -722,143 +978,22 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                   </div>
                 </div>
 
-                {/* Customizable Warning Message on Delete */}
-                <div className="p-4 rounded-xl bg-slate-950/90 border border-slate-800 space-y-3.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label className="inline-flex items-center gap-2.5 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={notifyInTopicOnDelete}
-                        onChange={e => setNotifyInTopicOnDelete(e.target.checked)}
-                        className="w-4 h-4 rounded accent-blue-500"
-                      />
+                {/* Unified Warning Message Notice */}
+                <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 flex items-start gap-3">
+                  <ShieldCheck className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-white">
-                        Отправлять уведомление в тему при удалении сообщения не из списка одобренных
+                        Единые настройки предупреждения в чате
                       </span>
-                    </label>
-                    <span className="text-[11px] text-slate-400">
-                      Защита от спама + автоудаление
-                    </span>
-                  </div>
-
-                  {notifyInTopicOnDelete && (
-                    <div className="space-y-3.5 pt-1 border-t border-slate-800/80">
-                      <div>
-                        <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                          Текст уведомления в теме (поддерживается HTML: &lt;b&gt;, &lt;i&gt;, &lt;a href="..."&gt;)
-                        </label>
-                        <textarea
-                          rows={2}
-                          value={deleteWarningText}
-                          onChange={e => setDeleteWarningText(e.target.value)}
-                          placeholder="⚠️ Внимание! В этой теме могут писать только одобренные продавцы..."
-                          className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                            Повторять не чаще чем через (сек.) — защита от спама
-                          </label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min={0}
-                              max={86400}
-                              value={deleteWarningCooldownSec}
-                              onChange={e => setDeleteWarningCooldownSec(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                            />
-                            <span className="text-[11px] text-slate-400 shrink-0">
-                              {deleteWarningCooldownSec > 0 ? `(${Math.round(deleteWarningCooldownSec / 60 * 10) / 10} мин.)` : '(всегда)'}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                            Удалять уведомление бота через (сек., 0 = не удалять)
-                          </label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="number"
-                              min={0}
-                              max={86400}
-                              value={deleteWarningAutoDeleteSec}
-                              onChange={e => setDeleteWarningAutoDeleteSec(Math.max(0, parseInt(e.target.value, 10) || 0))}
-                              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white font-mono focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                            />
-                            <span className="text-[11px] text-slate-400 shrink-0">
-                              {deleteWarningAutoDeleteSec > 0 ? 'сек.' : 'не удалять'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Inline Buttons Builder */}
-                      <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <label className="text-[11px] font-bold text-slate-300">
-                            Кнопки под сообщением (например, связь с администратором / покупка размещения)
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setDeleteWarningButtons(prev => [...prev, { text: 'Связаться с админом', url: 'https://t.me/' }])
-                            }
-                            className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 border border-slate-700 text-[11px] font-semibold text-blue-400 flex items-center gap-1 cursor-pointer"
-                          >
-                            <Plus className="w-3.5 h-3.5" />
-                            <span>Добавить кнопку</span>
-                          </button>
-                        </div>
-
-                        {deleteWarningButtons.length > 0 && (
-                          <div className="space-y-2">
-                            {deleteWarningButtons.map((btn, idx) => (
-                              <div key={idx} className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                                <input
-                                  type="text"
-                                  value={btn.text}
-                                  onChange={e => {
-                                    const val = e.target.value;
-                                    setDeleteWarningButtons(prev =>
-                                      prev.map((item, i) => (i === idx ? { ...item, text: val } : item))
-                                    );
-                                  }}
-                                  placeholder="Текст кнопки (например: Купить размещение)"
-                                  className="sm:w-5/12 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                                />
-                                <input
-                                  type="text"
-                                  value={btn.url}
-                                  onChange={e => {
-                                    const val = e.target.value;
-                                    setDeleteWarningButtons(prev =>
-                                      prev.map((item, i) => (i === idx ? { ...item, url: val } : item))
-                                    );
-                                  }}
-                                  placeholder="Ссылка (например: https://t.me/username)"
-                                  className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                                />
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setDeleteWarningButtons(prev => prev.filter((_, i) => i !== idx))
-                                  }
-                                  className="p-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 cursor-pointer self-end sm:self-auto"
-                                  title="Удалить кнопку"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-amber-500/15 text-amber-300 border border-amber-500/25">
+                        Общие для всех чатов
+                      </span>
                     </div>
-                  )}
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      Текст предупреждения, кнопки связи с админом, защита от флуда ({globalWarningCooldownSec} сек.) и тайм-аут автоудаления ({globalWarningAutoDeleteSec} сек.) настроены единым блоком вверху страницы и автоматически действуют для этой темы.
+                    </p>
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between gap-3 pt-2">

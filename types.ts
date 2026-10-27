@@ -345,6 +345,9 @@ export interface BotSettings {
   muteReputationChangeMessages?: boolean;
   reputationDailyDigestEnabled?: boolean;
   timezoneOffset?: number;
+  lastSetMenuButtonUrl?: string;
+  menuButtonRetryAfterUntil?: number;
+  excludeCompanionFromSummary?: boolean; // Global default: exclude second bot messages from AI chat summaries
   // Second Bot (AI Companion / Chat Assistant)
   companionBot?: CompanionBotSettings;
 }
@@ -510,6 +513,7 @@ export interface ChatDigestConfig {
   toneStyle?: DigestToneStyle;
   autoSendTelegram?: boolean;
   minMessageThreshold?: number; // Minimum messages required to trigger digest (default 10)
+  excludeCompanionBot?: boolean; // Exclude messages sent by AI companion bot from this chat digest
   lastGeneratedAt?: string;
   lastSentAt?: string;
   lastWaveSummarizedAt?: string;
@@ -546,6 +550,7 @@ export interface ChatMessageRecord {
   lastName?: string;
   text: string;
   timestamp: string;
+  isCompanionBot?: boolean;
 }
 
 export interface PinnedMessage {
@@ -574,6 +579,14 @@ export interface PinnedMessage {
   mediaType?: 'photo' | 'video' | 'document' | 'audio' | 'voice' | 'poll' | 'other';
   forwardFrom?: string;
   link?: string;
+}
+
+export interface ShopGlobalWarningConfig {
+  notifyInTopicOnDelete: boolean;
+  deleteWarningText: string;
+  deleteWarningButtons: Array<{ text: string; url: string }>;
+  deleteWarningCooldownSec: number;
+  deleteWarningAutoDeleteSec: number;
 }
 
 export interface ShopTopicConfig {

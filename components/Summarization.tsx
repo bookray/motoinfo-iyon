@@ -267,6 +267,7 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
   const [hoursBack, setHoursBack] = useState<number>(24);
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const [autoSendTelegram, setAutoSendTelegram] = useState<boolean>(true);
+  const [excludeCompanionBot, setExcludeCompanionBot] = useState<boolean>(true);
   const [currentDigest, setCurrentDigest] = useState<ChatDigestEntry | null>(null);
   const [showKeyGuide, setShowKeyGuide] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -293,7 +294,8 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
     openRouterModel: 'google/gemini-2.0-flash-001',
     customAiEndpoint: '',
     customAiApiKey: '',
-    customAiModel: 'gpt-4o-mini'
+    customAiModel: 'gpt-4o-mini',
+    excludeCompanionFromSummary: true
   });
   const [isTestingAi, setIsTestingAi] = useState<boolean>(false);
   const [testResult, setTestResult] = useState<any>(null);
@@ -344,7 +346,8 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
             openRouterModel: data.settings.openRouterModel || 'google/gemini-2.0-flash-001',
             customAiEndpoint: data.settings.customAiEndpoint || '',
             customAiApiKey: data.settings.customAiApiKey || '',
-            customAiModel: data.settings.customAiModel || 'gpt-4o-mini'
+            customAiModel: data.settings.customAiModel || 'gpt-4o-mini',
+            excludeCompanionFromSummary: data.settings.excludeCompanionFromSummary ?? data.excludeCompanionFromSummary ?? true
           }));
         }
       }
@@ -602,7 +605,8 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
           hoursBack: overrideHours || hoursBack,
           customPrompt: overridePrompt !== undefined ? overridePrompt : customPrompt,
           sendImmediately: send || autoSendTelegram,
-          toneStyle: toneToUse
+          toneStyle: toneToUse,
+          excludeCompanionBot
         })
       });
 
@@ -1201,16 +1205,28 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                       </div>
                     )}
 
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 text-xs">
-                      <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={config.autoSendTelegram}
-                          onChange={(e) => handleUpdateConfig(chat.id, { autoSendTelegram: e.target.checked })}
-                          className="rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-0"
-                        />
-                        <span>Авто-отправка в группу</span>
-                      </label>
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/60 text-xs">
+                      <div className="flex flex-wrap items-center gap-4">
+                        <label className="flex items-center gap-2 text-slate-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={config.autoSendTelegram}
+                            onChange={(e) => handleUpdateConfig(chat.id, { autoSendTelegram: e.target.checked })}
+                            className="rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-0"
+                          />
+                          <span>Авто-отправка</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 text-slate-300 cursor-pointer" title="Не включать сообщения бота-собеседника в суммаризацию">
+                          <input
+                            type="checkbox"
+                            checked={config.excludeCompanionBot ?? true}
+                            onChange={(e) => handleUpdateConfig(chat.id, { excludeCompanionBot: e.target.checked })}
+                            className="rounded border-slate-700 bg-slate-800 text-purple-500 focus:ring-0"
+                          />
+                          <span className="text-[11px] text-slate-300">Без ИИ-собеседника</span>
+                        </label>
+                      </div>
 
                       <button
                         onClick={() => handleGenerateNow(chat.id, config.hoursBack, undefined, true, config.toneStyle)}
@@ -1324,17 +1340,33 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
               />
             </div>
 
-            <div className="flex items-center gap-2 pt-1">
-              <input
-                type="checkbox"
-                id="autoSend"
-                checked={autoSendTelegram}
-                onChange={(e) => setAutoSendTelegram(e.target.checked)}
-                className="rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-0"
-              />
-              <label htmlFor="autoSend" className="text-xs text-slate-300 cursor-pointer">
-                Сразу отправить в Telegram после генерации
-              </label>
+            <div className="space-y-2 pt-1">
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="autoSend"
+                  checked={autoSendTelegram}
+                  onChange={(e) => setAutoSendTelegram(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-blue-600 focus:ring-0"
+                />
+                <label htmlFor="autoSend" className="text-xs text-slate-300 cursor-pointer">
+                  Сразу отправить в Telegram после генерации
+                </label>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="excludeCompanion"
+                  checked={excludeCompanionBot}
+                  onChange={(e) => setExcludeCompanionBot(e.target.checked)}
+                  className="rounded border-slate-700 bg-slate-800 text-purple-500 focus:ring-0"
+                />
+                <label htmlFor="excludeCompanion" className="text-xs text-slate-300 cursor-pointer flex items-center gap-1.5">
+                  <Bot className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Исключать сообщения ИИ-собеседника из выборки</span>
+                </label>
+              </div>
             </div>
 
             <button
@@ -1933,6 +1965,29 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                 </div>
               </div>
             )}
+
+            {/* Исключение сообщений ИИ-собеседника из суммаризации */}
+            <div className="p-4 bg-slate-950/80 border border-slate-800 rounded-xl space-y-2">
+              <label className="flex items-start justify-between gap-3 cursor-pointer select-none">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Bot className="w-4 h-4 text-purple-400 shrink-0" />
+                    <span className="text-xs font-bold text-white">
+                      Исключать сообщения ИИ-собеседника из суммаризации
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed">
+                    Когда включено, реплики и ответы второго Telegram-бота (бота-компаньона) автоматически отфильтровываются и не попадают в текст чата, отправляемый в ИИ для составления дайджестов.
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={aiForm.excludeCompanionFromSummary}
+                  onChange={(e) => setAiForm({ ...aiForm, excludeCompanionFromSummary: e.target.checked })}
+                  className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 bg-slate-900 border-slate-700 mt-1 cursor-pointer shrink-0"
+                />
+              </label>
+            </div>
 
             {/* Test result feedback */}
             {testResult && (

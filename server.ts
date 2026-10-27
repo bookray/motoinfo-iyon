@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
-import { FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings, ShopTopicConfig, ShopVendor, ShopPublicationLog } from './types';
+import { FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings, ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig } from './types';
 import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 import { buildExportXml, saveXmlExportToFile, getLatestExportXml, getExportMetadata } from './xmlExport';
 
@@ -927,9 +927,6 @@ async function syncSuperAdminCredentials(opts: { password?: string; email?: stri
         if (hashedPassword) updated.password = hashedPassword;
         if (rawEmail) updated.email = rawEmail;
         await db.collection('users').doc(doc.id).set(updated);
-        try {
-          await adminDb.collection('users').doc(doc.id).set(updated);
-        } catch {}
       }
     } else {
       // Create default superadmin doc if none exists
@@ -944,9 +941,6 @@ async function syncSuperAdminCredentials(opts: { password?: string; email?: stri
         createdAt: new Date().toISOString()
       };
       await db.collection('users').doc(adminId).set(defaultAdmin);
-      try {
-        await adminDb.collection('users').doc(adminId).set(defaultAdmin);
-      } catch {}
     }
 
     // Keep settings in sync
@@ -957,9 +951,6 @@ async function syncSuperAdminCredentials(opts: { password?: string; email?: stri
       settings.recoveryEmail = rawEmail;
     }
     await db.collection('config').doc('settings').set(cleanData(settings));
-    try {
-      await adminDb.collection('config').doc('settings').set(cleanData(settings));
-    } catch {}
     console.log(`[AuthSync] Superadmin credentials synchronized (email: ${settings.recoveryEmail || 'unchanged'}, password updated: ${Boolean(rawPass)})`);
   } catch (err: any) {
     console.error('[AuthSync] Error synchronizing superadmin credentials:', err?.message || err);
@@ -1275,9 +1266,6 @@ app.put('/api/users/:id', authenticateToken, async (req, res) => {
 
     const updatedUser = { ...currentData, ...updateData };
     await db.collection('users').doc(id).set(updatedUser);
-    try {
-      await adminDb.collection('users').doc(id).set(updatedUser);
-    } catch {}
 
     // When updating a superadmin, synchronize credentials across settings and other superadmin records
     if (isSuperAdmin) {
@@ -2332,9 +2320,6 @@ app.put('/api/settings', authenticateToken, async (req, res) => {
     });
 
     await db.collection('config').doc('settings').set(cleanData(settings));
-    try {
-      await adminDb.collection('config').doc('settings').set(cleanData(settings));
-    } catch {}
 
     if (newSettings.botToken && (newSettings.botToken !== oldToken || newSettings.telegramApiRoot !== oldApiRoot)) {
       console.log('Bot token or Telegram API Root updated, auto-reinitializing bot instance...');
@@ -2404,9 +2389,6 @@ app.post('/api/settings/db-setup', authenticateToken, async (req, res) => {
 
     const result = await db.testAndSetupMySQL(cfg, seedCollections);
     await db.collection('config').doc('settings').set(cleanData(settings)).catch(() => {});
-    try {
-      await adminDb.collection('config').doc('settings').set(cleanData(settings));
-    } catch {}
 
     if (!result.success) {
       return res.status(400).json({
@@ -2978,11 +2960,66 @@ app.get('/api/shop-topics', authenticateToken, async (req, res) => {
     res.json({
       topics: enrichedTopics,
       vendors: enrichedVendors,
-      publications: shopPublications.slice(0, 200)
+      publications: shopPublications.slice(0, 200),
+      globalWarningConfig: shopGlobalWarningConfig
     });
   } catch (err: any) {
     console.error('Error fetching shop topics data:', err);
     res.status(500).json({ error: err.message || 'Ошибка загрузки данных тем магазинов' });
+  }
+});
+
+app.post('/api/shop-topics/global-warning', authenticateToken, async (req, res) => {
+  try {
+    const {
+      notifyInTopicOnDelete,
+      deleteWarningText,
+      deleteWarningButtons,
+      deleteWarningCooldownSec,
+      deleteWarningAutoDeleteSec
+    } = req.body;
+
+    const sanitizedButtons = Array.isArray(deleteWarningButtons)
+      ? deleteWarningButtons
+          .filter((b: any) => b && typeof b.text === 'string' && b.text.trim() && typeof b.url === 'string' && b.url.trim())
+          .map((b: any) => ({ text: b.text.trim(), url: b.url.trim() }))
+      : [];
+
+    shopGlobalWarningConfig = {
+      notifyInTopicOnDelete: notifyInTopicOnDelete !== undefined ? Boolean(notifyInTopicOnDelete) : true,
+      deleteWarningText: (deleteWarningText && String(deleteWarningText).trim())
+        ? String(deleteWarningText).trim()
+        : '⚠️ <b>Внимание!</b> В этой теме публиковать объявления могут только одобренные магазины и продавцы.',
+      deleteWarningButtons: sanitizedButtons,
+      deleteWarningCooldownSec: deleteWarningCooldownSec !== undefined ? Math.max(0, Number(deleteWarningCooldownSec) || 0) : 300,
+      deleteWarningAutoDeleteSec: deleteWarningAutoDeleteSec !== undefined ? Math.max(0, Number(deleteWarningAutoDeleteSec) || 0) : 60
+    };
+
+    // Keep all shop topic records in sync for backward compatibility
+    for (const st of shopTopics) {
+      st.notifyInTopicOnDelete = shopGlobalWarningConfig.notifyInTopicOnDelete;
+      st.deleteWarningText = shopGlobalWarningConfig.deleteWarningText;
+      st.deleteWarningButtons = shopGlobalWarningConfig.deleteWarningButtons;
+      st.deleteWarningCooldownSec = shopGlobalWarningConfig.deleteWarningCooldownSec;
+      st.deleteWarningAutoDeleteSec = shopGlobalWarningConfig.deleteWarningAutoDeleteSec;
+      db.collection('shop_topics').doc(String(st.chatId)).set(cleanData(st)).catch(() => {});
+    }
+
+    await db.collection('config').doc('shop_global_warning').set(cleanData(shopGlobalWarningConfig));
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SHOP',
+      user: (req as any).user?.username || 'Admin',
+      chat: 'Все чаты',
+      details: `Обновлены единые настройки уведомлений при удалении в темах магазинов (повтор: ${shopGlobalWarningConfig.deleteWarningCooldownSec}с, автоудаление: ${shopGlobalWarningConfig.deleteWarningAutoDeleteSec}с, кнопок: ${shopGlobalWarningConfig.deleteWarningButtons.length})`
+    });
+
+    res.json({ success: true, globalWarningConfig: shopGlobalWarningConfig });
+  } catch (err: any) {
+    console.error('Error saving shop global warning config:', err);
+    res.status(500).json({ error: err.message || 'Ошибка сохранения единых настроек' });
   }
 });
 
@@ -3919,7 +3956,8 @@ app.get(['/api/gemini/status', '/api/ai/status'], authenticateToken, (req, res) 
       openRouterModel: settings?.openRouterModel || 'google/gemini-2.0-flash-001',
       customAiEndpoint: settings?.customAiEndpoint || '',
       customAiApiKey: settings?.customAiApiKey ? '••••••••' : '',
-      customAiModel: settings?.customAiModel || 'gpt-4o-mini'
+      customAiModel: settings?.customAiModel || 'gpt-4o-mini',
+      excludeCompanionFromSummary: (settings as any).excludeCompanionFromSummary !== false
     }
   });
 });
@@ -3943,7 +3981,8 @@ app.post('/api/ai/settings', authenticateToken, async (req, res) => {
       openRouterModel,
       customAiEndpoint,
       customAiApiKey,
-      customAiModel
+      customAiModel,
+      excludeCompanionFromSummary
     } = req.body;
 
     const updatedAiSettings: any = {};
@@ -3968,6 +4007,9 @@ app.post('/api/ai/settings', authenticateToken, async (req, res) => {
       updatedAiSettings.customAiApiKey = customAiApiKey.trim();
     }
     if (customAiModel !== undefined) updatedAiSettings.customAiModel = customAiModel;
+    if (excludeCompanionFromSummary !== undefined) {
+      updatedAiSettings.excludeCompanionFromSummary = Boolean(excludeCompanionFromSummary);
+    }
 
     settings = { ...settings, ...updatedAiSettings };
     await db.collection('config').doc('settings').set(cleanData(settings));
@@ -4301,6 +4343,7 @@ app.post('/api/digests/configs', authenticateToken, async (req, res) => {
       toneStyle: configData.toneStyle || existingConfig?.toneStyle || 'default',
       autoSendTelegram: configData.autoSendTelegram !== undefined ? !!configData.autoSendTelegram : (existingConfig?.autoSendTelegram !== undefined ? existingConfig.autoSendTelegram : true),
       minMessageThreshold: Number(configData.minMessageThreshold) || existingConfig?.minMessageThreshold || 10,
+      excludeCompanionBot: configData.excludeCompanionBot !== undefined ? Boolean(configData.excludeCompanionBot) : (existingConfig?.excludeCompanionBot !== undefined ? existingConfig.excludeCompanionBot : true),
       lastGeneratedAt: configData.lastGeneratedAt !== undefined ? configData.lastGeneratedAt : (existingConfig?.lastGeneratedAt || null),
       lastSentAt: configData.lastSentAt !== undefined ? configData.lastSentAt : (existingConfig?.lastSentAt || null),
       lastWaveSummarizedAt: configData.lastWaveSummarizedAt !== undefined ? configData.lastWaveSummarizedAt : (existingConfig?.lastWaveSummarizedAt || null),
@@ -4367,6 +4410,7 @@ app.post('/api/digests/configs/bulk', authenticateToken, async (req, res) => {
           toneStyle: item.toneStyle || existing?.toneStyle || 'default',
           autoSendTelegram: item.autoSendTelegram !== undefined ? !!item.autoSendTelegram : (existing?.autoSendTelegram !== undefined ? existing.autoSendTelegram : true),
           minMessageThreshold: Number(item.minMessageThreshold) || existing?.minMessageThreshold || 10,
+          excludeCompanionBot: item.excludeCompanionBot !== undefined ? Boolean(item.excludeCompanionBot) : (existing?.excludeCompanionBot !== undefined ? existing.excludeCompanionBot : true),
           lastGeneratedAt: item.lastGeneratedAt !== undefined ? item.lastGeneratedAt : (existing?.lastGeneratedAt || null),
           lastSentAt: item.lastSentAt !== undefined ? item.lastSentAt : (existing?.lastSentAt || null),
           lastWaveSummarizedAt: item.lastWaveSummarizedAt !== undefined ? item.lastWaveSummarizedAt : (existing?.lastWaveSummarizedAt || null)
@@ -4433,7 +4477,7 @@ app.get('/api/digests/history', authenticateToken, (req, res) => {
 
 app.post('/api/digests/generate', authenticateToken, async (req, res) => {
   try {
-    const { chatId, hoursBack, customPrompt, sendImmediately, targetChatId, toneStyle } = req.body;
+    const { chatId, hoursBack, customPrompt, sendImmediately, targetChatId, toneStyle, excludeCompanionBot } = req.body;
     if (!chatId) {
       return res.status(400).json({ error: 'chatId is required' });
     }
@@ -4446,7 +4490,8 @@ app.post('/api/digests/generate', authenticateToken, async (req, res) => {
       customPrompt,
       sendImmediately: !!sendImmediately,
       targetChatId,
-      toneStyle: toneStyle || 'default'
+      toneStyle: toneStyle || 'default',
+      excludeCompanionBot: excludeCompanionBot !== undefined ? Boolean(excludeCompanionBot) : undefined
     });
 
     res.json(digest);
@@ -5150,6 +5195,13 @@ let pinnedMessages: any[] = [];
 let shopTopics: ShopTopicConfig[] = [];
 let shopVendors: ShopVendor[] = [];
 let shopPublications: ShopPublicationLog[] = [];
+let shopGlobalWarningConfig: ShopGlobalWarningConfig = {
+  notifyInTopicOnDelete: true,
+  deleteWarningText: '⚠️ <b>Внимание!</b> В этой теме публиковать объявления могут только одобренные магазины и продавцы.',
+  deleteWarningButtons: [],
+  deleteWarningCooldownSec: 300,
+  deleteWarningAutoDeleteSec: 60
+};
 const shopMediaGroupDecision = new Map<string, 'allowed' | 'rejected'>();
 
 function getCurrentMondayDateStr(dateInput: Date = new Date()): string {
@@ -5399,13 +5451,29 @@ async function recordChatMessage(record: {
   timestamp: string;
   isForward?: boolean;
   forwardSource?: string;
+  isCompanionBot?: boolean;
 }) {
   const normText = (record.text || '').trim();
   const fallbackText = record.isForward ? '[Пересланное сообщение/медиа]' : '[Медиа/Стикер/Файл]';
+
+  const companionTokenId = (settings as any)?.companionBot?.botToken ? String((settings as any).companionBot.botToken.split(':')[0]) : null;
+  const companionUsernames = [
+    companionBotInfo?.username,
+    (settings as any)?.companionBot?.botUsername
+  ].filter(Boolean).map(u => String(u).toLowerCase().replace(/^@/, ''));
+
+  const isCompanion = Boolean(
+    record.isCompanionBot ||
+    (companionBotInfo?.id && String(record.userId) === String(companionBotInfo.id)) ||
+    (companionTokenId && String(record.userId) === companionTokenId) ||
+    (record.username && companionUsernames.includes(record.username.toLowerCase().replace(/^@/, '')))
+  );
+
   const cleanRecord = {
     ...record,
     text: normText.length > 0 ? normText : fallbackText,
-    messageId: record.messageId || Number(record.id.split('_')[1]) || 0
+    messageId: record.messageId || Number(record.id.split('_')[1]) || 0,
+    isCompanionBot: isCompanion
   };
 
   // Prevent duplicate insertion in memory
@@ -6151,6 +6219,7 @@ interface DigestQueueTask {
   targetChatId?: string;
   toneStyle?: string;
   isScheduled?: boolean;
+  excludeCompanionBot?: boolean;
   resolve?: (digest: any) => void;
   reject?: (err: any) => void;
 }
@@ -6183,7 +6252,8 @@ async function processNextDigestInQueue() {
       currentTask.sendImmediately,
       currentTask.targetChatId,
       currentTask.toneStyle || 'default',
-      currentTask.isScheduled || false
+      currentTask.isScheduled || false,
+      currentTask.excludeCompanionBot
     );
     if (currentTask.resolve) currentTask.resolve(digest);
     console.log(`[DigestQueue] ✅ Finished digest for chat ${currentTask.chatId}`);
@@ -6209,7 +6279,8 @@ async function generateChatSummary(
   sendImmediately = false,
   targetChatId?: string,
   toneStyle: string = 'default',
-  isScheduled = false
+  isScheduled = false,
+  excludeCompanionBot?: boolean
 ) {
   const chatIdStr = String(chatId);
   const chat = chats.find(c => String(c.id) === chatIdStr);
@@ -6234,6 +6305,30 @@ async function generateChatSummary(
     } catch (e) {
       console.warn('Could not load chat messages from db:', e);
     }
+  }
+
+  // Filter companion bot messages if enabled
+  const shouldExcludeCompanion = excludeCompanionBot !== undefined
+    ? Boolean(excludeCompanionBot)
+    : (config?.excludeCompanionBot !== undefined
+        ? Boolean(config.excludeCompanionBot)
+        : ((settings as any).excludeCompanionFromSummary !== false));
+
+  if (shouldExcludeCompanion) {
+    const companionTokenId = (settings as any)?.companionBot?.botToken ? String((settings as any).companionBot.botToken.split(':')[0]) : null;
+    const companionUsernames = [
+      companionBotInfo?.username,
+      (settings as any)?.companionBot?.botUsername
+    ].filter(Boolean).map(u => String(u).toLowerCase().replace(/^@/, ''));
+
+    msgs = msgs.filter(m => {
+      if ((m as any).isCompanionBot) return false;
+      if (companionBotInfo?.id && String(m.userId) === String(companionBotInfo.id)) return false;
+      if (companionTokenId && String(m.userId) === companionTokenId) return false;
+      const uName = (m.username || '').toLowerCase().replace(/^@/, '');
+      if (uName && companionUsernames.includes(uName)) return false;
+      return true;
+    });
   }
 
   msgs = msgs.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
@@ -6522,9 +6617,11 @@ let filters: FilterSettings = {
   tagAdminsEnabled: false,
   tagAdminsMessage: ''
 };
-let settings = {
+let settings: BotSettings = {
   botToken: process.env.TELEGRAM_BOT_TOKEN || '',
   adminPassword: '',
+  recoveryEmail: '',
+  excludeCompanionFromSummary: true,
   dbType: (db.getPersistedConfig().dbType || 'FIREBASE') as 'FIREBASE' | 'MYSQL',
   dbHost: db.getPersistedConfig().dbHost || 'localhost',
   dbPort: Number(db.getPersistedConfig().dbPort) || 3306,
@@ -6870,6 +6967,31 @@ async function syncData() {
       const snap = await db.collection('shop_topics').get();
       shopTopics = snap.docs.map(d => ({ chatId: String(d.id), ...d.data() } as ShopTopicConfig));
       console.log(`Loaded ${shopTopics.length} shop topic configs`);
+    });
+
+    await safeLoad('config/shop_global_warning', async () => {
+      const doc = await db.collection('config').doc('shop_global_warning').get();
+      if (doc.exists) {
+        const data = doc.data() as any;
+        shopGlobalWarningConfig = {
+          ...shopGlobalWarningConfig,
+          ...data,
+          deleteWarningButtons: Array.isArray(data.deleteWarningButtons) ? data.deleteWarningButtons : shopGlobalWarningConfig.deleteWarningButtons
+        };
+        console.log('Loaded shop global warning config');
+      } else {
+        const firstWithWarn = shopTopics.find(t => t.deleteWarningText || (t.deleteWarningButtons && t.deleteWarningButtons.length > 0));
+        if (firstWithWarn) {
+          shopGlobalWarningConfig = {
+            notifyInTopicOnDelete: firstWithWarn.notifyInTopicOnDelete !== false,
+            deleteWarningText: firstWithWarn.deleteWarningText || shopGlobalWarningConfig.deleteWarningText,
+            deleteWarningButtons: firstWithWarn.deleteWarningButtons || [],
+            deleteWarningCooldownSec: firstWithWarn.deleteWarningCooldownSec ?? 300,
+            deleteWarningAutoDeleteSec: firstWithWarn.deleteWarningAutoDeleteSec ?? 60
+          };
+          db.collection('config').doc('shop_global_warning').set(cleanData(shopGlobalWarningConfig)).catch(() => {});
+        }
+      }
     });
 
     await safeLoad('shop_vendors', async () => {
@@ -7869,6 +7991,18 @@ async function processCompanionGroupMessage(
             isBot: true
           });
           companionRecentMessages.set(chatId, history.slice(-maxHistory));
+
+          // Also record companion bot message in chatMessages so cleaner and filters recognize it
+          recordChatMessage({
+            id: `${chatId}_${Date.now()}_comp`,
+            chatId,
+            userId: companionBotInfo?.id ? String(companionBotInfo.id) : (currentCfg.botToken ? String(currentCfg.botToken.split(':')[0]) : 'companion_bot'),
+            username: companionBotInfo?.username || currentCfg.botUsername || 'CompanionBot',
+            firstName: companionBotInfo?.first_name || currentCfg.botName || 'Бот-собеседник',
+            text: cleanReply,
+            timestamp: new Date().toISOString(),
+            isCompanionBot: true
+          }).catch(() => {});
 
           await addLog({
             id: Math.random().toString(36).substr(2, 9),
@@ -8940,22 +9074,33 @@ async function initBot(token: string) {
               });
 
               const sendShopTopicWarningInChat = async () => {
-                if (shopTopicConfig.notifyInTopicOnDelete === false) return;
+                const effectiveNotify = shopGlobalWarningConfig?.notifyInTopicOnDelete !== undefined
+                  ? shopGlobalWarningConfig.notifyInTopicOnDelete
+                  : (shopTopicConfig.notifyInTopicOnDelete !== false);
+                if (!effectiveNotify) return;
+
                 const warnKey = `${chatId}_${msgThreadId || shopTopicConfig.messageThreadId || '0'}`;
-                const cooldownSec = shopTopicConfig.deleteWarningCooldownSec !== undefined ? Number(shopTopicConfig.deleteWarningCooldownSec) : 300;
+                const cooldownSec = shopGlobalWarningConfig?.deleteWarningCooldownSec !== undefined
+                  ? Number(shopGlobalWarningConfig.deleteWarningCooldownSec)
+                  : (shopTopicConfig.deleteWarningCooldownSec !== undefined ? Number(shopTopicConfig.deleteWarningCooldownSec) : 300);
+
                 const nowMs = Date.now();
-                const lastSent = (globalThis as any).__shopWarningLastSentMap?.get(warnKey) || 0;
                 if (!(globalThis as any).__shopWarningLastSentMap) {
                   (globalThis as any).__shopWarningLastSentMap = new Map<string, number>();
                 }
+                const lastSent = (globalThis as any).__shopWarningLastSentMap.get(warnKey) || 0;
                 if (cooldownSec > 0 && nowMs - lastSent < cooldownSec * 1000) {
                   return;
                 }
                 (globalThis as any).__shopWarningLastSentMap.set(warnKey, nowMs);
 
-                const warnText = (shopTopicConfig.deleteWarningText && shopTopicConfig.deleteWarningText.trim())
-                  ? shopTopicConfig.deleteWarningText.trim()
-                  : `⚠️ <b>Внимание!</b> В теме «${escapeHtml(shopTopicConfig.topicTitle || 'Объявления магазинов')}» публиковать объявления могут только одобренные магазины и продавцы.`;
+                const rawWarnText = (shopGlobalWarningConfig?.deleteWarningText && shopGlobalWarningConfig.deleteWarningText.trim())
+                  ? shopGlobalWarningConfig.deleteWarningText.trim()
+                  : ((shopTopicConfig.deleteWarningText && shopTopicConfig.deleteWarningText.trim())
+                      ? shopTopicConfig.deleteWarningText.trim()
+                      : `⚠️ <b>Внимание!</b> В теме «${escapeHtml(shopTopicConfig.topicTitle || 'Объявления магазинов')}» публиковать объявления могут только одобренные магазины и продавцы.`);
+
+                const warnText = rawWarnText;
 
                 const sendExtra: any = {
                   parse_mode: 'HTML',
@@ -8966,8 +9111,12 @@ async function initBot(token: string) {
                   sendExtra.message_thread_id = targetThread;
                 }
 
-                if (Array.isArray(shopTopicConfig.deleteWarningButtons) && shopTopicConfig.deleteWarningButtons.length > 0) {
-                  const validBtns = shopTopicConfig.deleteWarningButtons
+                const buttonsToUse = (Array.isArray(shopGlobalWarningConfig?.deleteWarningButtons) && shopGlobalWarningConfig.deleteWarningButtons.length > 0)
+                  ? shopGlobalWarningConfig.deleteWarningButtons
+                  : shopTopicConfig.deleteWarningButtons;
+
+                if (Array.isArray(buttonsToUse) && buttonsToUse.length > 0) {
+                  const validBtns = buttonsToUse
                     .filter(b => b && b.text && b.text.trim() && b.url && b.url.trim())
                     .map(b => [{ text: b.text.trim(), url: fixUrl(b.url.trim()) }]);
                   if (validBtns.length > 0) {
@@ -8977,7 +9126,10 @@ async function initBot(token: string) {
 
                 try {
                   const sentWarn = await ctx.telegram.sendMessage(chatId, warnText, sendExtra);
-                  const autoDelSec = shopTopicConfig.deleteWarningAutoDeleteSec !== undefined ? Number(shopTopicConfig.deleteWarningAutoDeleteSec) : 60;
+                  const autoDelSec = shopGlobalWarningConfig?.deleteWarningAutoDeleteSec !== undefined
+                    ? Number(shopGlobalWarningConfig.deleteWarningAutoDeleteSec)
+                    : (shopTopicConfig.deleteWarningAutoDeleteSec !== undefined ? Number(shopTopicConfig.deleteWarningAutoDeleteSec) : 60);
+
                   if (autoDelSec > 0 && sentWarn?.message_id) {
                     setTimeout(() => {
                       ctx.telegram.deleteMessage(chatId, sentWarn.message_id).catch(() => {});
@@ -10365,7 +10517,7 @@ async function initBot(token: string) {
               ).catch(e => console.error('[CompanionBot] Bridge error:', e?.message));
             }
           }
-        } else if (isGroup && !ctx.from?.is_bot && (settings as any).companionBot?.enabled && (settings as any).companionBot?.botToken) {
+        } else if ((chatType === 'group' || chatType === 'supergroup') && !ctx.from?.is_bot && (settings as any).companionBot?.enabled && (settings as any).companionBot?.botToken) {
           // Even if moderation is inactive for this chat, allow AI Companion Bot to respond if allowed
           processCompanionGroupMessage(
             String(chatId),
