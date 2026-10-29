@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
-import { FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings, ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig } from './types';
+import { FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings, ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig, BuySellTopicConfig, BuySellGlobalConfig, BuySellCommercialAlert, DEFAULT_COMMERCIAL_MARKERS } from './types';
 import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 import { buildExportXml, saveXmlExportToFile, getLatestExportXml, getExportMetadata } from './xmlExport';
 
@@ -2992,11 +2992,22 @@ app.get('/api/shop-topics', authenticateToken, async (req, res) => {
         chatTitle: chatObj?.title || v.chatTitle || v.chatId
       };
     });
+    const enrichedBuySellTopics = buySellTopics.map(t => {
+      const chatObj = chats.find(c => String(c.id) === String(t.chatId));
+      return {
+        ...t,
+        chatTitle: chatObj?.title || t.chatTitle || t.chatId,
+        topicLink: t.topicLink || (t.messageThreadId ? buildTopicLinkForChat(String(t.chatId), t.messageThreadId, chatObj?.username) : undefined)
+      };
+    });
     res.json({
       topics: enrichedTopics,
       vendors: enrichedVendors,
       publications: shopPublications.slice(0, 200),
-      globalWarningConfig: shopGlobalWarningConfig
+      globalWarningConfig: shopGlobalWarningConfig,
+      buySellTopics: enrichedBuySellTopics,
+      buySellGlobalConfig,
+      buySellAlerts: buySellAlerts.slice(0, 100)
     });
   } catch (err: any) {
     console.error('Error fetching shop topics data:', err);
@@ -3404,6 +3415,184 @@ app.delete('/api/shop-topics/publications/:id', authenticateToken, async (req, r
     shopPublications = shopPublications.filter(p => p.id !== pubId);
     await db.collection('shop_publications').doc(pubId).delete();
     res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// Buy/Sell ("Купи / Продай") Topic & Commercial AI Check API
+// ============================================================================
+
+app.get('/api/buy-sell-topics', authenticateToken, async (req, res) => {
+  try {
+    const enrichedBuySellTopics = buySellTopics.map(t => {
+      const chatObj = chats.find(c => String(c.id) === String(t.chatId));
+      return {
+        ...t,
+        chatTitle: chatObj?.title || t.chatTitle || t.chatId,
+        topicLink: t.topicLink || (t.messageThreadId ? buildTopicLinkForChat(String(t.chatId), t.messageThreadId, chatObj?.username) : undefined)
+      };
+    });
+    res.json({
+      topics: enrichedBuySellTopics,
+      globalConfig: buySellGlobalConfig,
+      alerts: buySellAlerts.slice(0, 100)
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/buy-sell-topics/config', authenticateToken, async (req, res) => {
+  try {
+    const { chatId, topicLinkOrId, topicTitle, enabled } = req.body;
+    if (!chatId) return res.status(400).json({ error: 'Не указан ID чата' });
+
+    let chatStr = String(chatId);
+    let parsedThreadId: number | undefined;
+    let resolvedLink: string | undefined;
+
+    if (topicLinkOrId !== undefined && String(topicLinkOrId).trim() !== '') {
+      const parsed = parseTopicLinkOrId(String(topicLinkOrId));
+      if (!parsed.threadId) {
+        return res.status(400).json({
+          error: 'Не удалось распознать ID темы. Укажите ссылку на тему или числовой ID.'
+        });
+      }
+      parsedThreadId = parsed.threadId;
+
+      if (parsed.chatIdFromLink) {
+        const matched = chats.find(c => String(c.id) === String(parsed.chatIdFromLink));
+        if (matched) chatStr = String(matched.id);
+      } else if (parsed.chatUsernameFromLink) {
+        const cleanLinkUser = parsed.chatUsernameFromLink.replace(/^@/, '').toLowerCase();
+        const matched = chats.find(c => (c.username || '').replace(/^@/, '').toLowerCase() === cleanLinkUser);
+        if (matched) chatStr = String(matched.id);
+      }
+
+      const targetChatObj = chats.find(c => String(c.id) === chatStr);
+      resolvedLink = parsed.normalizedLink || buildTopicLinkForChat(chatStr, parsedThreadId, targetChatObj?.username);
+    }
+
+    const chatObj = chats.find(c => String(c.id) === chatStr);
+    const existing = buySellTopics.find(t => String(t.chatId) === chatStr);
+
+    if (parsedThreadId === undefined) {
+      parsedThreadId = existing?.messageThreadId;
+    }
+    if (!resolvedLink && parsedThreadId) {
+      resolvedLink = existing?.topicLink || buildTopicLinkForChat(chatStr, parsedThreadId, chatObj?.username);
+    }
+
+    const configObj: BuySellTopicConfig = {
+      chatId: chatStr,
+      chatTitle: chatObj?.title || existing?.chatTitle || chatStr,
+      enabled: enabled !== undefined ? Boolean(enabled) : (existing?.enabled !== false),
+      messageThreadId: parsedThreadId,
+      topicLink: resolvedLink,
+      topicTitle: (topicTitle || existing?.topicTitle || 'Купи / Продай').trim(),
+      updatedAt: new Date().toISOString()
+    };
+
+    const idx = buySellTopics.findIndex(t => String(t.chatId) === chatStr);
+    if (idx >= 0) buySellTopics[idx] = configObj;
+    else buySellTopics.push(configObj);
+
+    db.collection('buy_sell_topics').doc(chatStr).set(cleanData(configObj)).catch(err => {
+      console.error('Failed to persist buy_sell_topics config:', err);
+    });
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SHOP',
+      user: (req as any).user?.username || 'admin',
+      chat: chatObj?.title || chatStr,
+      details: `Обновлена привязка темы «${configObj.topicTitle}» (Thread ID: ${configObj.messageThreadId || 'не задан'}, статус: ${configObj.enabled ? 'ВКЛ' : 'ВЫКЛ'})`
+    });
+
+    res.json({ success: true, config: configObj });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/buy-sell-topics/config/:chatId', authenticateToken, async (req, res) => {
+  try {
+    const chatStr = String(req.params.chatId);
+    buySellTopics = buySellTopics.filter(t => String(t.chatId) !== chatStr);
+    await db.collection('buy_sell_topics').doc(chatStr).delete();
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, res) => {
+  try {
+    const { enabled, minConfidence, markerWords } = req.body;
+    buySellGlobalConfig = {
+      enabled: enabled !== undefined ? Boolean(enabled) : buySellGlobalConfig.enabled,
+      minConfidence: typeof minConfidence === 'number' ? Math.max(10, Math.min(100, minConfidence)) : (buySellGlobalConfig.minConfidence || 70),
+      markerWords: Array.isArray(markerWords) ? markerWords.map((w: string) => String(w).trim().toLowerCase()).filter(Boolean) : buySellGlobalConfig.markerWords
+    };
+
+    await db.collection('config').doc('buy_sell_global').set(cleanData(buySellGlobalConfig));
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SETTINGS',
+      user: (req as any).user?.username || 'admin',
+      chat: 'Global',
+      details: `Обновлены общие настройки ИИ-проверки «Купи / Продай»: маркерных слов: ${buySellGlobalConfig.markerWords.length}, порог: ${buySellGlobalConfig.minConfidence}%`
+    });
+
+    res.json({ success: true, config: buySellGlobalConfig });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/buy-sell-topics/alerts/:id/resolve', authenticateToken, async (req, res) => {
+  try {
+    const alertId = String(req.params.id);
+    const { action } = req.body;
+    const al = buySellAlerts.find(a => a.id === alertId);
+    if (!al) return res.status(404).json({ error: 'Уведомление не найдено' });
+
+    if (action === 'delete') {
+      try {
+        if (bot) await bot.telegram.deleteMessage(al.chatId, al.messageId);
+      } catch (e) {}
+      al.status = 'RESOLVED_DELETED';
+    } else if (action === 'warn') {
+      try {
+        if (bot) {
+          await bot.telegram.deleteMessage(al.chatId, al.messageId).catch(() => {});
+          await applyWarning(
+            { id: Number(al.userId), username: al.username, first_name: al.authorName },
+            (req as any).user?.username || 'admin',
+            'admin',
+            al.chatId,
+            al.chatTitle,
+            'Коммерческое объявление в топике Купи/Продай'
+          );
+        }
+      } catch (e) {}
+      al.status = 'RESOLVED_WARNED';
+    } else if (action === 'ban') {
+      try {
+        if (bot) await bot.telegram.banChatMember(al.chatId, Number(al.userId));
+      } catch (e) {}
+      al.status = 'RESOLVED_BANNED';
+    } else if (action === 'dismiss') {
+      al.status = 'DISMISSED';
+    }
+
+    await db.collection('buy_sell_alerts').doc(alertId).set(cleanData(al)).catch(() => {});
+    res.json({ success: true, alert: al });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -5271,6 +5460,13 @@ let shopGlobalWarningConfig: ShopGlobalWarningConfig = {
   deleteWarningCooldownSec: 300,
   deleteWarningAutoDeleteSec: 60
 };
+let buySellTopics: BuySellTopicConfig[] = [];
+let buySellGlobalConfig: BuySellGlobalConfig = {
+  enabled: true,
+  minConfidence: 70,
+  markerWords: [...DEFAULT_COMMERCIAL_MARKERS]
+};
+let buySellAlerts: BuySellCommercialAlert[] = [];
 const shopMediaGroupDecision = new Map<string, 'allowed' | 'rejected'>();
 
 function getCurrentMondayDateStr(dateInput: Date = new Date()): string {
@@ -5567,12 +5763,18 @@ async function checkCrossChatActivity(
   msgInfo: { messageId: number; text: string; isForward: boolean; forwardSource?: string }
 ) {
   const userId = String(user.id);
-  // Exclude bot itself and admin
+  // Exclude bot itself, admin, owner and whitelisted users
   if (botInfo && user.id === botInfo.id) return;
   if (user.username && user.username.toLowerCase() === 'motoinformbot') return;
-  const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
-  if (user.username && user.username.toLowerCase() === adminUsername) return;
-  if (whitelist.some(w => String(w.userId) === userId || (user.username && w.username && w.username.toLowerCase() === `@${user.username.toLowerCase()}`))) return;
+  const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase().replace(/^@/, '');
+  const cleanUserUsername = (user.username || '').toLowerCase().replace(/^@/, '');
+  if (cleanUserUsername && cleanUserUsername === adminUsername) return;
+  if (userId === '150097903' || userId === String(process.env.BOOKRAY_CHAT_ID) || userId === String(settings.adminChatId)) return;
+  if (whitelist.some(w => {
+    const wId = String(w.userId || w.id);
+    const wUser = (w.username || '').toLowerCase().replace(/^@/, '');
+    return wId === userId || (cleanUserUsername && (wUser === cleanUserUsername || wId.toLowerCase().replace(/^@/, '') === cleanUserUsername));
+  })) return;
 
   const now = Date.now();
   // 2-hour window for cross-chat activity tracking
@@ -7105,6 +7307,49 @@ async function syncData() {
       console.log(`Loaded ${shopPublications.length} shop publication logs`);
     });
 
+    await safeLoad('buy_sell_topics', async () => {
+      const snap = await db.collection('buy_sell_topics').get();
+      buySellTopics = snap.docs.map(d => ({ chatId: String(d.id), ...d.data() } as BuySellTopicConfig));
+      console.log(`Loaded ${buySellTopics.length} buy-sell topic configs`);
+    });
+
+    await safeLoad('config/buy_sell_global', async () => {
+      const doc = await db.collection('config').doc('buy_sell_global').get();
+      if (doc.exists) {
+        const data = doc.data() as any;
+        buySellGlobalConfig = {
+          enabled: data.enabled !== false,
+          minConfidence: typeof data.minConfidence === 'number' ? data.minConfidence : 70,
+          markerWords: Array.isArray(data.markerWords) && data.markerWords.length > 0 ? data.markerWords : [...DEFAULT_COMMERCIAL_MARKERS]
+        };
+        console.log('Loaded buy-sell global config');
+      }
+    });
+
+    await safeLoad('buy_sell_alerts', async () => {
+      const snap = await db.collection('buy_sell_alerts').get();
+      buySellAlerts = snap.docs
+        .map(d => ({ id: String(d.id), ...d.data() } as BuySellCommercialAlert))
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+        .slice(0, 100);
+      console.log(`Loaded ${buySellAlerts.length} buy-sell commercial alerts`);
+    });
+
+    // Ensure owner/admin is permanently in whitelist
+    const ownerId = '150097903';
+    if (!whitelist.some(w => String(w.userId) === ownerId)) {
+      const ownerWl = {
+        id: ownerId,
+        userId: ownerId,
+        username: '@bookray',
+        firstName: 'Свинцовый парашют',
+        addedAt: new Date().toISOString()
+      };
+      whitelist.push(ownerWl);
+      db.collection('whitelist').doc(ownerId).set(cleanData(ownerWl)).catch(() => {});
+      console.log('[Whitelist] Ensured owner 150097903 (@bookray) is in whitelist');
+    }
+
     // Create default super admin if no users exist
     await safeLoad('users', async () => {
       const usersSnap = await db.collection('users').get();
@@ -7644,6 +7889,112 @@ async function incrementDailyStats(chatId: string, type: 'joins' | 'leaves' | 'm
   await updateStats(today);
 }
 
+async function analyzeBuySellPostForCommercial(
+  postText: string,
+  user: { id: number; username?: string; first_name?: string; last_name?: string },
+  chatTitle: string,
+  topicTitle: string
+): Promise<{
+  isCommercial: boolean;
+  confidence: number;
+  verdict: 'COMMERCIAL' | 'SUSPICIOUS' | 'PRIVATE';
+  matchedMarkers: string[];
+  reason: string;
+}> {
+  const markerWords = Array.isArray(buySellGlobalConfig.markerWords) && buySellGlobalConfig.markerWords.length > 0
+    ? buySellGlobalConfig.markerWords
+    : DEFAULT_COMMERCIAL_MARKERS;
+
+  const lowerText = postText.toLowerCase();
+  const matchedMarkers: string[] = markerWords.filter(mw => mw && lowerText.includes(mw.trim().toLowerCase()));
+
+  const prompt = `Ты — эксперт-модератор мото-сообщества. Твоя задача — классифицировать объявление из топика "Купи / Продай" (Барахолка) и определить, является ли оно КОММЕРЧЕСКИМ (магазин, перекупщик, постоянная коммерческая торговля, поставщик, бизнес) или ЧАСТНЫМ (обычный участник продает свои личные б/у вещи, экипировку или личный мотоцикл).
+
+Список маркерных слов повышенного коммерческого веса:
+${markerWords.map(m => `• ${m}`).join('\n')}
+
+Обнаруженные в посте совпадения маркеров:
+${matchedMarkers.length > 0 ? matchedMarkers.join(', ') : 'нет точных совпадений'}
+
+ПРАВИЛА ОЦЕНКИ:
+1. ЧАСТНОЕ объявление (вероятность коммерции 0-40%):
+- Продажа личной вещи б/у или личного мотоцикла ("продам шлем Shoei, размер M, б/у один сезон, есть царапина", "мот мой, пробег 25к, продаю в связи с переездом").
+- Единичные предметы, живой разговорный язык, отсутствие шаблонных каталожных описаний и признаков склада.
+
+2. ПОДОЗРИТЕЛЬНОЕ объявление (вероятность коммерции 41-69%):
+- Продажа нескольких новых вещей без явного указания магазина, или частая продажа однотипных товаров.
+
+3. КОММЕРЧЕСКОЕ объявление (вероятность коммерции 70-100%):
+- Наличие фраз: "в наличии все размеры", "широкий ассортимент", "под заказ из Европы/Китая", "гарантия", "шоурум", "доставка СДЭК по РФ", "оплата на р/с / безнал", "оптом и в розницу".
+- Продажа новых товаров партиями, размерными сетками, коробками.
+- Ссылки на интернет-магазины, каналы с витринами, каталоги, прайс-листы.
+- Профессионально оформленный продающий текст с ценами "от ... руб." и условиями коммерческой доставки/возврата.
+
+ДАННЫЕ ОБЪЯВЛЕНИЯ:
+Чат: ${chatTitle}
+Топик: ${topicTitle}
+Автор: ${user.first_name || ''} ${user.last_name || ''} (@${user.username || 'без_юзернейма'}, ID: ${user.id})
+Текст объявления:
+"""
+${postText}
+"""
+
+Верни ответ СТРОГО в формате JSON без пояснений и markdown-блоков:
+{
+  "isCommercial": boolean,
+  "confidence": number,
+  "verdict": "COMMERCIAL" | "SUSPICIOUS" | "PRIVATE",
+  "matchedMarkers": ["маркер1", "маркер2"],
+  "reason": "Краткое аргументированное заключение на русском языке (1-2 предложения), почему это коммерция или частное объявление."
+}`;
+
+  try {
+    const rawResult = await generateAIResponse(prompt);
+    let parsed: any = null;
+    const jsonMatch = rawResult.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0]);
+      } catch (e) {}
+    }
+
+    if (!parsed) {
+      const conf = matchedMarkers.length >= 2 ? 80 : (matchedMarkers.length === 1 ? 60 : 30);
+      return {
+        isCommercial: conf >= (buySellGlobalConfig.minConfidence || 70),
+        confidence: conf,
+        verdict: conf >= 70 ? 'COMMERCIAL' : (conf >= 50 ? 'SUSPICIOUS' : 'PRIVATE'),
+        matchedMarkers,
+        reason: matchedMarkers.length > 0 ? `Обнаружены коммерческие маркеры: ${matchedMarkers.join(', ')}` : 'Частное объявление'
+      };
+    }
+
+    const confidence = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(100, Math.round(parsed.confidence))) : (parsed.isCommercial ? 85 : 20);
+    const minConf = buySellGlobalConfig.minConfidence || 70;
+    const isCommercial = Boolean(parsed.isCommercial || confidence >= minConf);
+    const verdict = isCommercial ? 'COMMERCIAL' : (confidence >= 45 ? 'SUSPICIOUS' : 'PRIVATE');
+
+    return {
+      isCommercial,
+      confidence,
+      verdict,
+      matchedMarkers: Array.isArray(parsed.matchedMarkers) && parsed.matchedMarkers.length > 0 ? parsed.matchedMarkers : matchedMarkers,
+      reason: parsed.reason || (isCommercial ? 'Обнаружены признаки коммерческой деятельности' : 'Частное объявление')
+    };
+  } catch (err: any) {
+    console.error('[BuySellAI] Error analyzing post with AI:', err?.message || err);
+    const conf = matchedMarkers.length >= 2 ? 85 : (matchedMarkers.length === 1 ? 65 : 25);
+    const isCommercial = conf >= (buySellGlobalConfig.minConfidence || 70);
+    return {
+      isCommercial,
+      confidence: conf,
+      verdict: isCommercial ? 'COMMERCIAL' : (conf >= 50 ? 'SUSPICIOUS' : 'PRIVATE'),
+      matchedMarkers,
+      reason: matchedMarkers.length > 0 ? `Анализ по маркерам: найдены ${matchedMarkers.join(', ')}` : 'Частное объявление'
+    };
+  }
+}
+
 const lastNotificationCache = new Map<string, number>();
 
 async function notifyInfoChat(type: 'JOIN' | 'LEAVE', chatId: string, user: { id: number, first_name: string, last_name?: string, username?: string }) {
@@ -7740,8 +8091,22 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
     }
 
     // Check for multi-chat membership notification (for both new joins and active messages)
+    const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase().replace(/^@/, '');
+    const cleanUserUsername = (user.username || '').toLowerCase().replace(/^@/, '');
+    const isUserAdminOrOwner =
+      String(userId) === '150097903' ||
+      String(userId) === String(settings.adminChatId) ||
+      String(userId) === String(process.env.BOOKRAY_CHAT_ID) ||
+      (cleanUserUsername && cleanUserUsername === adminUsername);
+
+    const isUserWhitelisted = isUserAdminOrOwner || whitelist.some(w => {
+      const wId = String(w.userId || w.id);
+      const wUser = (w.username || '').toLowerCase().replace(/^@/, '');
+      return wId === String(userId) || (cleanUserUsername && (wUser === cleanUserUsername || wId.toLowerCase().replace(/^@/, '') === cleanUserUsername));
+    });
+
     const userMemberships = memberships.filter(m => String(m.userId) === String(userId));
-    if (filters.notifyMultiChat && userMemberships.length >= filters.multiChatThreshold) {
+    if (!isUserAdminOrOwner && !isUserWhitelisted && filters.notifyMultiChat && userMemberships.length >= filters.multiChatThreshold) {
       const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
       const alertCacheKey = `mc_member_alert_${userId}_${userMemberships.length}`;
       const now = Date.now();
@@ -9497,6 +9862,149 @@ async function initBot(token: string) {
               // Return early so general chat link/media filters don't delete the approved shop announcement
               return;
             }
+          }
+        }
+
+        // ====================================================================
+        // Buy/Sell Topic Moderation & AI Commercialization Check: «Купи / Продай»
+        // ====================================================================
+        const buySellTopicConfig = buySellTopics.find(t => String(t.chatId) === String(chatId) && t.enabled !== false);
+        let isInBuySellTopic = false;
+
+        if (buySellTopicConfig && !isInShopTopic) {
+          if (buySellTopicConfig.messageThreadId && msgThreadId && Number(msgThreadId) === Number(buySellTopicConfig.messageThreadId)) {
+            isInBuySellTopic = true;
+          } else if (msgThreadId && detectedTopicName) {
+            const cfgTitle = (buySellTopicConfig.topicTitle || 'Купи / Продай').trim().toLowerCase();
+            const detLower = detectedTopicName.toLowerCase();
+            if (
+              detLower === cfgTitle ||
+              detLower.includes('купи') ||
+              detLower.includes('продай') ||
+              detLower.includes('барахолка') ||
+              detLower.includes('куплю') ||
+              detLower.includes('продам')
+            ) {
+              isInBuySellTopic = true;
+              if (Number(buySellTopicConfig.messageThreadId) !== Number(msgThreadId)) {
+                console.log(`[BuySellTopic] Auto-updating messageThreadId for chat ${chatId} to ${msgThreadId} (matched "${detectedTopicName}")`);
+                buySellTopicConfig.messageThreadId = Number(msgThreadId);
+                buySellTopicConfig.updatedAt = new Date().toISOString();
+                db.collection('buy_sell_topics').doc(String(chatId)).set(cleanData(buySellTopicConfig)).catch(() => {});
+              }
+            }
+          }
+        }
+
+        if (isInBuySellTopic && buySellGlobalConfig.enabled !== false) {
+          const isTopicServiceMsg = Boolean(
+            msgAny?.forum_topic_created ||
+            msgAny?.forum_topic_edited ||
+            msgAny?.forum_topic_closed ||
+            msgAny?.forum_topic_reopened ||
+            msgAny?.general_forum_topic_hidden ||
+            msgAny?.general_forum_topic_unhidden ||
+            msgAny?.pinned_message
+          );
+          const isSenderChatAdmin = isCurrentAdmin || await isModeratorOrAdmin(ctx, chatId, ctx.from.id);
+          const postText = (ctx.message && ('text' in ctx.message ? ctx.message.text : ('caption' in ctx.message ? ctx.message.caption : '')) || '').trim();
+
+          if (!isTopicServiceMsg && !isSenderChatAdmin && postText.length >= 15) {
+            (async () => {
+              try {
+                const analysis = await analyzeBuySellPostForCommercial(
+                  postText,
+                  ctx.from,
+                  effectiveChatTitle,
+                  buySellTopicConfig?.topicTitle || 'Купи / Продай'
+                );
+
+                if (analysis.isCommercial || analysis.confidence >= (buySellGlobalConfig.minConfidence || 70)) {
+                  const authorName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || (username ? `@${username}` : `User ${userId}`);
+                  const userHandle = username ? `@${username}` : `ID: ${userId}`;
+                  const chatUsername = (ctx.chat as any)?.username;
+                  const cleanChatId = String(chatId).startsWith('-100') ? String(chatId).replace('-100', '') : String(chatId);
+                  const threadPart = msgThreadId ? `${msgThreadId}/` : '';
+                  const messageLink = chatUsername
+                    ? `https://t.me/${chatUsername}/${threadPart}${ctx.message.message_id}`
+                    : `https://t.me/c/${cleanChatId}/${threadPart}${ctx.message.message_id}`;
+
+                  const alertId = `bsa_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+                  const alertRecord: BuySellCommercialAlert = {
+                    id: alertId,
+                    chatId: String(chatId),
+                    chatTitle: effectiveChatTitle,
+                    messageThreadId: msgThreadId ? Number(msgThreadId) : undefined,
+                    messageId: ctx.message.message_id,
+                    userId: String(userId),
+                    username: username ? username.replace(/^@/, '') : undefined,
+                    authorName,
+                    confidence: analysis.confidence,
+                    verdict: analysis.verdict,
+                    matchedMarkers: analysis.matchedMarkers,
+                    reason: analysis.reason,
+                    textSnippet: postText.length > 250 ? postText.substring(0, 250) + '...' : postText,
+                    timestamp: new Date().toISOString(),
+                    messageLink,
+                    status: 'PENDING'
+                  };
+
+                  buySellAlerts.unshift(alertRecord);
+                  if (buySellAlerts.length > 200) buySellAlerts.pop();
+                  db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
+
+                  const targetAdminChatId = process.env.BOOKRAY_CHAT_ID || settings.adminChatId || settings.infoChatId;
+                  if (targetAdminChatId && bot) {
+                    const verdictColorEmoji = analysis.confidence >= 80 ? '🔴' : '🟡';
+                    const markersSnippet = analysis.matchedMarkers.length > 0
+                      ? analysis.matchedMarkers.map(m => `<code>${escapeHtml(m)}</code>`).join(', ')
+                      : '<i>косвенные признаки коммерции</i>';
+
+                    const adminAlertText =
+                      `📢 <b>ПОДОЗРЕНИЕ НА КОММЕРЧЕСКОЕ ОБЪЯВЛЕНИЕ!</b>\n\n` +
+                      `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
+                      `🏷️ <b>Топик:</b> «${escapeHtml(buySellTopicConfig?.topicTitle || 'Купи / Продай')}»\n` +
+                      `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
+                      `🆔 <b>ID:</b> <code>${userId}</code>\n\n` +
+                      `📊 <b>Вероятность коммерции:</b> ${verdictColorEmoji} <b>${analysis.confidence}%</b>\n` +
+                      `🎯 <b>Маркеры:</b> ${markersSnippet}\n` +
+                      `📝 <b>Заключение ИИ:</b>\n<i>${escapeHtml(analysis.reason)}</i>\n\n` +
+                      `💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+
+                    const keyboard = {
+                      inline_keyboard: [
+                        [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
+                        [
+                          { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
+                          { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${ctx.message.message_id}_${alertId}` }
+                        ],
+                        [
+                          { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+                          { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
+                        ]
+                      ]
+                    };
+
+                    bot.telegram.sendMessage(targetAdminChatId, adminAlertText, {
+                      parse_mode: 'HTML',
+                      reply_markup: keyboard,
+                      link_preview_options: { is_disabled: true }
+                    }).catch(e => console.error('[BuySellAlert] Failed to send Telegram alert:', e));
+                  }
+
+                  await addLog({
+                    id: Math.random().toString(36).substr(2, 9),
+                    timestamp: new Date().toISOString(),
+                    type: 'SHOP',
+                    user: authorName,
+                    chat: effectiveChatTitle,
+                    details: `ИИ выявил коммерческое объявление в топике «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}» (${analysis.confidence}%): ${analysis.reason}`
+                  });
+                }
+              } catch (err: any) {
+                console.error('[BuySellTopic] Analysis failed:', err?.message || err);
+              }
+            })();
           }
         }
 
@@ -11516,6 +12024,7 @@ async function initBot(token: string) {
 
       if (data.startsWith('mc_wl_')) {
         const targetUserId = data.replace('mc_wl_', '');
+        await ctx.answerCbQuery('✅ Пользователь добавлен в белый список!', { show_alert: true }).catch(() => {});
 
         // Remove from global ban list if present
         const banIndex = bans.findIndex(b => String(b.userId) === String(targetUserId));
@@ -11526,63 +12035,151 @@ async function initBot(token: string) {
 
         // Add to Whitelist
         const existingWlIndex = whitelist.findIndex(w => String(w.userId) === String(targetUserId));
+        const userMem = memberships.find(m => String(m.userId) === String(targetUserId));
         if (existingWlIndex === -1) {
-          const userMem = memberships.find(m => String(m.userId) === String(targetUserId));
           const newWl = {
             id: targetUserId,
             userId: targetUserId,
-            username: userMem?.username || null,
-            firstName: userMem?.firstName || `User ${targetUserId}`,
+            username: userMem?.username || (targetUserId === '150097903' ? '@bookray' : null),
+            firstName: userMem?.firstName || (targetUserId === '150097903' ? 'Свинцовый парашют' : `User ${targetUserId}`),
             addedAt: new Date().toISOString()
           };
           whitelist.push(newWl);
           queueWrite('whitelist', targetUserId, cleanData(newWl));
         }
 
-        // Unban in chats if previously banned
+        // Unban in chats asynchronously in background
         const userMembershipsList = memberships.filter(m => String(m.userId) === String(targetUserId));
-        for (const m of userMembershipsList) {
-          try {
-            await ctx.telegram.unbanChatMember(m.chatId, Number(targetUserId), { only_if_banned: true });
-          } catch (e) {}
-        }
+        Promise.allSettled(
+          userMembershipsList.map(m => ctx.telegram.unbanChatMember(m.chatId, Number(targetUserId), { only_if_banned: true }))
+        ).catch(() => {});
 
         await addLog({
           id: Math.random().toString(36).substr(2, 9),
           timestamp: new Date().toISOString(),
           type: 'WHITELIST',
-          user: `ID ${targetUserId}`,
+          user: userMem?.username || `ID ${targetUserId}`,
           chat: 'MultiChat',
           details: 'Пользователь добавлен в белый список.'
         });
 
-        await ctx.answerCbQuery('✅ Пользователь добавлен в белый список!');
-
-        const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
-        const adminTag = username ? `@${username}` : (ctx.from.first_name || 'Админ');
-        const updatedText = `${currentText}\n\n✅ *СТАТУС:* Добавлен в белый список (${adminTag}).`;
-
         try {
-          await ctx.editMessageText(updatedText, {
-            parse_mode: 'Markdown',
-            reply_markup: {
-              inline_keyboard: [[
-                { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` },
-                { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` }
-              ]]
-            }
+          await ctx.editMessageReplyMarkup({
+            inline_keyboard: [[
+              { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` },
+              { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` }
+            ]]
           });
-        } catch (e) {
+        } catch (err) {}
+        return;
+      }
+
+      if (data.startsWith('bs_del_') || data.startsWith('bs_warn_') || data.startsWith('bs_ban_') || data.startsWith('bs_dismiss_')) {
+        const parts = data.split('_');
+        const action = parts[1]; // del | warn | ban | dismiss
+
+        if (action === 'del') {
+          const targetChatId = parts[2];
+          const targetMsgId = Number(parts[3]);
+          const alertId = parts[4];
+          await ctx.answerCbQuery('🗑 Удаляем сообщение...').catch(() => {});
+          try {
+            await ctx.telegram.deleteMessage(targetChatId, targetMsgId);
+          } catch (e) {}
+          if (alertId) {
+            const al = buySellAlerts.find(a => a.id === alertId);
+            if (al) {
+              al.status = 'RESOLVED_DELETED';
+              db.collection('buy_sell_alerts').doc(alertId).set(cleanData(al)).catch(() => {});
+            }
+          }
           try {
             await ctx.editMessageReplyMarkup({
-              inline_keyboard: [[
-                { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` },
-                { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` }
-              ]]
+              inline_keyboard: [[{ text: '🗑 Сообщение удалено', callback_data: 'noop' }]]
             });
-          } catch (err) {}
+          } catch (e) {}
+          return;
         }
-        return;
+
+        if (action === 'warn') {
+          const targetChatId = parts[2];
+          const targetUserId = parts[3];
+          const targetMsgId = Number(parts[4]);
+          const alertId = parts[5];
+          await ctx.answerCbQuery('⚠️ Выдаем предупреждение...').catch(() => {});
+          try {
+            await ctx.telegram.deleteMessage(targetChatId, targetMsgId).catch(() => {});
+            const targetChat = chats.find(c => String(c.id) === String(targetChatId));
+            const chatTitle = targetChat?.title || targetChatId;
+            const targetMem = memberships.find(m => String(m.userId) === String(targetUserId) && String(m.chatId) === String(targetChatId));
+            await applyWarning(
+              { id: Number(targetUserId), username: targetMem?.username, first_name: targetMem?.firstName },
+              username ? `@${username}` : (ctx.from.first_name || 'Админ'),
+              String(ctx.from.id),
+              targetChatId,
+              chatTitle,
+              'Коммерческое объявление в топике Купи/Продай'
+            );
+          } catch (e) {
+            console.error('Failed to warn in bs_warn:', e);
+          }
+          if (alertId) {
+            const al = buySellAlerts.find(a => a.id === alertId);
+            if (al) {
+              al.status = 'RESOLVED_WARNED';
+              db.collection('buy_sell_alerts').doc(alertId).set(cleanData(al)).catch(() => {});
+            }
+          }
+          try {
+            await ctx.editMessageReplyMarkup({
+              inline_keyboard: [[{ text: '⚠️ Варн выдан, пост удален', callback_data: 'noop' }]]
+            });
+          } catch (e) {}
+          return;
+        }
+
+        if (action === 'ban') {
+          const targetChatId = parts[2];
+          const targetUserId = parts[3];
+          const alertId = parts[4];
+          await ctx.answerCbQuery('🚫 Блокируем автора...').catch(() => {});
+          try {
+            await ctx.telegram.banChatMember(targetChatId, Number(targetUserId));
+          } catch (e) {
+            console.error('Failed to ban in bs_ban:', e);
+          }
+          if (alertId) {
+            const al = buySellAlerts.find(a => a.id === alertId);
+            if (al) {
+              al.status = 'RESOLVED_BANNED';
+              db.collection('buy_sell_alerts').doc(alertId).set(cleanData(al)).catch(() => {});
+            }
+          }
+          try {
+            await ctx.editMessageReplyMarkup({
+              inline_keyboard: [[{ text: '🚫 Автор заблокирован в чате', callback_data: 'noop' }]]
+            });
+          } catch (e) {}
+          return;
+        }
+
+        if (action === 'dismiss') {
+          const alertId = parts[2];
+          if (alertId) {
+            const al = buySellAlerts.find(a => a.id === alertId);
+            if (al) {
+              al.status = 'DISMISSED';
+              db.collection('buy_sell_alerts').doc(alertId).set(cleanData(al)).catch(() => {});
+            }
+          }
+          await ctx.answerCbQuery('✅ Отмечено как частное', { show_alert: true }).catch(() => {});
+          try {
+            await ctx.editMessageReplyMarkup({
+              inline_keyboard: [[{ text: '✅ Частное объявление (пропущено)', callback_data: 'noop' }]]
+            });
+          } catch (e) {}
+          return;
+        }
       }
 
       if (data.startsWith('mc_info_')) {

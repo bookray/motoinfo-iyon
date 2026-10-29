@@ -339,6 +339,7 @@ export interface BotSettings {
   customAiApiKey?: string;
   customAiModel?: string;
   reputationEnabled?: boolean;
+  adminChatId?: string;
   infoChatId?: string;
   reputationNotifyChatId?: string;
   reputationNotifyInGroup?: boolean;
@@ -643,6 +644,53 @@ export interface ShopPublicationLog {
   weekCountAfter: number;
   weeklyLimit: number;
 }
+
+export interface BuySellTopicConfig {
+  chatId: string;
+  chatTitle?: string;
+  enabled: boolean;
+  messageThreadId?: number;
+  topicLink?: string;
+  topicTitle?: string;
+  updatedAt: string;
+}
+
+export interface BuySellGlobalConfig {
+  enabled: boolean;
+  minConfidence: number;
+  markerWords: string[];
+}
+
+export interface BuySellCommercialAlert {
+  id: string;
+  chatId: string;
+  chatTitle: string;
+  messageThreadId?: number;
+  messageId: number;
+  userId: string;
+  username?: string;
+  authorName: string;
+  confidence: number;
+  verdict: 'COMMERCIAL' | 'SUSPICIOUS' | 'PRIVATE';
+  matchedMarkers: string[];
+  reason: string;
+  textSnippet: string;
+  messageText?: string;
+  timestamp: string;
+  messageLink?: string;
+  messageUrl?: string;
+  status: 'PENDING' | 'RESOLVED_DELETED' | 'RESOLVED_WARNED' | 'RESOLVED_BANNED' | 'DISMISSED' | 'DELETED' | 'WARNED' | 'BANNED';
+}
+
+export const DEFAULT_COMMERCIAL_MARKERS: string[] = [
+  'в наличии', 'под заказ', 'гарантия', 'шоурум', 'магазин',
+  'оптом', 'доставка по рф', 'доставка по россии', 'доставка сдэк',
+  'склад', 'новые в упаковке', 'размеры в наличии', 'все размеры',
+  'широкий ассортимент', 'чек', 'безнал', 'расчетный счет',
+  'предзаказ', 'прайс', 'каталог', 'дилер', 'официальный',
+  'оригинал 100%', 'возврат и обмен', 'интернет-магазин',
+  'цена от', 'оптовые цены', 'самовывоз из магазина', 'опт', 'дропшиппинг'
+];
 
 export const Tab = {
   STATISTICS: 'STATISTICS',

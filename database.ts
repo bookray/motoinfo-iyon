@@ -39,6 +39,7 @@ const ALL_COLLECTIONS = [
   'tasks', 'config', 'chat_digests', 'chat_messages', 'reputations',
   'warnings', 'active_mutes', 'scam_alert_logs', 'pinned_messages',
   'shop_topics', 'shop_vendors', 'shop_publications',
+  'buy_sell_topics', 'buy_sell_alerts',
   'captcha_sessions', 'subscription_sessions'
 ];
 
@@ -46,14 +47,14 @@ const JSON_COLUMNS = new Set([
   'chatStats', 'hourly', 'activeUsers', 'onlineUsers',
   'assignedChatIds', 'forbiddenWords', 'buttons', 'chatIds',
   'messageIds', 'pinResults', 'history', 'chatScores', 'settings',
-  'configs', 'items', 'messages', 'keywords'
+  'configs', 'items', 'messages', 'keywords', 'markerWords', 'matchedMarkers'
 ]);
 
 const BOOLEAN_COLUMNS = new Set([
   'active', 'enabled', 'isAdmin', 'tzAdjusted', 'sentToTelegram',
   'isForward', 'muteNewcomers', 'autoApprove', 'pin', 'silent',
   'unpinned', 'hasMedia', 'deleteMessage', 'notifyInGroup',
-  'notifyVendorOnDelete', 'autoSendTelegram'
+  'notifyVendorOnDelete', 'autoSendTelegram', 'isCommercial'
 ]);
 
 export function isFirestoreQuotaExceeded(err: any): boolean {

@@ -24,9 +24,25 @@ import {
   Edit3,
   X,
   FileText,
-  Hash
+  Hash,
+  ShoppingBag,
+  Sparkles,
+  Tag,
+  Sliders,
+  ShieldAlert,
+  AlertTriangle,
+  Ban
 } from 'lucide-react';
-import { Chat, ShopTopicConfig, ShopVendor, ShopPublicationLog } from '../types';
+import {
+  Chat,
+  ShopTopicConfig,
+  ShopVendor,
+  ShopPublicationLog,
+  BuySellTopicConfig,
+  BuySellGlobalConfig,
+  BuySellCommercialAlert,
+  DEFAULT_COMMERCIAL_MARKERS
+} from '../types';
 
 interface ShopAnnouncementsProps {
   chats: Chat[];
@@ -117,6 +133,28 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [editExpiresDate, setEditExpiresDate] = useState<string>('');
   const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
 
+  // Active sub-tab switcher: Approved Shop Topics vs Buy/Sell Topics
+  const [activeSubTab, setActiveSubTab] = useState<'SHOPS' | 'BUY_SELL'>('SHOPS');
+
+  // Buy/Sell Topic state
+  const [buySellTopics, setBuySellTopics] = useState<BuySellTopicConfig[]>([]);
+  const [buySellAlerts, setBuySellAlerts] = useState<BuySellCommercialAlert[]>([]);
+  const [buySellTopicLinkInput, setBuySellTopicLinkInput] = useState<string>('');
+  const [buySellTopicTitleInput, setBuySellTopicTitleInput] = useState<string>('Купи / Продай');
+  const [buySellTopicEnabledInput, setBuySellTopicEnabledInput] = useState<boolean>(true);
+  const [isSavingBuySellTopic, setIsSavingBuySellTopic] = useState<boolean>(false);
+  const [buySellTopicFeedback, setBuySellTopicFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Buy/Sell Global Settings & Marker Words
+  const [globalBuySellEnabled, setGlobalBuySellEnabled] = useState<boolean>(true);
+  const [globalBuySellMinConfidence, setGlobalBuySellMinConfidence] = useState<number>(70);
+  const [globalMarkerWords, setGlobalMarkerWords] = useState<string[]>([...DEFAULT_COMMERCIAL_MARKERS]);
+  const [newMarkerWordInput, setNewMarkerWordInput] = useState<string>('');
+  const [isSavingGlobalBuySell, setIsSavingGlobalBuySell] = useState<boolean>(false);
+  const [globalBuySellFeedback, setGlobalBuySellFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [resolvingAlertId, setResolvingAlertId] = useState<string | null>(null);
+  const [alertFilter, setAlertFilter] = useState<'ALL' | 'PENDING' | 'RESOLVED'>('ALL');
+
   useEffect(() => {
     if (chats.length > 0 && !selectedChatId) {
       const firstActive = chats.find(c => c.active) || chats[0];
@@ -147,6 +185,19 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           if (data.globalWarningConfig.deleteWarningAutoDeleteSec !== undefined) {
             setGlobalWarningAutoDeleteSec(Number(data.globalWarningConfig.deleteWarningAutoDeleteSec));
           }
+        }
+        if (Array.isArray(data.buySellTopics)) {
+          setBuySellTopics(data.buySellTopics);
+        }
+        if (data.buySellGlobalConfig) {
+          setGlobalBuySellEnabled(data.buySellGlobalConfig.enabled !== false);
+          setGlobalBuySellMinConfidence(data.buySellGlobalConfig.minConfidence ?? 70);
+          if (Array.isArray(data.buySellGlobalConfig.markerWords)) {
+            setGlobalMarkerWords(data.buySellGlobalConfig.markerWords);
+          }
+        }
+        if (Array.isArray(data.buySellAlerts)) {
+          setBuySellAlerts(data.buySellAlerts);
         }
       }
     } catch (e) {
@@ -180,6 +231,163 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
     }
     setTopicFeedback(null);
   }, [selectedChatId, topics]);
+
+  // Sync per-chat Buy/Sell fields
+  useEffect(() => {
+    if (!selectedChatId) return;
+    const currentConfig = buySellTopics.find(t => String(t.chatId) === String(selectedChatId));
+    if (currentConfig) {
+      setBuySellTopicLinkInput(
+        currentConfig.topicLink ||
+          (currentConfig.messageThreadId ? String(currentConfig.messageThreadId) : '')
+      );
+      setBuySellTopicTitleInput(currentConfig.topicTitle || 'Купи / Продай');
+      setBuySellTopicEnabledInput(currentConfig.enabled !== false);
+    } else {
+      setBuySellTopicLinkInput('');
+      setBuySellTopicTitleInput('Купи / Продай');
+      setBuySellTopicEnabledInput(true);
+    }
+    setBuySellTopicFeedback(null);
+  }, [selectedChatId, buySellTopics]);
+
+  const currentBuySellTopicConfig = useMemo(
+    () => buySellTopics.find(t => String(t.chatId) === String(selectedChatId)),
+    [buySellTopics, selectedChatId]
+  );
+
+  const extractedBuySellThreadIdPreview = useMemo(
+    () => extractThreadIdFromInput(buySellTopicLinkInput),
+    [buySellTopicLinkInput]
+  );
+
+  const handleSaveBuySellTopic = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedChatId) return;
+
+    setIsSavingBuySellTopic(true);
+    setBuySellTopicFeedback(null);
+    try {
+      const res = await authenticatedFetch('/api/buy-sell-topics/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chatId: selectedChatId,
+          topicLinkOrId: buySellTopicLinkInput.trim(),
+          topicTitle: buySellTopicTitleInput.trim() || 'Купи / Продай',
+          enabled: buySellTopicEnabledInput
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setBuySellTopicFeedback({
+          type: 'success',
+          text: `Топик «${data.config.topicTitle}» успешно привязан!`
+        });
+        await loadShopData(true);
+      } else {
+        setBuySellTopicFeedback({
+          type: 'error',
+          text: data.error || 'Ошибка при сохранении привязки'
+        });
+      }
+    } catch (err: any) {
+      setBuySellTopicFeedback({
+        type: 'error',
+        text: err.message || 'Ошибка сети'
+      });
+    } finally {
+      setIsSavingBuySellTopic(false);
+    }
+  };
+
+  const handleDeleteBuySellTopic = async (chatIdToDelete: string) => {
+    if (!window.confirm('Отвязать топик «Купи / Продай» для этого чата?')) return;
+    try {
+      const res = await authenticatedFetch(`/api/buy-sell-topics/config/${chatIdToDelete}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        await loadShopData(true);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSaveGlobalBuySell = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingGlobalBuySell(true);
+    setGlobalBuySellFeedback(null);
+    try {
+      const res = await authenticatedFetch('/api/buy-sell-topics/global-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled: globalBuySellEnabled,
+          minConfidence: globalBuySellMinConfidence,
+          markerWords: globalMarkerWords
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setGlobalBuySellFeedback({
+          type: 'success',
+          text: 'Общие настройки и маркерные слова успешно сохранены!'
+        });
+        await loadShopData(true);
+      } else {
+        setGlobalBuySellFeedback({
+          type: 'error',
+          text: data.error || 'Ошибка сохранения'
+        });
+      }
+    } catch (err: any) {
+      setGlobalBuySellFeedback({
+        type: 'error',
+        text: err.message || 'Ошибка сети'
+      });
+    } finally {
+      setIsSavingGlobalBuySell(false);
+    }
+  };
+
+  const handleAddMarkerWord = () => {
+    const raw = newMarkerWordInput.trim().toLowerCase();
+    if (!raw) return;
+    const wordsToAdd = raw.split(/[,;\n]+/).map(w => w.trim()).filter(Boolean);
+    const updated = Array.from(new Set([...globalMarkerWords, ...wordsToAdd]));
+    setGlobalMarkerWords(updated);
+    setNewMarkerWordInput('');
+  };
+
+  const handleRemoveMarkerWord = (wordToRemove: string) => {
+    setGlobalMarkerWords(prev => prev.filter(w => w !== wordToRemove));
+  };
+
+  const handleResetDefaultMarkers = () => {
+    if (window.confirm('Восстановить рекомендуемый список маркерных слов по умолчанию?')) {
+      setGlobalMarkerWords([...DEFAULT_COMMERCIAL_MARKERS]);
+    }
+  };
+
+  const handleAlertAction = async (alertId: string, action: 'delete' | 'warn' | 'ban' | 'dismiss') => {
+    setResolvingAlertId(alertId);
+    try {
+      const res = await authenticatedFetch(`/api/buy-sell-topics/alerts/${alertId}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+      if (res.ok) {
+        await loadShopData(true);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setResolvingAlertId(null);
+    }
+  };
 
   const selectedChat = useMemo(
     () => chats.find(c => String(c.id) === String(selectedChatId)),
@@ -589,9 +797,43 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
             </div>
           </div>
         )}
+
+        {/* Sub-tab navigation */}
+        <div className="flex flex-wrap items-center gap-2 mt-5 pt-4 border-t border-slate-800">
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('SHOPS')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeSubTab === 'SHOPS'
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
+                : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <Store className="w-4 h-4" />
+            <span>🏪 Объявления магазинов ({totalConfiguredTopics})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveSubTab('BUY_SELL')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeSubTab === 'BUY_SELL'
+                ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 shadow-sm'
+                : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white hover:bg-slate-800/60'
+            }`}
+          >
+            <ShoppingBag className="w-4 h-4" />
+            <span>🏷️ Топики «Купи / Продай» (ИИ-контроль) ({buySellTopics.length})</span>
+            {buySellAlerts.filter(a => a.status === 'PENDING').length > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white animate-pulse">
+                {buySellAlerts.filter(a => a.status === 'PENDING').length}
+              </span>
+            )}
+          </button>
+        </div>
       </div>
 
-      {/* Global Warning Settings (One unified setting for all chats) */}
+      {activeSubTab === 'SHOPS' && (
+        <div className="space-y-6">
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
           <div className="flex items-center gap-3">
@@ -1456,6 +1698,603 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           </div>
         </div>
       </div>
+    </div>
+  )}
+
+      {/* Buy / Sell Topics (Купи / Продай) AI Moderation Section */}
+      {activeSubTab === 'BUY_SELL' && (
+        <div className="space-y-6">
+          {/* Global AI & Marker Words Settings Card */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>ИИ-анализ постов «Купи / Продай» и маркерные слова</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      Gemini Flash
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Автоматическая классификация объявлений обычных пользователей: выявление коммерции, скрытых магазинов и оптовиков
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleResetDefaultMarkers}
+                  className="px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 hover:bg-slate-800 text-slate-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all"
+                  title="Восстановить рекомендуемый список маркеров по умолчанию"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Сбросить маркеры</span>
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={handleSaveGlobalBuySell} className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Enable AI Check Toggle */}
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                        <Sliders className="w-4 h-4 text-indigo-400" />
+                        <span>Автоматический анализ объявлений</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        При публикации в привязанном топике нейросеть оценивает характер сообщения
+                      </p>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={globalBuySellEnabled}
+                        onChange={e => setGlobalBuySellEnabled(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Confidence Slider */}
+                <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <ShieldAlert className="w-4 h-4 text-amber-400" />
+                      <span>Порог уверенности ИИ для уведомления</span>
+                    </div>
+                    <span className="px-2 py-0.5 rounded-lg bg-indigo-500/20 text-indigo-300 font-mono text-xs font-bold border border-indigo-500/30">
+                      {globalBuySellMinConfidence}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={30}
+                    max={95}
+                    step={5}
+                    value={globalBuySellMinConfidence}
+                    onChange={e => setGlobalBuySellMinConfidence(Number(e.target.value))}
+                    className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                  />
+                  <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+                    <span>Чувствительный (30%)</span>
+                    <span>Рекомендуемый (70%)</span>
+                    <span>Строгий (95%)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Marker Words Editor */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Tag className="w-4 h-4 text-emerald-400" />
+                      <span>Список маркерных слов и фраз ({globalMarkerWords.length})</span>
+                    </label>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Слова-триггеры, которые придают больший вес мнению ИИ о том, что объявление носит коммерческий характер
+                    </p>
+                  </div>
+                </div>
+
+                {/* Add new marker word form */}
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={newMarkerWordInput}
+                    onChange={e => setNewMarkerWordInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddMarkerWord();
+                      }
+                    }}
+                    placeholder="Введите маркерное слово (например: оптом, гарантия, под заказ)..."
+                    className="flex-1 bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddMarkerWord}
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Добавить</span>
+                  </button>
+                </div>
+
+                {/* Chips of marker words */}
+                <div className="flex flex-wrap gap-1.5 max-h-48 overflow-y-auto p-2 rounded-xl bg-slate-900/60 border border-slate-800/80">
+                  {globalMarkerWords.map((word, idx) => (
+                    <span
+                      key={`${word}-${idx}`}
+                      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-indigo-950/60 border border-indigo-700/50 text-indigo-200 text-xs font-mono"
+                    >
+                      <span>{word}</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveMarkerWord(word)}
+                        className="text-indigo-400 hover:text-white cursor-pointer transition-colors"
+                        title="Удалить маркер"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                  {globalMarkerWords.length === 0 && (
+                    <span className="text-xs text-slate-500 italic p-1">
+                      Маркерные слова не заданы. Нажмите «Сбросить маркеры» для загрузки рекомендуемого списка.
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {globalBuySellFeedback && (
+                <div
+                  className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                    globalBuySellFeedback.type === 'success'
+                      ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                      : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                  }`}
+                >
+                  {globalBuySellFeedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{globalBuySellFeedback.text}</span>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2">
+                <button
+                  type="submit"
+                  disabled={isSavingGlobalBuySell}
+                  className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-500 hover:from-indigo-500 hover:to-indigo-400 text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-indigo-950/30 transition-all disabled:opacity-50"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{isSavingGlobalBuySell ? 'Сохранение...' : 'Сохранить настройки анализа'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* Topic Binding & Active Chats Grid */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Left: Chat Selector */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                <h3 className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                  <Hash className="w-4 h-4 text-indigo-400" />
+                  <span>Чаты для привязки ({chats.length})</span>
+                </h3>
+              </div>
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-slate-500" />
+                <input
+                  type="text"
+                  placeholder="Поиск по чатам..."
+                  value={chatSearch}
+                  onChange={e => setChatSearch(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="space-y-1.5 max-h-[360px] overflow-y-auto pr-1">
+                {filteredChatsList.map(chat => {
+                  const isSelected = String(chat.id) === String(selectedChatId);
+                  const boundTopic = buySellTopics.find(t => String(t.chatId) === String(chat.id));
+                  return (
+                    <button
+                      key={chat.id}
+                      type="button"
+                      onClick={() => setSelectedChatId(String(chat.id))}
+                      className={`w-full text-left p-2.5 rounded-xl border transition-all flex items-center justify-between gap-2 cursor-pointer ${
+                        isSelected
+                          ? 'bg-indigo-600/15 border-indigo-500/50 text-white'
+                          : 'bg-slate-950/60 border-slate-800/80 text-slate-300 hover:bg-slate-800/60'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold truncate">{chat.title || `Чат ${chat.id}`}</div>
+                        <div className="text-[10px] text-slate-500 font-mono truncate">{chat.id}</div>
+                      </div>
+                      {boundTopic ? (
+                        <span className="shrink-0 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
+                          Привязан (#{boundTopic.messageThreadId || '?'})
+                        </span>
+                      ) : (
+                        <span className="shrink-0 px-1.5 py-0.5 rounded-md bg-slate-800 text-slate-500 text-[10px]">
+                          Нет
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Right: Configure Topic for Selected Chat */}
+            <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <ShoppingBag className="w-5 h-5 text-indigo-400" />
+                    <span>Привязка топика «Купи / Продай»</span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Чат: <span className="text-white font-semibold">{selectedChat?.title || selectedChatId || 'не выбран'}</span>
+                  </p>
+                </div>
+                {currentBuySellTopicConfig && (
+                  <button
+                    type="button"
+                    onClick={() => selectedChatId && handleDeleteBuySellTopic(selectedChatId)}
+                    className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-300 text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-all"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Отвязать топик</span>
+                  </button>
+                )}
+              </div>
+
+              <form onSubmit={handleSaveBuySellTopic} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 mb-1">
+                    Ссылка на тему в Telegram или числовой ID треда (message_thread_id)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      required
+                      placeholder="https://t.me/c/1234567890/42 или число 42"
+                      value={buySellTopicLinkInput}
+                      onChange={e => setBuySellTopicLinkInput(e.target.value)}
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-xs text-white font-mono placeholder-slate-600 focus:outline-none focus:border-indigo-500"
+                    />
+                    {extractedBuySellThreadIdPreview && (
+                      <div className="absolute right-3 top-2.5">
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-mono text-[11px] font-bold">
+                          ✓ Тред ID: #{extractedBuySellThreadIdPreview}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Вставьте ссылку на топик в Telegram (правый клик по теме → «Скопировать ссылку на тему») или введите ID вручную.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 mb-1">
+                      Название ветки в системе
+                    </label>
+                    <input
+                      type="text"
+                      value={buySellTopicTitleInput}
+                      onChange={e => setBuySellTopicTitleInput(e.target.value)}
+                      placeholder="Купи / Продай"
+                      className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 mb-1">
+                      Статус модерации
+                    </label>
+                    <label className="flex items-center gap-2 p-2 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={buySellTopicEnabledInput}
+                        onChange={e => setBuySellTopicEnabledInput(e.target.checked)}
+                        className="rounded bg-slate-900 border-slate-700 text-indigo-600 focus:ring-0"
+                      />
+                      <span className="text-xs text-slate-300 font-medium">Активна (проверять посты)</span>
+                    </label>
+                  </div>
+                </div>
+
+                {buySellTopicFeedback && (
+                  <div
+                    className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                      buySellTopicFeedback.type === 'success'
+                        ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                        : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                    }`}
+                  >
+                    {buySellTopicFeedback.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{buySellTopicFeedback.text}</span>
+                  </div>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="submit"
+                    disabled={isSavingBuySellTopic || !selectedChatId}
+                    className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-indigo-950/30 transition-all disabled:opacity-50"
+                  >
+                    <Check className="w-4 h-4" />
+                    <span>{isSavingBuySellTopic ? 'Сохранение...' : 'Сохранить привязку топика'}</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+
+          {/* Commercial Alerts Journal */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>Оповещения о коммерческих объявлениях</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-300 font-mono">
+                      {buySellAlerts.length}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Посты из веток «Купи / Продай», классифицированные нейросетью как коммерция. Уведомление с кнопками также дублируется в ЛС администратору.
+                  </p>
+                </div>
+              </div>
+
+              {/* Filter tabs */}
+              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setAlertFilter('ALL')}
+                  className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
+                    alertFilter === 'ALL'
+                      ? 'bg-indigo-600 text-white'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Все ({buySellAlerts.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAlertFilter('PENDING')}
+                  className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
+                    alertFilter === 'PENDING'
+                      ? 'bg-amber-600 text-white'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Ожидают ({buySellAlerts.filter(a => a.status === 'PENDING').length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAlertFilter('RESOLVED')}
+                  className={`px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer ${
+                    alertFilter === 'RESOLVED'
+                      ? 'bg-slate-700 text-white'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Обработаны ({buySellAlerts.filter(a => a.status !== 'PENDING').length})
+                </button>
+              </div>
+            </div>
+
+            {/* Alerts List */}
+            {buySellAlerts.length === 0 ? (
+              <div className="text-center py-12 px-4 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <Sparkles className="w-8 h-8 text-indigo-400/50 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-slate-300">
+                  Коммерческих объявлений пока не зафиксировано
+                </p>
+                <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+                  Как только пользователь опубликует объявление с признаками магазина или оптовой торговли в привязанном топике «Купи / Продай», бот пришлёт уведомление в личные сообщения и сохранит карточку здесь.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {buySellAlerts
+                  .filter(a => {
+                    if (alertFilter === 'PENDING') return a.status === 'PENDING';
+                    if (alertFilter === 'RESOLVED') return a.status !== 'PENDING';
+                    return true;
+                  })
+                  .slice(0, 50)
+                  .map(alert => {
+                    const isPending = alert.status === 'PENDING';
+                    const isResolving = resolvingAlertId === alert.id;
+                    const confidenceColor =
+                      alert.confidence >= 80
+                        ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                        : alert.confidence >= 60
+                        ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                        : 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40';
+
+                    return (
+                      <div
+                        key={alert.id}
+                        className={`p-4 rounded-xl border transition-all ${
+                          isPending
+                            ? 'bg-slate-950/90 border-amber-500/30'
+                            : 'bg-slate-950/50 border-slate-800/80 opacity-80'
+                        }`}
+                      >
+                        <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-3">
+                          <div className="space-y-2 flex-1 min-w-0">
+                            {/* Author & Meta */}
+                            <div className="flex flex-wrap items-center gap-2 text-xs">
+                              <span className="font-bold text-white">
+                                {alert.authorName || 'Пользователь'}
+                              </span>
+                              {alert.username && (
+                                <span className="text-indigo-400 font-mono">
+                                  @{alert.username}
+                                </span>
+                              )}
+                              <span className="text-slate-500 font-mono text-[11px]">
+                                (ID: {alert.userId})
+                              </span>
+                              <span className="text-slate-600">•</span>
+                              <span className="text-slate-400 font-medium">
+                                {alert.chatTitle}
+                              </span>
+                              <span className="text-slate-600">•</span>
+                              <span className="text-slate-500 text-[11px]">
+                                {new Date(alert.timestamp).toLocaleString('ru-RU')}
+                              </span>
+                              <span className={`px-2 py-0.5 rounded-full font-mono font-bold text-[10px] border ${confidenceColor}`}>
+                                {alert.confidence}% коммерция
+                              </span>
+                              {(alert.status === 'DELETED' || alert.status === 'RESOLVED_DELETED') && (
+                                <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30 text-[10px] font-bold">
+                                  Удалено
+                                </span>
+                              )}
+                              {(alert.status === 'WARNED' || alert.status === 'RESOLVED_WARNED') && (
+                                <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30 text-[10px] font-bold">
+                                  Варн выдан
+                                </span>
+                              )}
+                              {(alert.status === 'BANNED' || alert.status === 'RESOLVED_BANNED') && (
+                                <span className="px-2 py-0.5 rounded-full bg-red-600/20 text-red-300 border border-red-500/40 text-[10px] font-bold">
+                                  Забанен
+                                </span>
+                              )}
+                              {alert.status === 'DISMISSED' && (
+                                <span className="px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 text-[10px] font-bold">
+                                  Отклонено (частное)
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Matched Markers */}
+                            {Array.isArray(alert.matchedMarkers) && alert.matchedMarkers.length > 0 && (
+                              <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                                <span className="text-[11px] text-slate-500 font-medium">Маркеры:</span>
+                                {alert.matchedMarkers.map((m, mIdx) => (
+                                  <span
+                                    key={mIdx}
+                                    className="px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px] font-mono"
+                                  >
+                                    «{m}»
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+
+                            {/* AI Reason */}
+                            {alert.reason && (
+                              <div className="p-2.5 rounded-lg bg-indigo-950/30 border border-indigo-900/40 text-xs text-indigo-200/90 flex items-start gap-2">
+                                <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0 mt-0.5" />
+                                <div>
+                                  <span className="font-semibold text-indigo-300">Обоснование ИИ: </span>
+                                  <span>{alert.reason}</span>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Message Preview Quote */}
+                            <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-32 overflow-y-auto">
+                              {alert.messageText || alert.textSnippet || '(Текст сообщения отсутствует)'}
+                            </div>
+                          </div>
+
+                          {/* Action Buttons */}
+                          <div className="flex flex-wrap lg:flex-col items-stretch gap-2 shrink-0 pt-2 lg:pt-0">
+                            {(alert.messageUrl || alert.messageLink) && (
+                              <a
+                                href={alert.messageUrl || alert.messageLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="px-3 py-1.5 rounded-xl bg-blue-600/15 hover:bg-blue-600/25 border border-blue-500/30 text-blue-300 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
+                              >
+                                <ExternalLink className="w-3.5 h-3.5" />
+                                <span>В Telegram</span>
+                              </a>
+                            )}
+                            {isPending && (
+                              <>
+                                <button
+                                  type="button"
+                                  disabled={isResolving}
+                                  onClick={() => handleAlertAction(alert.id, 'delete')}
+                                  className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
+                                  title="Удалить сообщение из чата"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Удалить пост</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isResolving}
+                                  onClick={() => handleAlertAction(alert.id, 'warn')}
+                                  className="px-3 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
+                                  title="Удалить сообщение и выдать предупреждение"
+                                >
+                                  <AlertTriangle className="w-3.5 h-3.5" />
+                                  <span>Варн</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isResolving}
+                                  onClick={() => handleAlertAction(alert.id, 'ban')}
+                                  className="px-3 py-1.5 rounded-xl bg-red-700 hover:bg-red-600 text-white text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
+                                  title="Забанить пользователя и удалить пост"
+                                >
+                                  <Ban className="w-3.5 h-3.5" />
+                                  <span>Бан</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={isResolving}
+                                  onClick={() => handleAlertAction(alert.id, 'dismiss')}
+                                  className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
+                                  title="Считать объявление частным"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  <span>Частное</span>
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Edit Vendor Modal */}
       {editingVendor && (
