@@ -38,7 +38,8 @@ const ALL_COLLECTIONS = [
   'global_bans', 'chat_bans', 'filters', 'logs', 'memberships',
   'tasks', 'config', 'chat_digests', 'chat_messages', 'reputations',
   'warnings', 'active_mutes', 'scam_alert_logs', 'pinned_messages',
-  'shop_topics', 'shop_vendors', 'shop_publications'
+  'shop_topics', 'shop_vendors', 'shop_publications',
+  'captcha_sessions', 'subscription_sessions'
 ];
 
 const JSON_COLUMNS = new Set([

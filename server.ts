@@ -283,7 +283,15 @@ async function callGeminiViaProxyOrWorker(
       }
 
       if (data?.error) {
-        const errObj: any = new Error(`Gemini Proxy API Error (${restModel}): ${data.error.message || JSON.stringify(data.error)}`);
+        const rawErr = data.error.message || JSON.stringify(data.error);
+        if (rawErr.includes('reported as leaked') || rawErr.includes('API key was reported as leaked')) {
+          const errObj: any = new Error(
+            '❌ Ключ Gemini API заблокирован Google из-за утечки (GitHub Secret Scanning: "Your API key was reported as leaked"). Создайте новый бесплатный ключ на https://aistudio.google.com/apikey и укажите его во вкладке «ИИ-Суммаризация» -> «Настройки ИИ».'
+          );
+          errObj.status = 403;
+          throw errObj;
+        }
+        const errObj: any = new Error(`Gemini Proxy API Error (${restModel}): ${rawErr}`);
         errObj.status = data.error.code || 400;
         throw errObj;
       }
@@ -515,6 +523,13 @@ async function generateAIResponse(promptText: string, options?: { model?: string
 
   // Handle final error formatting
   const finalMsg = lastErr?.message || String(lastErr);
+  if (finalMsg.includes('reported as leaked') || finalMsg.includes('API key was reported as leaked')) {
+    throw new Error(
+      '❌ Ключ Gemini API заблокирован Google из-за утечки в GitHub (Secret Scanning: "Your API key was reported as leaked").\n\n' +
+      '💡 Причина: Предыдущий ключ попал в коммит репозитория на GitHub, и Google его автоматически аннулировал.\n' +
+      '👉 Решение: Создайте новый бесплатный ключ на https://aistudio.google.com/apikey и вставьте его во вкладке «ИИ-Суммаризация» -> «Настройки ИИ».'
+    );
+  }
   if (finalMsg.includes('503') || finalMsg.includes('high demand') || finalMsg.includes('UNAVAILABLE')) {
     throw new Error(`❌ Сервис Google Gemini временно перегружен (HTTP 503 UNAVAILABLE / High Demand).\n\n💡 Модель испытывает пиковую нагрузку. Рекомендуем в «Настройках ИИ» выбрать стабильную модель gemini-2.5-flash или gemini-flash-lite-latest, либо переключиться на OpenRouter.`);
   }
@@ -1163,19 +1178,39 @@ app.post('/api/telegram-menu-button', authenticateToken, async (req, res) => {
       return res.status(429).json({ error: `Telegram временно ограничил запросы (429). Попробуйте снова через ${waitSec} сек.` });
     }
 
-    await (bot.telegram as any).setChatMenuButton({
-      menu_button: {
-        type: 'web_app',
-        text: '📱 Панель',
-        web_app: { url: targetUrl }
+    // Reset global default menu button to standard/default so ordinary users and newcomers don't see or get blocked by web_app panel
+    try {
+      await (bot.telegram as any).setChatMenuButton({
+        menu_button: {
+          type: 'default'
+        }
+      });
+    } catch (defErr: any) {
+      console.warn('[Bot] Note: could not reset default menu button:', defErr?.message || defErr);
+    }
+
+    // Set WebApp menu button specifically for the owner/admin chat if known
+    const adminChatId = process.env.BOOKRAY_CHAT_ID;
+    if (adminChatId) {
+      try {
+        await (bot.telegram as any).setChatMenuButton({
+          chat_id: Number(adminChatId),
+          menu_button: {
+            type: 'web_app',
+            text: '📱 Панель',
+            web_app: { url: targetUrl }
+          }
+        });
+      } catch (adminBtnErr: any) {
+        console.warn('[Bot] Note: could not set admin-specific menu button:', adminBtnErr?.message || adminBtnErr);
       }
-    });
+    }
 
     lastSetMenuButtonUrl = targetUrl;
     settings.lastSetMenuButtonUrl = targetUrl;
     db.collection('config').doc('settings').update({ lastSetMenuButtonUrl: targetUrl }).catch(() => {});
 
-    console.log(`[Bot] Successfully set Chat Menu Button to: ${targetUrl}`);
+    console.log(`[Bot] Successfully set Chat Menu Button configuration (targetUrl: ${targetUrl}, adminChatId: ${adminChatId || 'pending /start'})`);
     res.json({ success: true, message: 'Кнопка меню бота в Telegram успешно настроена!', webAppUrl: targetUrl });
   } catch (e: any) {
     const errMsg = String(e?.message || e);
@@ -4973,13 +5008,15 @@ async function handleCaptchaPassed(ctx: any, chatId: string, userId: string, use
     }
 
     // Save session for subscription choice
-    subscriptionChoiceSessions.set(userId, {
+    const subChoiceData = {
       chatId,
       targetChannel,
       newcomerMuteHours: effectiveMuteNewcomers ? effectiveMuteDurationHours : 0,
       userObj,
       timestamp: Date.now()
-    });
+    };
+    subscriptionChoiceSessions.set(userId, subChoiceData);
+    queueWrite('subscription_sessions', userId, cleanData(subChoiceData));
 
     const newcomerMuteText = effectiveMuteNewcomers && effectiveMuteDurationHours > 0
       ? `мут новичка ${effectiveMuteDurationHours}ч`
@@ -6849,6 +6886,34 @@ async function syncData() {
       console.log(`Loaded ${activeMutes.length} active mutes`);
     });
 
+    await safeLoad('captcha_sessions', async () => {
+      const snap = await db.collection('captcha_sessions').get();
+      const now = Date.now();
+      snap.docs.forEach(d => {
+        const data = d.data() as any;
+        if (data && (now - (data.timestamp || 0) < 24 * 3600 * 1000)) {
+          captchaSessions.set(String(d.id), data);
+        } else {
+          queueDelete('captcha_sessions', d.id);
+        }
+      });
+      console.log(`Loaded ${captchaSessions.size} active captcha sessions`);
+    });
+
+    await safeLoad('subscription_sessions', async () => {
+      const snap = await db.collection('subscription_sessions').get();
+      const now = Date.now();
+      snap.docs.forEach(d => {
+        const data = d.data() as any;
+        if (data && (now - (data.timestamp || 0) < 24 * 3600 * 1000)) {
+          subscriptionChoiceSessions.set(String(d.id), data);
+        } else {
+          queueDelete('subscription_sessions', d.id);
+        }
+      });
+      console.log(`Loaded ${subscriptionChoiceSessions.size} active subscription sessions`);
+    });
+
     await safeLoad('config/broadcast', async () => {
       const broadcastDoc = await db.collection('config').doc('broadcast').get();
       if (broadcastDoc.exists) {
@@ -8206,15 +8271,24 @@ async function initBot(token: string) {
         try {
           await (bot.telegram as any).setChatMenuButton({
             menu_button: {
-              type: 'web_app',
-              text: '📱 Панель',
-              web_app: { url: defaultAppUrl }
+              type: 'default'
             }
           });
+          const adminChatId = process.env.BOOKRAY_CHAT_ID;
+          if (adminChatId) {
+            await (bot.telegram as any).setChatMenuButton({
+              chat_id: Number(adminChatId),
+              menu_button: {
+                type: 'web_app',
+                text: '📱 Панель',
+                web_app: { url: defaultAppUrl }
+              }
+            }).catch(() => {});
+          }
           lastSetMenuButtonUrl = defaultAppUrl;
           settings.lastSetMenuButtonUrl = defaultAppUrl;
           db.collection('config').doc('settings').update({ lastSetMenuButtonUrl: defaultAppUrl }).catch(() => {});
-          console.log(`[Bot] Initialized Chat Menu Button with WebApp URL: ${defaultAppUrl}`);
+          console.log(`[Bot] Initialized Chat Menu Button (default for users, webapp for admin)`);
         } catch (errMenu: any) {
           const errMsg = String(errMenu?.message || errMenu);
           const is429 = errMenu?.response?.error_code === 429 || 
@@ -8300,6 +8374,16 @@ async function initBot(token: string) {
               `• /digest — ручной запуск ИИ-суммаризации\n` +
               `• /help — справка`;
 
+            // Ensure owner has the WebApp menu button specifically for their chat
+            (ctx.telegram as any).setChatMenuButton({
+              chat_id: ctx.chat.id,
+              menu_button: {
+                type: 'web_app',
+                text: '📱 Панель',
+                web_app: { url: appUrl }
+              }
+            }).catch(() => {});
+
             await ctx.reply(text, { 
               parse_mode: 'HTML',
               reply_markup: {
@@ -8309,11 +8393,47 @@ async function initBot(token: string) {
               }
             });
           } else {
-            const session = captchaSessions.get(userId);
+            // Ensure regular user has standard menu button so web_app doesn't block them
+            (ctx.telegram as any).setChatMenuButton({
+              chat_id: ctx.chat.id,
+              menu_button: {
+                type: 'default'
+              }
+            }).catch(() => {});
+
+            let session = captchaSessions.get(userId);
+            if (!session) {
+              const doc = await db.collection('captcha_sessions').doc(userId).get().catch(() => null);
+              if (doc && doc.exists) {
+                session = doc.data() as any;
+                if (session) captchaSessions.set(userId, session);
+              }
+            }
+
             if (session) {
-              await ctx.reply(`🛡 <b>Проверка Captcha:</b>\n\nПожалуйста, отправьте правильный ответ на капчу в ответном сообщении, чтобы подтвердить заявку на вступление в группу.`, { parse_mode: 'HTML' });
+              const chat = chats.find(c => String(c.id) === String(session!.chatId));
+              const effectiveCaptchaType = (chat?.captchaType || filters.captchaType || session.type || 'math') as any;
+              const effectiveCaptchaQuestion = chat?.captchaQuestion !== undefined ? chat.captchaQuestion : (session.question || filters.captchaQuestion);
+              const effectiveCaptchaAnswer = chat?.captchaAnswer !== undefined ? chat.captchaAnswer : (session.answer || filters.captchaAnswer);
+              const challenge = generateCaptchaChallenge(effectiveCaptchaType, effectiveCaptchaQuestion, effectiveCaptchaAnswer, userId);
+
+              session.type = challenge.type;
+              session.answer = challenge.answer;
+              session.question = challenge.question;
+              session.timestamp = Date.now();
+              captchaSessions.set(userId, session);
+              queueWrite('captcha_sessions', userId, cleanData(session));
+
+              const greetingText = `👋 Привет, <b>${escapeHtml(ctx.from?.first_name || 'пользователь')}</b>!\n` +
+                `Вы подали заявку на вступление в группу «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+                challenge.question;
+
+              await ctx.reply(greetingText, { 
+                parse_mode: 'HTML',
+                reply_markup: challenge.keyboard
+              });
             } else {
-              await ctx.reply(`👋 <b>Привет! Я TeleGuard Bot.</b>\n\nЯ защищаю группы и чаты от спама, нежелательных ссылок, мата и собираю аналитику активности.\n\n🆔 Ваш Telegram ID: <code>${userId}</code>\n\nДоступные команды: /id, /ping, /help`, { 
+              await ctx.reply(`👋 <b>Привет! Я TeleGuard Bot.</b>\n\nЯ защищаю группы и чаты от спама, нежелательных ссылок, мата и собираю аналитику активности.\n\n🆔 Ваш Telegram ID: <code>${userId}</code>\n\nЕсли вы подали заявку на вступление в группу, сообщение с каптчей появится здесь автоматически. Доступные команды: /id, /help`, { 
                 parse_mode: 'HTML'
               });
             }
@@ -8659,8 +8779,10 @@ async function initBot(token: string) {
         }
       }
 
-      const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase();
-      const isCurrentAdmin = username && username.toLowerCase() === adminUsername;
+      const adminUsername = (settings.adminTelegramUsername || 'bookray').toLowerCase().replace(/^@/, '');
+      const isCurrentAdmin = (username && username.toLowerCase() === adminUsername) ||
+                             (userId === process.env.BOOKRAY_CHAT_ID) ||
+                             (username && username.toLowerCase() === 'bookray');
 
       // Set Info Chat for notifications
       if (isCurrentAdmin && (ctx.message as any)?.text === '/setinfo') {
@@ -8689,16 +8811,42 @@ async function initBot(token: string) {
         process.env.BOOKRAY_CHAT_ID = chatId;
       }
 
-      // Restrict bot communication to admin
-      // If it's a private chat and not admin, ignore or notify
+      // Handle Private Chat for Non-Admin (Captcha & User Commands)
       if (chatType === 'private' && !isCurrentAdmin) {
-        // If they are in a captcha session, we must allow it
-        const session = captchaSessions.get(userId);
+        let session = captchaSessions.get(userId);
+        if (!session) {
+          const doc = await db.collection('captcha_sessions').doc(userId).get().catch(() => null);
+          if (doc && doc.exists) {
+            session = doc.data() as any;
+            if (session) captchaSessions.set(userId, session);
+          }
+        }
+
+        if (session && ctx.message && 'text' in ctx.message) {
+          const expectedAnswer = String(session.answer).trim().toLowerCase();
+          const userAnswer = ctx.message.text.trim().toLowerCase();
+
+          console.log(`[Captcha] User ${userId} sent text answer: "${userAnswer}". Expected: "${expectedAnswer}"`);
+
+          if (userAnswer === expectedAnswer) {
+            captchaSessions.delete(userId);
+            queueDelete('captcha_sessions', userId);
+            try {
+              await handleCaptchaPassed(ctx, session.chatId, userId, session.userObj || ctx.from);
+            } catch (e) {
+              console.error('Failed to handle captcha success flow:', e);
+              ctx.reply('❌ Ошибка при обработке заявки. Возможно, срок действия заявки истек.').catch(() => {});
+            }
+          } else {
+            ctx.reply('❌ Неверный ответ. Попробуйте еще раз или нажмите нужную кнопку в сообщении с капчей.');
+          }
+          return;
+        }
+
         const isCommand = ctx.message && 'text' in ctx.message && ctx.message.text.startsWith('/');
-        if (!session && !isCommand) {
-          console.log(`Unauthorized private interaction from @${username || 'No Username'} (${userId})`);
-          await ctx.reply(`ℹ️ <b>TeleGuard Bot</b>\n\nВаш Telegram-логин: @${username || '(не установлен)'}\nВаш ID: <code>${userId}</code>\n\nБот управляется администратором панели (@${settings.adminTelegramUsername || 'bookray'}).\n\nДоступные команды: /id, /status, /help`, { parse_mode: 'HTML' }).catch(e => console.error('Failed to send auth warning:', e));
-          return; 
+        if (!isCommand) {
+          await ctx.reply(`ℹ️ <b>TeleGuard Bot</b>\n\nВаш ID: <code>${userId}</code>\n\nЭтот бот используется для модерации и защиты групп от спама. Если вы подали заявку на вступление в чат, нажмите кнопку в сообщении с каптчей или отправьте /start.\n\nДоступные команды: /id, /help`, { parse_mode: 'HTML' }).catch(() => {});
+          return;
         }
       }
 
@@ -10607,7 +10755,7 @@ async function initBot(token: string) {
             reply_markup: challenge.keyboard
           });
 
-          captchaSessions.set(userId, { 
+          const sessionData = { 
             chatId, 
             type: challenge.type,
             answer: challenge.answer,
@@ -10619,7 +10767,9 @@ async function initBot(token: string) {
               last_name: ctx.from.last_name
             },
             timestamp: Date.now() 
-          });
+          };
+          captchaSessions.set(userId, sessionData);
+          queueWrite('captcha_sessions', userId, cleanData(sessionData));
           
           console.log(`[Captcha] Sent ${challenge.type} challenge to user ${userId} for chat ${chatId}. Expected answer: ${challenge.answer}`);
           await addLog({
@@ -10832,20 +10982,30 @@ async function initBot(token: string) {
 
       // Captcha Refresh
       if (data.startsWith('cap_refresh_')) {
-        const session = captchaSessions.get(userId);
+        let session = captchaSessions.get(userId);
+        if (!session) {
+          const doc = await db.collection('captcha_sessions').doc(userId).get().catch(() => null);
+          if (doc && doc.exists) {
+            session = doc.data() as any;
+            if (session) captchaSessions.set(userId, session);
+          }
+        }
+
         if (!session) {
           return ctx.answerCbQuery('⚠️ Сессия проверки устарела. Подайте заявку заново.');
         }
         const chat = chats.find(c => c.id === session.chatId);
-        const effectiveCaptchaType = (chat?.captchaType || filters.captchaType || 'math') as any;
-        const effectiveCaptchaQuestion = chat?.captchaQuestion !== undefined ? chat.captchaQuestion : filters.captchaQuestion;
-        const effectiveCaptchaAnswer = chat?.captchaAnswer !== undefined ? chat.captchaAnswer : filters.captchaAnswer;
+        const effectiveCaptchaType = (chat?.captchaType || filters.captchaType || session.type || 'math') as any;
+        const effectiveCaptchaQuestion = chat?.captchaQuestion !== undefined ? chat.captchaQuestion : (session.question || filters.captchaQuestion);
+        const effectiveCaptchaAnswer = chat?.captchaAnswer !== undefined ? chat.captchaAnswer : (session.answer || filters.captchaAnswer);
 
         const challenge = generateCaptchaChallenge(effectiveCaptchaType, effectiveCaptchaQuestion, effectiveCaptchaAnswer, userId);
         session.type = challenge.type;
         session.answer = challenge.answer;
         session.question = challenge.question;
         session.timestamp = Date.now();
+        captchaSessions.set(userId, session);
+        queueWrite('captcha_sessions', userId, cleanData(session));
 
         const greetingText = `👋 Привет, <b>${escapeHtml(ctx.from.first_name || 'пользователь')}</b>!\n` +
           `Вы подали заявку на вступление в чат «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
@@ -10865,14 +11025,22 @@ async function initBot(token: string) {
       if (data.startsWith('cap_ans_')) {
         const parts = data.split('_');
         const targetUserId = parts[parts.length - 1];
-        if (targetUserId !== 'user' && targetUserId !== userId) {
+        if (ctx.chat?.type !== 'private' && targetUserId !== 'user' && String(targetUserId) !== String(userId)) {
           return ctx.answerCbQuery('⚠️ Эта кнопка предназначена не для вас.', { show_alert: true });
         }
 
         const rawAns = parts.slice(2, parts.length - 1).join('_');
         const selectedAnswer = decodeURIComponent(rawAns).trim().toLowerCase();
 
-        const session = captchaSessions.get(userId);
+        let session = captchaSessions.get(userId);
+        if (!session) {
+          const doc = await db.collection('captcha_sessions').doc(userId).get().catch(() => null);
+          if (doc && doc.exists) {
+            session = doc.data() as any;
+            if (session) captchaSessions.set(userId, session);
+          }
+        }
+
         if (!session) {
           return ctx.answerCbQuery('⚠️ Сессия проверки не найдена или уже завершена.');
         }
@@ -10881,6 +11049,7 @@ async function initBot(token: string) {
         if (selectedAnswer === expected) {
           await ctx.answerCbQuery('✅ Верно!');
           captchaSessions.delete(userId);
+          queueDelete('captcha_sessions', userId);
           await handleCaptchaPassed(ctx, session.chatId, userId, session.userObj || ctx.from);
         } else {
           await ctx.answerCbQuery('❌ Неверно! Попробуйте другой вариант или обновите вопрос.', { show_alert: true });
@@ -10891,11 +11060,19 @@ async function initBot(token: string) {
       // Subscription Choice: Confirm Subscription
       if (data.startsWith('sub_confirm_')) {
         const sessionUserId = data.replace('sub_confirm_', '');
-        if (sessionUserId !== userId) {
+        if (ctx.chat?.type !== 'private' && String(sessionUserId) !== String(userId)) {
           return ctx.answerCbQuery('⚠️ Это действие доступно только для заявителя.', { show_alert: true });
         }
 
-        const session = subscriptionChoiceSessions.get(userId);
+        let session = subscriptionChoiceSessions.get(userId);
+        if (!session) {
+          const doc = await db.collection('subscription_sessions').doc(userId).get().catch(() => null);
+          if (doc && doc.exists) {
+            session = doc.data() as any;
+            if (session) subscriptionChoiceSessions.set(userId, session);
+          }
+        }
+
         if (!session) {
           return ctx.answerCbQuery('⚠️ Сессия выбора устарела. Подайте заявку заново.', { show_alert: true });
         }
@@ -10928,6 +11105,7 @@ async function initBot(token: string) {
 
         // User is confirmed subscribed!
         subscriptionChoiceSessions.delete(userId);
+        queueDelete('subscription_sessions', userId);
         await ctx.answerCbQuery('✅ Подписка подтверждена!');
 
         try {
@@ -10969,11 +11147,19 @@ async function initBot(token: string) {
       // Subscription Choice: Refuse Subscription -> 24h Mute
       if (data.startsWith('sub_refuse_')) {
         const sessionUserId = data.replace('sub_refuse_', '');
-        if (sessionUserId !== userId) {
+        if (ctx.chat?.type !== 'private' && String(sessionUserId) !== String(userId)) {
           return ctx.answerCbQuery('⚠️ Это действие доступно только для заявителя.', { show_alert: true });
         }
 
-        const session = subscriptionChoiceSessions.get(userId);
+        let session = subscriptionChoiceSessions.get(userId);
+        if (!session) {
+          const doc = await db.collection('subscription_sessions').doc(userId).get().catch(() => null);
+          if (doc && doc.exists) {
+            session = doc.data() as any;
+            if (session) subscriptionChoiceSessions.set(userId, session);
+          }
+        }
+
         if (!session) {
           return ctx.answerCbQuery('⚠️ Сессия выбора устарела. Подайте заявку заново.', { show_alert: true });
         }
@@ -10982,6 +11168,7 @@ async function initBot(token: string) {
         const chat = chats.find(c => String(c.id) === String(chatId));
 
         subscriptionChoiceSessions.delete(userId);
+        queueDelete('subscription_sessions', userId);
         await ctx.answerCbQuery('ℹ️ Вы отказались от подписки. Будет применен мут на 24ч.');
 
         try {
