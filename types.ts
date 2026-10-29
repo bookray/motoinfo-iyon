@@ -8,7 +8,7 @@ export interface Chat {
   muteMessage?: string;
   autoApprove?: boolean;
   captchaEnabled?: boolean;
-  captchaType?: 'math' | 'emoji' | 'button' | 'custom' | 'random';
+  captchaType?: 'math' | 'emoji' | 'button' | 'custom' | 'random' | 'combo';
   captchaQuestion?: string;
   captchaAnswer?: string;
   blockLinks?: boolean;
@@ -31,6 +31,7 @@ export interface Chat {
   requireChannelSubscription?: boolean;
   channelSubscriptionTarget?: string;
   channelSubscriptionMessage?: string;
+  channelSubscriptionMuteHours?: number;
   tagAdminsEnabled?: boolean;
   tagAdminsMessage?: string;
 }
@@ -162,7 +163,7 @@ export interface FilterSettings {
   forbiddenWords: string[];
   autoApprove: boolean;
   captchaEnabled: boolean;
-  captchaType?: 'math' | 'emoji' | 'button' | 'custom' | 'random';
+  captchaType?: 'math' | 'emoji' | 'button' | 'custom' | 'random' | 'combo';
   captchaQuestion: string;
   captchaAnswer: string;
   muteNewcomers: boolean;
@@ -190,6 +191,7 @@ export interface FilterSettings {
   requireChannelSubscription?: boolean;
   channelSubscriptionTarget?: string;
   channelSubscriptionMessage?: string;
+  channelSubscriptionMuteHours?: number;
   tagAdminsEnabled?: boolean;
   tagAdminsMessage?: string;
 }

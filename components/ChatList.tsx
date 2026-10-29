@@ -293,9 +293,10 @@ export const ChatList: React.FC<ChatListProps> = ({
                           onChange={(e) => handleUpdateSetting(chat, 'captchaType', e.target.value)}
                         >
                           <option value="random">🎲 Случайный (Примеры + Эмодзи)</option>
-                          <option value="math">🧮 Математическая (14+19, 45-18)</option>
-                          <option value="emoji">🎯 Эмодзи-загадка (Выбор предмета)</option>
+                          <option value="combo">⚡ Комбо (Кнопка + Эмодзи)</option>
                           <option value="button">🔘 Подтверждение (Кнопка "Я человек")</option>
+                          <option value="emoji">🎯 Эмодзи-загадка (Выбор предмета)</option>
+                          <option value="math">🧮 Математическая (14+19, 45-18)</option>
                           <option value="custom">✍️ Свой вопрос и ответ</option>
                         </select>
                       </div>
@@ -351,7 +352,7 @@ export const ChatList: React.FC<ChatListProps> = ({
                   {/* Channel Subscription check */}
                   <div className="pt-2 border-t border-slate-700/50 space-y-2">
                     <ToggleSetting 
-                      label="Подписка на канал (Мут 24ч)" 
+                      label="Подписка на канал" 
                       checked={chat.requireChannelSubscription ?? filters?.requireChannelSubscription} 
                       groupDefault={filters?.requireChannelSubscription}
                       onChange={(val) => handleUpdateSetting(chat, 'requireChannelSubscription', val)} 
@@ -372,6 +373,22 @@ export const ChatList: React.FC<ChatListProps> = ({
                             onChange={(e) => handleUpdateSetting(chat, 'channelSubscriptionTarget', e.target.value)}
                             placeholder={filters?.channelSubscriptionTarget || '@MotoBlackList'}
                           />
+                        </div>
+                        <div className="flex flex-col gap-1">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[10px] text-indigo-400 uppercase font-bold">Мут при подписке (часы)</label>
+                            <span className="text-[9px] text-slate-400 font-mono">Группа: {filters?.channelSubscriptionMuteHours ?? 6}ч</span>
+                          </div>
+                          <input 
+                            type="number" 
+                            className="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-xs text-white focus:border-indigo-500 w-28" 
+                            value={chat.channelSubscriptionMuteHours !== undefined ? chat.channelSubscriptionMuteHours : ''}
+                            placeholder={String(filters?.channelSubscriptionMuteHours ?? 6)}
+                            step="0.5"
+                            min="0"
+                            onChange={(e) => handleUpdateSetting(chat, 'channelSubscriptionMuteHours', e.target.value === '' ? undefined : Math.max(0, parseFloat(e.target.value) || 0))}
+                          />
+                          <span className="text-[9px] text-slate-500">0 = без мута. Пусто = значение группы ({filters?.channelSubscriptionMuteHours ?? 6}ч).</span>
                         </div>
                         <div className="flex flex-col gap-1">
                           <label className="text-[10px] text-slate-400 uppercase font-bold">Текст оповещения (опционально)</label>

@@ -4680,7 +4680,8 @@ let scheduledDeletions: { chatId: string, messageId: number, deleteAt: string }[
 
 interface CaptchaSessionData {
   chatId: string;
-  type: 'math' | 'emoji' | 'button' | 'custom';
+  type: 'math' | 'emoji' | 'button' | 'custom' | 'combo';
+  stage?: number;
   answer: string;
   question: string;
   options?: string[];
@@ -4725,7 +4726,8 @@ const EMOJI_CAPTCHA_POOL = [
 
 interface CaptchaChallenge {
   question: string;
-  type: 'math' | 'emoji' | 'button' | 'custom';
+  type: 'math' | 'emoji' | 'button' | 'custom' | 'combo';
+  stage?: number;
   answer: string;
   keyboard?: any;
 }
@@ -4738,8 +4740,31 @@ function generateCaptchaChallenge(
 ): CaptchaChallenge {
   let type = rawType || 'math';
   if (type === 'random') {
-    const types: ('math' | 'emoji' | 'button')[] = ['math', 'emoji', 'button'];
+    const types: ('math' | 'emoji' | 'button' | 'combo')[] = ['math', 'emoji', 'button', 'combo'];
     type = types[Math.floor(Math.random() * types.length)];
+  }
+
+  if (type === 'combo') {
+    return {
+      type: 'combo',
+      stage: 1,
+      question: `🛡️ <b>Проверка на человека (Шаг 1 из 2)</b>\n\nПодтвердите, что вы реальный пользователь, нажав соответствующую кнопку ниже:`,
+      answer: 'human',
+      keyboard: {
+        inline_keyboard: [
+          [
+            { text: '🙋‍♂️ Я человек (Подтверждаю)', callback_data: `cap_ans_human_${userId || 'user'}` }
+          ],
+          [
+            { text: '🤖 Я робот / бот', callback_data: `cap_ans_bot_${userId || 'user'}` },
+            { text: '🚫 Отмена', callback_data: `cap_ans_cancel_${userId || 'user'}` }
+          ],
+          [
+            { text: '🔄 Обновить проверку', callback_data: `cap_refresh_${userId || 'user'}` }
+          ]
+        ]
+      }
+    };
   }
 
   if (type === 'custom') {
@@ -4760,6 +4785,7 @@ function generateCaptchaChallenge(
   if (type === 'button') {
     return {
       type: 'button',
+      stage: 1,
       question: `🛡️ <b>Проверка на человека</b>\n\nПодтвердите, что вы реальный пользователь, нажав соответствующую кнопку ниже:`,
       answer: 'human',
       keyboard: {
@@ -4997,6 +5023,12 @@ async function handleCaptchaPassed(ctx: any, chatId: string, userId: string, use
     ? chat.muteDurationHours
     : (filters.muteDurationHours || 1);
 
+  const effectiveSubMuteHours = (chat?.channelSubscriptionMuteHours !== undefined && chat.channelSubscriptionMuteHours !== null)
+    ? chat.channelSubscriptionMuteHours
+    : (filters.channelSubscriptionMuteHours !== undefined && filters.channelSubscriptionMuteHours !== null)
+      ? filters.channelSubscriptionMuteHours
+      : (effectiveMuteNewcomers && effectiveMuteDurationHours > 0 ? effectiveMuteDurationHours : 6);
+
   if (effectiveRequireSub && rawSubTarget) {
     let targetChannel = rawSubTarget;
     let channelLink = targetChannel;
@@ -5011,15 +5043,15 @@ async function handleCaptchaPassed(ctx: any, chatId: string, userId: string, use
     const subChoiceData = {
       chatId,
       targetChannel,
-      newcomerMuteHours: effectiveMuteNewcomers ? effectiveMuteDurationHours : 0,
+      newcomerMuteHours: effectiveSubMuteHours,
       userObj,
       timestamp: Date.now()
     };
     subscriptionChoiceSessions.set(userId, subChoiceData);
     queueWrite('subscription_sessions', userId, cleanData(subChoiceData));
 
-    const newcomerMuteText = effectiveMuteNewcomers && effectiveMuteDurationHours > 0
-      ? `мут новичка ${effectiveMuteDurationHours}ч`
+    const newcomerMuteText = effectiveSubMuteHours > 0
+      ? `мут ${effectiveSubMuteHours}ч`
       : `без мута (полный доступ)`;
 
     const subChoiceMessage = `🎉 <b>Проверка успешно пройдена!</b>\n\n` +
@@ -6651,6 +6683,7 @@ let filters: FilterSettings = {
   requireChannelSubscription: false,
   channelSubscriptionTarget: '',
   channelSubscriptionMessage: '',
+  channelSubscriptionMuteHours: 6,
   tagAdminsEnabled: false,
   tagAdminsMessage: ''
 };
@@ -8412,21 +8445,46 @@ async function initBot(token: string) {
 
             if (session) {
               const chat = chats.find(c => String(c.id) === String(session!.chatId));
-              const effectiveCaptchaType = (chat?.captchaType || filters.captchaType || session.type || 'math') as any;
-              const effectiveCaptchaQuestion = chat?.captchaQuestion !== undefined ? chat.captchaQuestion : (session.question || filters.captchaQuestion);
-              const effectiveCaptchaAnswer = chat?.captchaAnswer !== undefined ? chat.captchaAnswer : (session.answer || filters.captchaAnswer);
-              const challenge = generateCaptchaChallenge(effectiveCaptchaType, effectiveCaptchaQuestion, effectiveCaptchaAnswer, userId);
+              let challenge: CaptchaChallenge;
+              let greetingText = '';
 
-              session.type = challenge.type;
-              session.answer = challenge.answer;
-              session.question = challenge.question;
-              session.timestamp = Date.now();
+              if (session.type === 'combo') {
+                if (session.stage === 2) {
+                  challenge = generateCaptchaChallenge('emoji', undefined, undefined, userId);
+                  session.answer = challenge.answer;
+                  session.question = challenge.question;
+                  session.timestamp = Date.now();
+                  greetingText = `👋 Привет, <b>${escapeHtml(ctx.from?.first_name || 'пользователь')}</b>!\n` +
+                    `Вы подали заявку на вступление в группу «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+                    `🛡️ <b>Финальный шаг проверки (Шаг 2 из 2):</b>\n\n` +
+                    challenge.question;
+                } else {
+                  challenge = generateCaptchaChallenge('combo', undefined, undefined, userId);
+                  session.stage = 1;
+                  session.answer = challenge.answer;
+                  session.question = challenge.question;
+                  session.timestamp = Date.now();
+                  greetingText = `👋 Привет, <b>${escapeHtml(ctx.from?.first_name || 'пользователь')}</b>!\n` +
+                    `Вы подали заявку на вступление в группу «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+                    challenge.question;
+                }
+              } else {
+                const effectiveCaptchaType = (chat?.captchaType || filters.captchaType || session.type || 'math') as any;
+                const effectiveCaptchaQuestion = chat?.captchaQuestion !== undefined ? chat.captchaQuestion : (session.question || filters.captchaQuestion);
+                const effectiveCaptchaAnswer = chat?.captchaAnswer !== undefined ? chat.captchaAnswer : (session.answer || filters.captchaAnswer);
+                challenge = generateCaptchaChallenge(effectiveCaptchaType, effectiveCaptchaQuestion, effectiveCaptchaAnswer, userId);
+
+                session.type = challenge.type;
+                session.answer = challenge.answer;
+                session.question = challenge.question;
+                session.timestamp = Date.now();
+                greetingText = `👋 Привет, <b>${escapeHtml(ctx.from?.first_name || 'пользователь')}</b>!\n` +
+                  `Вы подали заявку на вступление в группу «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+                  challenge.question;
+              }
+
               captchaSessions.set(userId, session);
               queueWrite('captcha_sessions', userId, cleanData(session));
-
-              const greetingText = `👋 Привет, <b>${escapeHtml(ctx.from?.first_name || 'пользователь')}</b>!\n` +
-                `Вы подали заявку на вступление в группу «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
-                challenge.question;
 
               await ctx.reply(greetingText, { 
                 parse_mode: 'HTML',
@@ -10994,22 +11052,48 @@ async function initBot(token: string) {
         if (!session) {
           return ctx.answerCbQuery('⚠️ Сессия проверки устарела. Подайте заявку заново.');
         }
-        const chat = chats.find(c => c.id === session.chatId);
-        const effectiveCaptchaType = (chat?.captchaType || filters.captchaType || session.type || 'math') as any;
-        const effectiveCaptchaQuestion = chat?.captchaQuestion !== undefined ? chat.captchaQuestion : (session.question || filters.captchaQuestion);
-        const effectiveCaptchaAnswer = chat?.captchaAnswer !== undefined ? chat.captchaAnswer : (session.answer || filters.captchaAnswer);
+        const chat = chats.find(c => c.id === session!.chatId);
+        let challenge: CaptchaChallenge;
+        let greetingText = '';
 
-        const challenge = generateCaptchaChallenge(effectiveCaptchaType, effectiveCaptchaQuestion, effectiveCaptchaAnswer, userId);
-        session.type = challenge.type;
-        session.answer = challenge.answer;
-        session.question = challenge.question;
-        session.timestamp = Date.now();
+        if (session.type === 'combo') {
+          if (session.stage === 2) {
+            challenge = generateCaptchaChallenge('emoji', undefined, undefined, userId);
+            session.answer = challenge.answer;
+            session.question = challenge.question;
+            session.timestamp = Date.now();
+            greetingText = `👋 Привет, <b>${escapeHtml(ctx.from.first_name || 'пользователь')}</b>!\n` +
+              `Вы подали заявку на вступление в чат «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+              `🛡️ <b>Финальный шаг проверки (Шаг 2 из 2):</b>\n\n` +
+              challenge.question;
+          } else {
+            challenge = generateCaptchaChallenge('combo', undefined, undefined, userId);
+            session.stage = 1;
+            session.answer = challenge.answer;
+            session.question = challenge.question;
+            session.timestamp = Date.now();
+            greetingText = `👋 Привет, <b>${escapeHtml(ctx.from.first_name || 'пользователь')}</b>!\n` +
+              `Вы подали заявку на вступление в чат «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+              challenge.question;
+          }
+        } else {
+          const effectiveCaptchaType = (chat?.captchaType || filters.captchaType || session.type || 'math') as any;
+          const effectiveCaptchaQuestion = chat?.captchaQuestion !== undefined ? chat.captchaQuestion : (session.question || filters.captchaQuestion);
+          const effectiveCaptchaAnswer = chat?.captchaAnswer !== undefined ? chat.captchaAnswer : (session.answer || filters.captchaAnswer);
+
+          challenge = generateCaptchaChallenge(effectiveCaptchaType, effectiveCaptchaQuestion, effectiveCaptchaAnswer, userId);
+          session.type = challenge.type;
+          session.answer = challenge.answer;
+          session.question = challenge.question;
+          session.timestamp = Date.now();
+
+          greetingText = `👋 Привет, <b>${escapeHtml(ctx.from.first_name || 'пользователь')}</b>!\n` +
+            `Вы подали заявку на вступление в чат «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+            challenge.question;
+        }
+
         captchaSessions.set(userId, session);
         queueWrite('captcha_sessions', userId, cleanData(session));
-
-        const greetingText = `👋 Привет, <b>${escapeHtml(ctx.from.first_name || 'пользователь')}</b>!\n` +
-          `Вы подали заявку на вступление в чат «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
-          challenge.question;
 
         try {
           await ctx.editMessageText(greetingText, {
@@ -11045,9 +11129,46 @@ async function initBot(token: string) {
           return ctx.answerCbQuery('⚠️ Сессия проверки не найдена или уже завершена.');
         }
 
+        // COMBO CAPTCHA: Step 1 ("Я человек" button) -> Transition to Step 2 (Emoji riddle)
+        if (session.type === 'combo' && (session.stage === 1 || !session.stage)) {
+          if (selectedAnswer === 'human') {
+            const emojiChallenge = generateCaptchaChallenge('emoji', undefined, undefined, userId);
+            session.stage = 2;
+            session.answer = emojiChallenge.answer;
+            session.question = emojiChallenge.question;
+            session.timestamp = Date.now();
+            captchaSessions.set(userId, session);
+            queueWrite('captcha_sessions', userId, cleanData(session));
+
+            const chat = chats.find(c => String(c.id) === String(session!.chatId));
+            const step2Text = `👋 Отлично, <b>${escapeHtml(ctx.from?.first_name || 'пользователь')}</b>!\n` +
+              `Вы подали заявку на вступление в чат «<b>${escapeHtml(chat?.title || 'Группа')}</b>».\n\n` +
+              `🛡️ <b>Финальный шаг проверки (Шаг 2 из 2):</b>\n\n` +
+              emojiChallenge.question;
+
+            try {
+              await ctx.editMessageText(step2Text, {
+                parse_mode: 'HTML',
+                reply_markup: emojiChallenge.keyboard
+              });
+              await ctx.answerCbQuery('✅ Шаг 1 пройден! Теперь выберите нужный эмодзи:');
+            } catch (editErr) {
+              await ctx.reply(step2Text, {
+                parse_mode: 'HTML',
+                reply_markup: emojiChallenge.keyboard
+              });
+              await ctx.answerCbQuery('✅ Шаг 1 пройден!');
+            }
+            return;
+          } else {
+            return ctx.answerCbQuery('❌ Проверка не пройдена. Попробуйте снова или обновите вопрос.', { show_alert: true });
+          }
+        }
+
         const expected = String(session.answer).trim().toLowerCase();
         if (selectedAnswer === expected) {
-          await ctx.answerCbQuery('✅ Верно!');
+          const successAlert = session.type === 'combo' ? '🎉 Отлично! Все этапы проверки пройдены!' : '✅ Верно!';
+          await ctx.answerCbQuery(successAlert);
           captchaSessions.delete(userId);
           queueDelete('captcha_sessions', userId);
           await handleCaptchaPassed(ctx, session.chatId, userId, session.userObj || ctx.from);
@@ -11080,8 +11201,10 @@ async function initBot(token: string) {
         const { chatId, targetChannel, newcomerMuteHours, userObj } = session;
         const chat = chats.find(c => String(c.id) === String(chatId));
 
-        // Check actual subscription in Telegram channel
+        // Check actual subscription in Telegram channel strictly
         let isSubscribed = false;
+        let isBotAdminError = false;
+
         try {
           let checkTarget = targetChannel;
           if (checkTarget.startsWith('https://t.me/')) {
@@ -11092,15 +11215,24 @@ async function initBot(token: string) {
           }
 
           const chMember = await ctx.telegram.getChatMember(checkTarget, Number(userId));
-          isSubscribed = ['creator', 'administrator', 'member', 'restricted'].includes(chMember.status);
+          isSubscribed = Boolean(chMember && ['creator', 'administrator', 'member', 'restricted'].includes(chMember.status));
+          console.log(`[SubCheck] User ${userId} status in channel ${checkTarget}: ${chMember?.status} (isSubscribed: ${isSubscribed})`);
         } catch (chErr: any) {
-          console.warn(`[SubCheck] Could not verify membership in channel ${targetChannel} for user ${userId}:`, chErr?.message || chErr);
-          // If channel check fails due to bot not being admin, let user through
-          isSubscribed = true;
+          const errMsg = String(chErr?.message || chErr);
+          console.warn(`[SubCheck] Verification in channel ${targetChannel} for user ${userId}:`, errMsg);
+          
+          if (errMsg.includes('CHAT_ADMIN_REQUIRED') || errMsg.includes('chat not found') || errMsg.includes('bot is not a member')) {
+            console.error(`[SubCheck Alert] Bot lacks admin permissions in channel ${targetChannel}`);
+            isBotAdminError = true;
+          }
+          isSubscribed = false;
         }
 
         if (!isSubscribed) {
-          return ctx.answerCbQuery(`⚠️ Вы еще не подписались на канал ${targetChannel}! Подпишитесь и нажмите кнопку снова.`, { show_alert: true });
+          if (isBotAdminError) {
+            return ctx.answerCbQuery(`⚠️ Бот ещё не добавлен администратором в канал ${targetChannel}. Обратитесь к администратору чата.`, { show_alert: true });
+          }
+          return ctx.answerCbQuery(`⚠️ Вы ещё не подписались на канал ${targetChannel}!\n\nСначала нажмите «Перейти в канал» и подпишитесь, затем снова нажмите «Я подписался».`, { show_alert: true });
         }
 
         // User is confirmed subscribed!

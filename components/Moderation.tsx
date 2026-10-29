@@ -415,7 +415,7 @@ export const Moderation: React.FC<ModerationProps> = ({
                     Бот отправляет кнопки «Подписаться» и «Я подписался» (а также «Отказаться» с мутом на 24ч).
                   </span>
                   <button
-                    onClick={() => handleBulkApply(['requireChannelSubscription', 'channelSubscriptionTarget', 'channelSubscriptionMessage'])}
+                    onClick={() => handleBulkApply(['requireChannelSubscription', 'channelSubscriptionTarget', 'channelSubscriptionMessage', 'channelSubscriptionMuteHours'])}
                     disabled={isApplyingBulk}
                     className="px-3 py-1.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/30 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer whitespace-nowrap"
                   >
@@ -437,6 +437,23 @@ export const Moderation: React.FC<ModerationProps> = ({
                   />
                   <span className="text-[11px] text-slate-500 mt-1 block">
                     Убедитесь, что бот добавлен в этот канал как администратор (для проверки подписок).
+                  </span>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2 ml-1">
+                    Длительность мута при подписке на канал (часы)
+                  </label>
+                  <input 
+                    type="number" 
+                    value={filters.channelSubscriptionMuteHours ?? 6}
+                    onChange={(e) => onUpdateFilters({...filters, channelSubscriptionMuteHours: Math.max(0, parseFloat(e.target.value) || 0)})}
+                    step="0.5"
+                    min="0"
+                    className="w-full md:w-48 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-mono"
+                  />
+                  <span className="text-[11px] text-slate-500 mt-1 block">
+                    Время мута после подтверждения подписки (по умолчанию 6 часов). Укажите 0 для снятия всех ограничений сразу.
                   </span>
                 </div>
 
@@ -599,9 +616,10 @@ export const Moderation: React.FC<ModerationProps> = ({
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                     {[
                       { id: 'random', title: '🎲 Случайный тип', desc: 'Автоматически чередует примеры и эмодзи' },
-                      { id: 'math', title: '🧮 Математическая', desc: 'Примеры (14+19, 45-18) с кнопками вариантов' },
-                      { id: 'emoji', title: '🎯 Эмодзи-загадка', desc: 'Выбор нужного предмета среди кнопок' },
+                      { id: 'combo', title: '⚡ Комбо (Кнопка + Эмодзи)', desc: 'Сначала «Я человек», затем выбор эмодзи' },
                       { id: 'button', title: '🔘 Подтверждение', desc: 'Кнопка "Я человек" с антибот-ловушками' },
+                      { id: 'emoji', title: '🎯 Эмодзи-загадка', desc: 'Выбор нужного предмета среди кнопок' },
+                      { id: 'math', title: '🧮 Математическая', desc: 'Примеры (14+19, 45-18) с кнопками вариантов' },
                       { id: 'custom', title: '✍️ Свой вопрос', desc: 'Ваш собственный вопрос и правильный ответ' },
                     ].map(t => {
                       const isSelected = (filters.captchaType || 'random') === t.id;
