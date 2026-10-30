@@ -1512,6 +1512,66 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             </div>
           </div>
 
+          <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                  <Bell className="w-4 h-4 text-amber-400" />
+                  <span>Канал для важных алертов (Реклама и Мультипользователи)</span>
+                </span>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Единый канал/чат для доставки алертов о коммерции и подозрительной активности пользователей с теганьем вас
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+              <div>
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
+                  Канал для алертов (ID или @username)
+                </label>
+                <input
+                  type="text"
+                  value={localSettings.alertsChannelId || ''}
+                  onChange={(e) => setLocalSettings({ ...localSettings, alertsChannelId: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-xs"
+                  placeholder="@my_channel или -100123456789"
+                />
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Если указан, бот шлет алерты сюда. Если бот не админ в канале, алерт продублируется в ЛС.
+                </p>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
+                    Тег администратора для звука
+                  </label>
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={localSettings.tagAdminOnAlerts ?? true}
+                      onChange={(e) => setLocalSettings({ ...localSettings, tagAdminOnAlerts: e.target.checked })}
+                      className="w-3.5 h-3.5 rounded text-amber-500 bg-slate-900 border-slate-700"
+                    />
+                    <span className="text-[11px] text-slate-300">Тегать</span>
+                  </label>
+                </div>
+                <input
+                  type="text"
+                  value={localSettings.alertsAdminTag ?? '@bookray'}
+                  disabled={localSettings.tagAdminOnAlerts === false}
+                  onChange={(e) => setLocalSettings({ ...localSettings, alertsAdminTag: e.target.value })}
+                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-xs disabled:opacity-40"
+                  placeholder="@bookray"
+                />
+                <p className="mt-1 text-[10px] text-slate-500">
+                  Кликабельная ссылка с вашим Telegram ID и @юзернеймом для пуш-уведомления со звуком.
+                </p>
+              </div>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors cursor-pointer ${
               localSettings.muteReputationChangeMessages

@@ -179,6 +179,9 @@ export interface FilterSettings {
   userVoteDuration: number;
   notifyMultiChat: boolean;
   multiChatThreshold: number;
+  multiChatNotifyChannelId?: string;
+  multiChatTagAdmin?: boolean;
+  multiChatAdminTag?: string;
   warnLimit: number;
   warnAction?: 'BAN' | 'MUTE';
   reputationEnabled?: boolean;
@@ -351,6 +354,9 @@ export interface BotSettings {
   lastSetMenuButtonUrl?: string;
   menuButtonRetryAfterUntil?: number;
   excludeCompanionFromSummary?: boolean; // Global default: exclude second bot messages from AI chat summaries
+  alertsChannelId?: string; // Channel or chat ID/username for critical alerts
+  alertsAdminTag?: string; // Admin tag/username for mentions (e.g. '@bookray')
+  tagAdminOnAlerts?: boolean; // Whether to tag/mention admin in alert channel
   // Second Bot (AI Companion / Chat Assistant)
   companionBot?: CompanionBotSettings;
 }
@@ -672,6 +678,9 @@ export interface BuySellGlobalConfig {
   minConfidence: number;
   markerWords: string[];
   trackedSellers?: TrackedBuySellSeller[];
+  notifyChannelId?: string; // Channel or chat ID/username for alerts (e.g. '@channel_username' or '-100...')
+  tagAdmin?: boolean; // Whether to tag/mention admin in alert (default: true)
+  adminTagHandle?: string; // Admin tag/username for mentions (default: '@bookray')
 }
 
 export interface BuySellCommercialAlert {

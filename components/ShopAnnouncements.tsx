@@ -31,7 +31,9 @@ import {
   Sliders,
   ShieldAlert,
   AlertTriangle,
-  Ban
+  Ban,
+  Bell,
+  AtSign
 } from 'lucide-react';
 import {
   Chat,
@@ -150,6 +152,9 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [globalBuySellEnabled, setGlobalBuySellEnabled] = useState<boolean>(true);
   const [globalBuySellMinConfidence, setGlobalBuySellMinConfidence] = useState<number>(70);
   const [globalMarkerWords, setGlobalMarkerWords] = useState<string[]>([...DEFAULT_COMMERCIAL_MARKERS]);
+  const [globalNotifyChannelId, setGlobalNotifyChannelId] = useState<string>('');
+  const [globalTagAdmin, setGlobalTagAdmin] = useState<boolean>(true);
+  const [globalAdminTagHandle, setGlobalAdminTagHandle] = useState<string>('@bookray');
   const [newMarkerWordInput, setNewMarkerWordInput] = useState<string>('');
   const [isSavingGlobalBuySell, setIsSavingGlobalBuySell] = useState<boolean>(false);
   const [globalBuySellFeedback, setGlobalBuySellFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -202,6 +207,15 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           setGlobalBuySellMinConfidence(data.buySellGlobalConfig.minConfidence ?? 70);
           if (Array.isArray(data.buySellGlobalConfig.markerWords)) {
             setGlobalMarkerWords(data.buySellGlobalConfig.markerWords);
+          }
+          if (data.buySellGlobalConfig.notifyChannelId !== undefined) {
+            setGlobalNotifyChannelId(data.buySellGlobalConfig.notifyChannelId || '');
+          }
+          if (data.buySellGlobalConfig.tagAdmin !== undefined) {
+            setGlobalTagAdmin(Boolean(data.buySellGlobalConfig.tagAdmin));
+          }
+          if (data.buySellGlobalConfig.adminTagHandle !== undefined) {
+            setGlobalAdminTagHandle(data.buySellGlobalConfig.adminTagHandle || '@bookray');
           }
         }
         if (Array.isArray(data.buySellAlerts)) {
@@ -339,7 +353,10 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
         body: JSON.stringify({
           enabled: globalBuySellEnabled,
           minConfidence: globalBuySellMinConfidence,
-          markerWords: globalMarkerWords
+          markerWords: globalMarkerWords,
+          notifyChannelId: globalNotifyChannelId,
+          tagAdmin: globalTagAdmin,
+          adminTagHandle: globalAdminTagHandle
         })
       });
       const data = await res.json();
@@ -1933,6 +1950,68 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                       Маркерные слова не заданы. Нажмите «Сбросить маркеры» для загрузки рекомендуемого списка.
                     </span>
                   )}
+                </div>
+              </div>
+
+              {/* Notification Channel & Admin Tagging */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <label className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Bell className="w-4 h-4 text-amber-400" />
+                      <span>Канал для оповещений и теганье администратора</span>
+                    </label>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Оповещения о коммерческих постах и продавцах будут публиковаться в указанный канал с упоминанием вас для мгновенного звукового пуша
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-300 mb-1 flex items-center gap-1">
+                      <span>Канал / чат оповещений (ID или @username):</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={globalNotifyChannelId}
+                      onChange={e => setGlobalNotifyChannelId(e.target.value)}
+                      placeholder="например @my_alerts_channel или -100123456789"
+                      className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono"
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Оставьте пустым, чтобы получать уведомления только в ЛС боту. Если бот еще не админ в канале, алерт автоматически продублируется в ЛС.
+                    </p>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-[11px] font-semibold text-slate-300 flex items-center gap-1">
+                        <AtSign className="w-3.5 h-3.5 text-indigo-400" />
+                        <span>Тег пользователя для пуш-уведомления:</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={globalTagAdmin}
+                          onChange={e => setGlobalTagAdmin(e.target.checked)}
+                          className="w-3.5 h-3.5 rounded text-indigo-600 bg-slate-900 border-slate-700 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                        />
+                        <span className="text-[11px] text-slate-300 select-none">Тегать в канале</span>
+                      </label>
+                    </div>
+                    <input
+                      type="text"
+                      value={globalAdminTagHandle}
+                      onChange={e => setGlobalAdminTagHandle(e.target.value)}
+                      disabled={!globalTagAdmin}
+                      placeholder="@bookray"
+                      className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono disabled:opacity-40"
+                    />
+                    <p className="text-[10px] text-slate-500 mt-1">
+                      Бот формирует кликабельное упоминание по вашему Telegram ID и @нику, гарантирующее пуш-звук.
+                    </p>
+                  </div>
                 </div>
               </div>
 

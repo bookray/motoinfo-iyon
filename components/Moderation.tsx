@@ -685,15 +685,68 @@ export const Moderation: React.FC<ModerationProps> = ({
               </div>
 
               {filters.notifyMultiChat && (
-                <div className="animate-in slide-in-from-top-2 duration-300">
-                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2 ml-1">Порог количества чатов</label>
-                  <input 
-                    type="number" 
-                    value={filters.multiChatThreshold}
-                    onChange={(e) => onUpdateFilters({...filters, multiChatThreshold: parseInt(e.target.value) || 0})}
-                    className="w-full md:w-32 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
-                    min="1"
-                  />
+                <div className="animate-in slide-in-from-top-2 duration-300 space-y-4 pt-2 border-t border-slate-900">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
+                        Порог чатов
+                      </label>
+                      <input 
+                        type="number" 
+                        value={filters.multiChatThreshold}
+                        onChange={(e) => onUpdateFilters({...filters, multiChatThreshold: parseInt(e.target.value) || 0})}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-mono"
+                        min="1"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-1 block">
+                        При вступлении в {filters.multiChatThreshold || 2} или более чатов
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
+                        Канал оповещений
+                      </label>
+                      <input 
+                        type="text" 
+                        value={filters.multiChatNotifyChannelId || ''}
+                        onChange={(e) => onUpdateFilters({...filters, multiChatNotifyChannelId: e.target.value})}
+                        placeholder="@my_channel или -100..."
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-mono"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-1 block">
+                        Оставьте пустым для ЛС боту
+                      </span>
+                    </div>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest ml-1">
+                          Тег для звука
+                        </label>
+                        <label className="inline-flex items-center gap-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={filters.multiChatTagAdmin ?? true}
+                            onChange={(e) => onUpdateFilters({...filters, multiChatTagAdmin: e.target.checked})}
+                            className="w-3 h-3 rounded text-orange-500 bg-slate-900 border-slate-700"
+                          />
+                          <span className="text-[10px] text-slate-400">Тегать</span>
+                        </label>
+                      </div>
+                      <input 
+                        type="text" 
+                        value={filters.multiChatAdminTag ?? '@bookray'}
+                        disabled={filters.multiChatTagAdmin === false}
+                        onChange={(e) => onUpdateFilters({...filters, multiChatAdminTag: e.target.value})}
+                        placeholder="@bookray"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-mono disabled:opacity-40"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-1 block">
+                        Тег для привлечения внимания
+                      </span>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

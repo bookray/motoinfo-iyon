@@ -3539,11 +3539,15 @@ app.delete('/api/buy-sell-topics/config/:chatId', authenticateToken, async (req,
 
 app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, res) => {
   try {
-    const { enabled, minConfidence, markerWords } = req.body;
+    const { enabled, minConfidence, markerWords, notifyChannelId, tagAdmin, adminTagHandle } = req.body;
     buySellGlobalConfig = {
+      ...buySellGlobalConfig,
       enabled: enabled !== undefined ? Boolean(enabled) : buySellGlobalConfig.enabled,
       minConfidence: typeof minConfidence === 'number' ? Math.max(10, Math.min(100, minConfidence)) : (buySellGlobalConfig.minConfidence || 70),
-      markerWords: Array.isArray(markerWords) ? markerWords.map((w: string) => String(w).trim().toLowerCase()).filter(Boolean) : buySellGlobalConfig.markerWords
+      markerWords: Array.isArray(markerWords) ? markerWords.map((w: string) => String(w).trim().toLowerCase()).filter(Boolean) : buySellGlobalConfig.markerWords,
+      notifyChannelId: notifyChannelId !== undefined ? String(notifyChannelId).trim() : (buySellGlobalConfig.notifyChannelId || ''),
+      tagAdmin: tagAdmin !== undefined ? Boolean(tagAdmin) : (buySellGlobalConfig.tagAdmin !== false),
+      adminTagHandle: adminTagHandle !== undefined ? String(adminTagHandle).trim() : (buySellGlobalConfig.adminTagHandle || '@bookray')
     };
 
     await db.collection('config').doc('buy_sell_global').set(cleanData(buySellGlobalConfig));
@@ -3554,7 +3558,7 @@ app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, re
       type: 'SETTINGS',
       user: (req as any).user?.username || 'admin',
       chat: 'Global',
-      details: `Обновлены общие настройки ИИ-проверки «Купи / Продай»: маркерных слов: ${buySellGlobalConfig.markerWords.length}, порог: ${buySellGlobalConfig.minConfidence}%`
+      details: `Обновлены настройки «Купи / Продай»: канал алертов: ${buySellGlobalConfig.notifyChannelId || 'ЛС админа'}, тег: ${buySellGlobalConfig.tagAdmin ? buySellGlobalConfig.adminTagHandle : 'выкл'}, порог: ${buySellGlobalConfig.minConfidence}%`
     });
 
     res.json({ success: true, config: buySellGlobalConfig });
@@ -5576,7 +5580,10 @@ let buySellTopics: BuySellTopicConfig[] = [];
 let buySellGlobalConfig: BuySellGlobalConfig = {
   enabled: true,
   minConfidence: 70,
-  markerWords: [...DEFAULT_COMMERCIAL_MARKERS]
+  markerWords: [...DEFAULT_COMMERCIAL_MARKERS],
+  notifyChannelId: '',
+  tagAdmin: true,
+  adminTagHandle: '@bookray'
 };
 let buySellAlerts: BuySellCommercialAlert[] = [];
 let trackedBuySellSellers: TrackedBuySellSeller[] = [];
@@ -5916,62 +5923,63 @@ async function checkCrossChatActivity(
     if (now - lastAlert >= 5 * 60 * 1000) {
       lastCrossChatAlertTime.set(userId, now);
 
-      const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
-      if (targetChatId && bot) {
-        const chatNames = uniqueChatIds.map(cId => {
-          const c = chats.find(ch => String(ch.id) === String(cId));
-          return c ? c.title : cId;
-        }).join(', ');
+      const shouldTag = filters.multiChatTagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
+      const tagLine = shouldTag ? `${formatAdminMentionHtml(filters.multiChatAdminTag || (settings as any)?.alertsAdminTag)}\n\n` : '';
 
-        const userFullName = [user.first_name, user.last_name].filter(Boolean).join(' ') || `Пользователь ${userId}`;
-        const userHandle = user.username ? `@${user.username}` : `ID: ${userId}`;
-        const snippet = msgInfo.text 
-          ? (msgInfo.text.length > 250 ? msgInfo.text.substring(0, 250) + '...' : msgInfo.text) 
-          : (msgInfo.isForward ? '[Пересланное сообщение/медиа]' : '[Медиа]');
+      const chatNames = uniqueChatIds.map(cId => {
+        const c = chats.find(ch => String(ch.id) === String(cId));
+        return c ? c.title : cId;
+      }).join(', ');
 
-        const forwardNotice = hasForwards 
-          ? `\n↪️ <b>Тип:</b> Пересылка сообщений (Forward)` + (msgInfo.forwardSource ? ` (Откуда: <code>${escapeHtml(msgInfo.forwardSource)}</code>)` : '')
-          : '';
+      const userFullName = [user.first_name, user.last_name].filter(Boolean).join(' ') || `Пользователь ${userId}`;
+      const userHandle = user.username ? `@${user.username}` : `ID: ${userId}`;
+      const snippet = msgInfo.text 
+        ? (msgInfo.text.length > 250 ? msgInfo.text.substring(0, 250) + '...' : msgInfo.text) 
+        : (msgInfo.isForward ? '[Пересланное сообщение/медиа]' : '[Медиа]');
 
-        const alertMsg = 
-          `🚨 <b>ОБНАРУЖЕН СПАМ / РАССЫЛКА В НЕСКОЛЬКИХ ЧАТАХ!</b>\n\n` +
-          `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(userFullName)}</a> (${userHandle})\n` +
-          `🆔 <b>ID:</b> <code>${userId}</code>\n` +
-          `📊 <b>Разослано в ${uniqueChatIds.length} чат(-ов):</b>\n` +
-          `📍 <i>${escapeHtml(chatNames)}</i>${forwardNotice}\n\n` +
-          `💬 <b>Последнее сообщение:</b>\n<blockquote>${escapeHtml(snippet)}</blockquote>\n\n` +
-          `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
+      const forwardNotice = hasForwards 
+        ? `\n↪️ <b>Тип:</b> Пересылка сообщений (Forward)` + (msgInfo.forwardSource ? ` (Откуда: <code>${escapeHtml(msgInfo.forwardSource)}</code>)` : '')
+        : '';
 
-        const keyboard = {
-          inline_keyboard: [
-            [
-              { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
-            ],
-            [
-              { text: '🗑 Удалить все сообщения', callback_data: `mc_clean_${userId}` },
-              { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
-            ],
-            [
-              { text: '✅ В белый список', callback_data: `mc_wl_${userId}` },
-              { text: '👤 Профиль', url: `tg://user?id=${userId}` }
-            ]
+      const alertMsg = 
+        `${tagLine}🚨 <b>ОБНАРУЖЕН СПАМ / РАССЫЛКА В НЕСКОЛЬКИХ ЧАТАХ!</b>\n\n` +
+        `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(userFullName)}</a> (${userHandle})\n` +
+        `🆔 <b>ID:</b> <code>${userId}</code>\n` +
+        `📊 <b>Разослано в ${uniqueChatIds.length} чат(-ов):</b>\n` +
+        `📍 <i>${escapeHtml(chatNames)}</i>${forwardNotice}\n\n` +
+        `💬 <b>Последнее сообщение:</b>\n<blockquote>${escapeHtml(snippet)}</blockquote>\n\n` +
+        `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
+
+      const keyboard = {
+        inline_keyboard: [
+          [
+            { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
+          ],
+          [
+            { text: '🗑 Удалить все сообщения', callback_data: `mc_clean_${userId}` },
+            { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
+          ],
+          [
+            { text: '✅ В белый список', callback_data: `mc_wl_${userId}` },
+            { text: '👤 Профиль', url: `tg://user?id=${userId}` }
           ]
-        };
+        ]
+      };
 
-        bot.telegram.sendMessage(targetChatId, alertMsg, {
-          parse_mode: 'HTML',
-          reply_markup: keyboard
-        }).catch(e => console.error('[CrossChatAlert] Failed to send telegram alert:', e));
+      const targetDest = filters.multiChatNotifyChannelId || (settings as any)?.alertsChannelId || settings?.infoChatId;
+      await sendAlertToDestination(targetDest, alertMsg, {
+        parse_mode: 'HTML',
+        reply_markup: keyboard
+      });
 
-        await addLog({
-          id: Math.random().toString(36).substr(2, 9),
-          timestamp: new Date().toISOString(),
-          type: 'WARN',
-          user: userFullName,
-          chat: `${uniqueChatIds.length} чатов`,
-          details: `🚨 Рассылка по чатам: пользователь ${userHandle} отправил сообщения в ${uniqueChatIds.length} чатов.${hasForwards ? ' [пересылка]' : ''}`
-        });
-      }
+      await addLog({
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date().toISOString(),
+        type: 'WARN',
+        user: userFullName,
+        chat: `${uniqueChatIds.length} чатов`,
+        details: `🚨 Рассылка по чатам: пользователь ${userHandle} отправил сообщения в ${uniqueChatIds.length} чатов.${hasForwards ? ' [пересылка]' : ''}`
+      });
     }
   }
 }
@@ -6345,6 +6353,48 @@ function escapeHtml(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
+}
+
+function formatAdminMentionHtml(customHandle?: string, customUserId?: string | number): string {
+  const rawHandle = (customHandle || (settings as any)?.alertsAdminTag || settings?.adminTelegramUsername || 'bookray').trim();
+  const cleanHandle = rawHandle.replace(/^@/, '').trim() || 'bookray';
+  const adminId = String(customUserId || process.env.BOOKRAY_CHAT_ID || settings?.adminChatId || '150097903').trim();
+  return `🔔 <b>Внимание:</b> <a href="tg://user?id=${adminId}">@${escapeHtml(cleanHandle)}</a>`;
+}
+
+async function sendAlertToDestination(
+  preferredTarget: string | undefined,
+  text: string,
+  extra: any
+): Promise<boolean> {
+  if (!bot) return false;
+  const targets: string[] = [];
+  if (preferredTarget && preferredTarget.trim()) {
+    targets.push(preferredTarget.trim());
+  }
+  if ((settings as any)?.alertsChannelId && (settings as any).alertsChannelId.trim()) {
+    const gl = (settings as any).alertsChannelId.trim();
+    if (!targets.includes(gl)) targets.push(gl);
+  }
+  if (settings?.infoChatId && settings.infoChatId.trim()) {
+    const inf = settings.infoChatId.trim();
+    if (!targets.includes(inf)) targets.push(inf);
+  }
+  const adminPm = String(process.env.BOOKRAY_CHAT_ID || settings?.adminChatId || '150097903').trim();
+  if (adminPm && !targets.includes(adminPm)) {
+    targets.push(adminPm);
+  }
+
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i];
+    try {
+      await bot.telegram.sendMessage(target, text, extra);
+      return true;
+    } catch (err: any) {
+      console.warn(`[AlertRouter] Failed sending alert to target ${target}:`, err?.message || err);
+    }
+  }
+  return false;
 }
 
 function formatSummaryForTelegramHtml(
@@ -7433,7 +7483,10 @@ async function syncData() {
         buySellGlobalConfig = {
           enabled: data.enabled !== false,
           minConfidence: typeof data.minConfidence === 'number' ? data.minConfidence : 70,
-          markerWords: Array.isArray(data.markerWords) && data.markerWords.length > 0 ? data.markerWords : [...DEFAULT_COMMERCIAL_MARKERS]
+          markerWords: Array.isArray(data.markerWords) && data.markerWords.length > 0 ? data.markerWords : [...DEFAULT_COMMERCIAL_MARKERS],
+          notifyChannelId: typeof data.notifyChannelId === 'string' ? data.notifyChannelId : (buySellGlobalConfig.notifyChannelId || ''),
+          tagAdmin: data.tagAdmin !== false,
+          adminTagHandle: data.adminTagHandle || '@bookray'
         };
         console.log('Loaded buy-sell global config');
       }
@@ -8286,20 +8339,24 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
 
     const userMemberships = memberships.filter(m => String(m.userId) === String(userId));
     if (!isUserAdminOrOwner && !isUserWhitelisted && filters.notifyMultiChat && userMemberships.length >= filters.multiChatThreshold) {
-      const targetChatId = settings.infoChatId || process.env.BOOKRAY_CHAT_ID;
       const alertCacheKey = `mc_member_alert_${userId}_${userMemberships.length}`;
       const now = Date.now();
       const lastAlert = lastCrossChatAlertTime.get(alertCacheKey) || 0;
 
-      if (targetChatId && bot && (now - lastAlert > 30 * 60 * 1000)) {
+      if (bot && (now - lastAlert > 30 * 60 * 1000)) {
         lastCrossChatAlertTime.set(alertCacheKey, now);
+        const shouldTag = filters.multiChatTagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
+        const tagLine = shouldTag ? `${formatAdminMentionHtml(filters.multiChatAdminTag || (settings as any)?.alertsAdminTag)}\n\n` : '';
+
         const chatTitles = userMemberships.map(m => {
           const c = chats.find(ch => String(ch.id) === String(m.chatId));
           return c ? c.title : m.chatId;
         }).join(', ');
         
         const alertMsg = 
-          `⚠️ <b>Внимание!</b> Пользователь <a href="tg://user?id=${userId}">${escapeHtml(user.first_name || userId)}</a> ` +
+          `${tagLine}⚠️ <b>Внимание! Мультипользователь!</b>\n\n` +
+          `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(user.first_name || userId)}</a> ` +
+          (user.username ? `(@${user.username}) ` : '') +
           `состоит в <b>${userMemberships.length} чатах</b>.\n\n` +
           `📍 <b>Чаты:</b> ${escapeHtml(chatTitles)}`;
         
@@ -8318,8 +8375,9 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
             ]
           ]
         };
-        bot.telegram.sendMessage(targetChatId, alertMsg, { parse_mode: 'HTML', reply_markup: keyboard })
-          .catch(e => console.error('Failed to send multi-chat alert:', e));
+
+        const targetDest = filters.multiChatNotifyChannelId || (settings as any)?.alertsChannelId || settings?.infoChatId;
+        await sendAlertToDestination(targetDest, alertMsg, { parse_mode: 'HTML', reply_markup: keyboard });
       }
     }
 
@@ -10147,38 +10205,38 @@ async function initBot(token: string) {
                   if (buySellAlerts.length > 200) buySellAlerts.pop();
                   db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
 
-                  const targetAdminChatId = process.env.BOOKRAY_CHAT_ID || settings.adminChatId || settings.infoChatId;
-                  if (targetAdminChatId && bot) {
-                    const adminAlertText =
-                      `🚨 <b>ВНИМАНИЕ! ОТСЛЕЖИВАЕМЫЙ ПРОДАВЕЦ В ТОПИКЕ «КУПИ / ПРОДАЙ»!</b>\n\n` +
-                      `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
-                      `🏷️ <b>Топик:</b> «${escapeHtml(buySellTopicConfig?.topicTitle || 'Купи / Продай')}»\n` +
-                      `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
-                      `🆔 <b>ID:</b> <code>${userId}</code>\n` +
-                      (matchedTrackedSeller.note ? `📋 <b>Заметка:</b> <i>${escapeHtml(matchedTrackedSeller.note)}</i>\n` : '') +
-                      `📊 <b>Статус:</b> 🔴 <b>Отслеживаемый продавец</b> (100% контроль)\n\n` +
-                      `💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+                  const shouldTag = buySellGlobalConfig.tagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
+                  const tagLine = shouldTag ? `${formatAdminMentionHtml(buySellGlobalConfig.adminTagHandle)}\n\n` : '';
 
-                    const keyboard = {
-                      inline_keyboard: [
-                        [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
-                        [
-                          { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
-                          { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${ctx.message.message_id}_${alertId}` }
-                        ],
-                        [
-                          { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
-                          { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
-                        ]
+                  const adminAlertText =
+                    `${tagLine}🚨 <b>ВНИМАНИЕ! ОТСЛЕЖИВАЕМЫЙ ПРОДАВЕЦ В ТОПИКЕ «КУПИ / ПРОДАЙ»!</b>\n\n` +
+                    `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
+                    `🏷️ <b>Топик:</b> «${escapeHtml(buySellTopicConfig?.topicTitle || 'Купи / Продай')}»\n` +
+                    `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
+                    `🆔 <b>ID:</b> <code>${userId}</code>\n` +
+                    (matchedTrackedSeller.note ? `📋 <b>Заметка:</b> <i>${escapeHtml(matchedTrackedSeller.note)}</i>\n` : '') +
+                    `📊 <b>Статус:</b> 🔴 <b>Отслеживаемый продавец</b> (100% контроль)\n\n` +
+                    `💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+
+                  const keyboard = {
+                    inline_keyboard: [
+                      [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
+                      [
+                        { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
+                        { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${ctx.message.message_id}_${alertId}` }
+                      ],
+                      [
+                        { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+                        { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
                       ]
-                    };
+                    ]
+                  };
 
-                    bot.telegram.sendMessage(targetAdminChatId, adminAlertText, {
-                      parse_mode: 'HTML',
-                      reply_markup: keyboard,
-                      link_preview_options: { is_disabled: true }
-                    }).catch(e => console.error('[BuySellAlert] Failed to send Telegram alert for tracked seller:', e));
-                  }
+                  await sendAlertToDestination(buySellGlobalConfig.notifyChannelId, adminAlertText, {
+                    parse_mode: 'HTML',
+                    reply_markup: keyboard,
+                    link_preview_options: { is_disabled: true }
+                  });
 
                   await addLog({
                     id: Math.random().toString(36).substr(2, 9),
@@ -10230,44 +10288,43 @@ async function initBot(token: string) {
                   if (buySellAlerts.length > 200) buySellAlerts.pop();
                   db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
 
-                  const targetAdminChatId = process.env.BOOKRAY_CHAT_ID || settings.adminChatId || settings.infoChatId;
-                  if (targetAdminChatId && bot) {
-                    const verdictColorEmoji = analysis.confidence >= 80 ? '🔴' : '🟡';
-                    const markersSnippet = analysis.matchedMarkers.length > 0
-                      ? analysis.matchedMarkers.map(m => `<code>${escapeHtml(m)}</code>`).join(', ')
-                      : '<i>косвенные признаки коммерции</i>';
+                  const shouldTag = buySellGlobalConfig.tagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
+                  const tagLine = shouldTag ? `${formatAdminMentionHtml(buySellGlobalConfig.adminTagHandle)}\n\n` : '';
+                  const verdictColorEmoji = analysis.confidence >= 80 ? '🔴' : '🟡';
+                  const markersSnippet = analysis.matchedMarkers.length > 0
+                    ? analysis.matchedMarkers.map(m => `<code>${escapeHtml(m)}</code>`).join(', ')
+                    : '<i>косвенные признаки коммерции</i>';
 
-                    const adminAlertText =
-                      `📢 <b>ПОДОЗРЕНИЕ НА КОММЕРЧЕСКОЕ ОБЪЯВЛЕНИЕ!</b>\n\n` +
-                      `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
-                      `🏷️ <b>Топик:</b> «${escapeHtml(buySellTopicConfig?.topicTitle || 'Купи / Продай')}»\n` +
-                      `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
-                      `🆔 <b>ID:</b> <code>${userId}</code>\n\n` +
-                      `📊 <b>Вероятность коммерции:</b> ${verdictColorEmoji} <b>${analysis.confidence}%</b>\n` +
-                      `🎯 <b>Маркеры:</b> ${markersSnippet}\n` +
-                      `📝 <b>Заключение ИИ:</b>\n<i>${escapeHtml(analysis.reason)}</i>\n\n` +
-                      `💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+                  const adminAlertText =
+                    `${tagLine}📢 <b>ПОДОЗРЕНИЕ НА КОММЕРЧЕСКОЕ ОБЪЯВЛЕНИЕ!</b>\n\n` +
+                    `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
+                    `🏷️ <b>Топик:</b> «${escapeHtml(buySellTopicConfig?.topicTitle || 'Купи / Продай')}»\n` +
+                    `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
+                    `🆔 <b>ID:</b> <code>${userId}</code>\n\n` +
+                    `📊 <b>Вероятность коммерции:</b> ${verdictColorEmoji} <b>${analysis.confidence}%</b>\n` +
+                    `🎯 <b>Маркеры:</b> ${markersSnippet}\n` +
+                    `📝 <b>Заключение ИИ:</b>\n<i>${escapeHtml(analysis.reason)}</i>\n\n` +
+                    `💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
 
-                    const keyboard = {
-                      inline_keyboard: [
-                        [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
-                        [
-                          { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
-                          { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${ctx.message.message_id}_${alertId}` }
-                        ],
-                        [
-                          { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
-                          { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
-                        ]
+                  const keyboard = {
+                    inline_keyboard: [
+                      [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
+                      [
+                        { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
+                        { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${ctx.message.message_id}_${alertId}` }
+                      ],
+                      [
+                        { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+                        { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
                       ]
-                    };
+                    ]
+                  };
 
-                    bot.telegram.sendMessage(targetAdminChatId, adminAlertText, {
-                      parse_mode: 'HTML',
-                      reply_markup: keyboard,
-                      link_preview_options: { is_disabled: true }
-                    }).catch(e => console.error('[BuySellAlert] Failed to send Telegram alert:', e));
-                  }
+                  await sendAlertToDestination(buySellGlobalConfig.notifyChannelId, adminAlertText, {
+                    parse_mode: 'HTML',
+                    reply_markup: keyboard,
+                    link_preview_options: { is_disabled: true }
+                  });
 
                   await addLog({
                     id: Math.random().toString(36).substr(2, 9),
@@ -11354,11 +11411,13 @@ async function initBot(token: string) {
               if (now - lastAlert >= cooldownMs) {
                 lastScamAlertCache.set(alertKey, now);
 
-                const targetAlertChat = antiScamKeywordsConfig.notifyChatId || process.env.BOOKRAY_CHAT_ID || settings.infoChatId;
-                if (targetAlertChat && bot) {
+                const targetAlertChat = antiScamKeywordsConfig.notifyChatId || (settings as any)?.alertsChannelId || settings.infoChatId;
+                if (bot) {
+                  const shouldTag = (settings as any)?.tagAdminOnAlerts !== false;
+                  const tagLine = shouldTag ? `${formatAdminMentionHtml((settings as any)?.alertsAdminTag)}\n\n` : '';
                   const snippet = text.length > 350 ? text.substring(0, 350) + '...' : text;
                   const alertMsg = 
-                    `🚨 <b>СИГНАЛ АНТИ-МОШЕННИК</b>\n\n` +
+                    `${tagLine}🚨 <b>СИГНАЛ АНТИ-МОШЕННИК</b>\n\n` +
                     `📍 <b>Чат:</b> ${escapeHtml(currentChatTitle)} (<code>${chatId}</code>)\n` +
                     `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(userFullName)}</a> (${userHandle})\n` +
                     `🔑 <b>Ключевое слово:</b> <code>${escapeHtml(matchedKeyword)}</code>\n\n` +
@@ -11378,7 +11437,7 @@ async function initBot(token: string) {
                     ]
                   };
 
-                  bot.telegram.sendMessage(targetAlertChat, alertMsg, {
+                  sendAlertToDestination(targetAlertChat, alertMsg, {
                     parse_mode: 'HTML',
                     reply_markup: keyboard
                   }).catch(e => console.error('[AntiScam] Failed to send telegram alert:', e));
