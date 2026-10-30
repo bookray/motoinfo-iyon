@@ -1,5 +1,8 @@
+# Base image argument (uses Google Container Registry mirror to avoid Docker Hub TLS handshake timeout and geo-blocks)
+ARG NODE_IMAGE=mirror.gcr.io/library/node:22-alpine
+
 # Build stage
-FROM node:22-alpine AS build
+FROM ${NODE_IMAGE} AS build
 
 WORKDIR /app
 
@@ -15,7 +18,7 @@ COPY . .
 RUN npm run build
 
 # Final runtime stage
-FROM node:22-alpine AS runtime
+FROM ${NODE_IMAGE} AS runtime
 
 WORKDIR /app
 
