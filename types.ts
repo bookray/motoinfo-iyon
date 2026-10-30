@@ -655,10 +655,23 @@ export interface BuySellTopicConfig {
   updatedAt: string;
 }
 
+export interface TrackedBuySellSeller {
+  id: string;
+  userIdentifier: string;
+  username?: string;
+  userId?: string;
+  note?: string;
+  addedAt: string;
+  active: boolean;
+  totalAlertsTriggered?: number;
+  lastAlertAt?: string;
+}
+
 export interface BuySellGlobalConfig {
   enabled: boolean;
   minConfidence: number;
   markerWords: string[];
+  trackedSellers?: TrackedBuySellSeller[];
 }
 
 export interface BuySellCommercialAlert {
@@ -679,6 +692,8 @@ export interface BuySellCommercialAlert {
   timestamp: string;
   messageLink?: string;
   messageUrl?: string;
+  isKnownSeller?: boolean;
+  sellerNote?: string;
   status: 'PENDING' | 'RESOLVED_DELETED' | 'RESOLVED_WARNED' | 'RESOLVED_BANNED' | 'DISMISSED' | 'DELETED' | 'WARNED' | 'BANNED';
 }
 

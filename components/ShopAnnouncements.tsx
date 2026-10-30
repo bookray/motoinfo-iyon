@@ -41,6 +41,7 @@ import {
   BuySellTopicConfig,
   BuySellGlobalConfig,
   BuySellCommercialAlert,
+  TrackedBuySellSeller,
   DEFAULT_COMMERCIAL_MARKERS
 } from '../types';
 
@@ -155,6 +156,13 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [resolvingAlertId, setResolvingAlertId] = useState<string | null>(null);
   const [alertFilter, setAlertFilter] = useState<'ALL' | 'PENDING' | 'RESOLVED'>('ALL');
 
+  // Tracked Sellers in Buy/Sell Topics
+  const [trackedSellers, setTrackedSellers] = useState<TrackedBuySellSeller[]>([]);
+  const [newSellerIdentifier, setNewSellerIdentifier] = useState<string>('');
+  const [newSellerNote, setNewSellerNote] = useState<string>('');
+  const [isAddingTrackedSeller, setIsAddingTrackedSeller] = useState<boolean>(false);
+  const [trackedSellerFeedback, setTrackedSellerFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   useEffect(() => {
     if (chats.length > 0 && !selectedChatId) {
       const firstActive = chats.find(c => c.active) || chats[0];
@@ -198,6 +206,11 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
         }
         if (Array.isArray(data.buySellAlerts)) {
           setBuySellAlerts(data.buySellAlerts);
+        }
+        if (Array.isArray(data.trackedSellers)) {
+          setTrackedSellers(data.trackedSellers);
+        } else if (Array.isArray(data.buySellGlobalConfig?.trackedSellers)) {
+          setTrackedSellers(data.buySellGlobalConfig.trackedSellers);
         }
       }
     } catch (e) {
@@ -386,6 +399,74 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
       console.error(e);
     } finally {
       setResolvingAlertId(null);
+    }
+  };
+
+  const handleAddTrackedSeller = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSellerIdentifier.trim()) return;
+    setIsAddingTrackedSeller(true);
+    setTrackedSellerFeedback(null);
+    try {
+      const res = await authenticatedFetch('/api/buy-sell-topics/tracked-sellers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userIdentifier: newSellerIdentifier.trim(),
+          note: newSellerNote.trim()
+        })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setTrackedSellers(Array.isArray(data.trackedSellers) ? data.trackedSellers : [...trackedSellers, data.seller]);
+        setNewSellerIdentifier('');
+        setNewSellerNote('');
+        setTrackedSellerFeedback({ type: 'success', text: 'Продавец успешно добавлен в список отслеживания!' });
+        setTimeout(() => setTrackedSellerFeedback(null), 3000);
+      } else {
+        setTrackedSellerFeedback({ type: 'error', text: data.error || 'Ошибка добавления продавца' });
+      }
+    } catch (err: any) {
+      setTrackedSellerFeedback({ type: 'error', text: err.message || 'Ошибка сети' });
+    } finally {
+      setIsAddingTrackedSeller(false);
+    }
+  };
+
+  const handleToggleTrackedSeller = async (seller: TrackedBuySellSeller) => {
+    try {
+      const res = await authenticatedFetch(`/api/buy-sell-topics/tracked-sellers/${seller.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !seller.active })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.trackedSellers)) setTrackedSellers(data.trackedSellers);
+        else {
+          setTrackedSellers(prev => prev.map(s => s.id === seller.id ? { ...s, active: !s.active } : s));
+        }
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleDeleteTrackedSeller = async (sellerId: string) => {
+    if (!window.confirm('Удалить этого продавца из списка отслеживания?')) return;
+    try {
+      const res = await authenticatedFetch(`/api/buy-sell-topics/tracked-sellers/${sellerId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.trackedSellers)) setTrackedSellers(data.trackedSellers);
+        else {
+          setTrackedSellers(prev => prev.filter(s => s.id !== sellerId));
+        }
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -2051,6 +2132,160 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
             </div>
           </div>
 
+          {/* Tracked Sellers Card: Известные продавцы для персонального контроля */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                  <UserCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>Отслеживаемые продавцы в топиках «Купи / Продай»</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/20 text-purple-300 font-mono border border-purple-500/30">
+                      {trackedSellers.length}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Если любой из этих пользователей опубликует объявление в теме «Купи / Продай», бот мгновенно уведомит вас в личные сообщения Telegram с прямой ссылкой на пост.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Add seller form */}
+            <form onSubmit={handleAddTrackedSeller} className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+              <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                <Plus className="w-4 h-4 text-purple-400" />
+                <span>Добавить продавца для отслеживания</span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                <div className="sm:col-span-5">
+                  <input
+                    type="text"
+                    required
+                    placeholder="@username или числовой Telegram ID"
+                    value={newSellerIdentifier}
+                    onChange={e => setNewSellerIdentifier(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2 text-xs text-white font-mono placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+                <div className="sm:col-span-5">
+                  <input
+                    type="text"
+                    placeholder="Заметка (например: Продавец экипа, перекуп запчастей, разборка)"
+                    value={newSellerNote}
+                    onChange={e => setNewSellerNote(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <button
+                    type="submit"
+                    disabled={isAddingTrackedSeller || !newSellerIdentifier.trim()}
+                    className="w-full h-full min-h-[36px] px-3 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow-lg shadow-purple-950/30 transition-all disabled:opacity-50"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>{isAddingTrackedSeller ? '...' : 'Добавить'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {trackedSellerFeedback && (
+                <div
+                  className={`p-2.5 rounded-xl border text-xs flex items-center gap-2 ${
+                    trackedSellerFeedback.type === 'success'
+                      ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
+                      : 'bg-rose-950/40 border-rose-500/30 text-rose-300'
+                  }`}
+                >
+                  {trackedSellerFeedback.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 shrink-0" />
+                  )}
+                  <span>{trackedSellerFeedback.text}</span>
+                </div>
+              )}
+            </form>
+
+            {/* List of tracked sellers */}
+            {trackedSellers.length === 0 ? (
+              <div className="text-center py-6 px-4 rounded-xl bg-slate-950/40 border border-slate-800/80 text-slate-500 text-xs">
+                Список отслеживаемых продавцов пуст. Добавьте @username или Telegram ID продавца выше.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-72 overflow-y-auto pr-1">
+                {trackedSellers.map(seller => (
+                  <div
+                    key={seller.id}
+                    className={`p-3 rounded-xl border transition-all flex items-center justify-between gap-3 ${
+                      seller.active
+                        ? 'bg-slate-950/80 border-purple-500/30'
+                        : 'bg-slate-950/40 border-slate-800 opacity-60'
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs font-bold text-white truncate">
+                          {seller.userIdentifier.startsWith('@') || /^\d+$/.test(seller.userIdentifier) ? seller.userIdentifier : `@${seller.userIdentifier}`}
+                        </span>
+                        {seller.userId && (
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            (ID: {seller.userId})
+                          </span>
+                        )}
+                        <span
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${
+                            seller.active
+                              ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}
+                        >
+                          {seller.active ? 'Активен' : 'Отключен'}
+                        </span>
+                      </div>
+                      {seller.note && (
+                        <p className="text-[11px] text-purple-300/90 truncate mt-0.5">
+                          {seller.note}
+                        </p>
+                      )}
+                      <div className="flex items-center gap-3 text-[10px] text-slate-500 mt-1">
+                        <span>Срабатываний: <b className="text-slate-300 font-mono">{seller.totalAlertsTriggered || 0}</b></span>
+                        {seller.lastAlertAt && (
+                          <span>Посл. сигнал: {new Date(seller.lastAlertAt).toLocaleDateString('ru-RU')}</span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleTrackedSeller(seller)}
+                        className={`p-1.5 rounded-lg border cursor-pointer transition-all ${
+                          seller.active
+                            ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                            : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'
+                        }`}
+                        title={seller.active ? 'Приостановить отслеживание' : 'Включить отслеживание'}
+                      >
+                        <Power className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTrackedSeller(seller.id)}
+                        className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/20 cursor-pointer transition-all"
+                        title="Удалить продавца"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Commercial Alerts Journal */}
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
@@ -2171,9 +2406,17 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                               <span className="text-slate-500 text-[11px]">
                                 {new Date(alert.timestamp).toLocaleString('ru-RU')}
                               </span>
-                              <span className={`px-2 py-0.5 rounded-full font-mono font-bold text-[10px] border ${confidenceColor}`}>
-                                {alert.confidence}% коммерция
-                              </span>
+                               {alert.isKnownSeller ? (
+                                <span className="px-2 py-0.5 rounded-full font-mono font-bold text-[10px] bg-purple-500/20 text-purple-300 border border-purple-500/40 flex items-center gap-1">
+                                  <UserCheck className="w-3 h-3" />
+                                  <span>Отслеживаемый продавец</span>
+                                  {alert.sellerNote && <span className="text-purple-200">({alert.sellerNote})</span>}
+                                </span>
+                              ) : (
+                                <span className={`px-2 py-0.5 rounded-full font-mono font-bold text-[10px] border ${confidenceColor}`}>
+                                  {alert.confidence}% коммерция
+                                </span>
+                              )}
                               {(alert.status === 'DELETED' || alert.status === 'RESOLVED_DELETED') && (
                                 <span className="px-2 py-0.5 rounded-full bg-rose-500/15 text-rose-400 border border-rose-500/30 text-[10px] font-bold">
                                   Удалено

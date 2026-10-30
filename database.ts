@@ -39,7 +39,7 @@ const ALL_COLLECTIONS = [
   'tasks', 'config', 'chat_digests', 'chat_messages', 'reputations',
   'warnings', 'active_mutes', 'scam_alert_logs', 'pinned_messages',
   'shop_topics', 'shop_vendors', 'shop_publications',
-  'buy_sell_topics', 'buy_sell_alerts',
+  'buy_sell_topics', 'buy_sell_alerts', 'buy_sell_tracked_sellers',
   'captcha_sessions', 'subscription_sessions'
 ];
 
@@ -47,7 +47,7 @@ const JSON_COLUMNS = new Set([
   'chatStats', 'hourly', 'activeUsers', 'onlineUsers',
   'assignedChatIds', 'forbiddenWords', 'buttons', 'chatIds',
   'messageIds', 'pinResults', 'history', 'chatScores', 'settings',
-  'configs', 'items', 'messages', 'keywords', 'markerWords', 'matchedMarkers'
+  'configs', 'items', 'messages', 'keywords', 'markerWords', 'matchedMarkers', 'trackedSellers'
 ]);
 
 const BOOLEAN_COLUMNS = new Set([

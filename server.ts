@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
-import { FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings, ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig, BuySellTopicConfig, BuySellGlobalConfig, BuySellCommercialAlert, DEFAULT_COMMERCIAL_MARKERS } from './types';
+import { FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings, ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig, BuySellTopicConfig, BuySellGlobalConfig, BuySellCommercialAlert, TrackedBuySellSeller, DEFAULT_COMMERCIAL_MARKERS } from './types';
 import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 import { buildExportXml, saveXmlExportToFile, getLatestExportXml, getExportMetadata } from './xmlExport';
 
@@ -3006,7 +3006,11 @@ app.get('/api/shop-topics', authenticateToken, async (req, res) => {
       publications: shopPublications.slice(0, 200),
       globalWarningConfig: shopGlobalWarningConfig,
       buySellTopics: enrichedBuySellTopics,
-      buySellGlobalConfig,
+      buySellGlobalConfig: {
+        ...buySellGlobalConfig,
+        trackedSellers: trackedBuySellSellers
+      },
+      trackedSellers: trackedBuySellSellers,
       buySellAlerts: buySellAlerts.slice(0, 100)
     });
   } catch (err: any) {
@@ -3436,7 +3440,11 @@ app.get('/api/buy-sell-topics', authenticateToken, async (req, res) => {
     });
     res.json({
       topics: enrichedBuySellTopics,
-      globalConfig: buySellGlobalConfig,
+      globalConfig: {
+        ...buySellGlobalConfig,
+        trackedSellers: trackedBuySellSellers
+      },
+      trackedSellers: trackedBuySellSellers,
       alerts: buySellAlerts.slice(0, 100)
     });
   } catch (err: any) {
@@ -3593,6 +3601,110 @@ app.post('/api/buy-sell-topics/alerts/:id/resolve', authenticateToken, async (re
 
     await db.collection('buy_sell_alerts').doc(alertId).set(cleanData(al)).catch(() => {});
     res.json({ success: true, alert: al });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// Buy/Sell Tracked Sellers API
+// ============================================================================
+app.get('/api/buy-sell-topics/tracked-sellers', authenticateToken, (req, res) => {
+  res.json(trackedBuySellSellers);
+});
+
+app.post('/api/buy-sell-topics/tracked-sellers', authenticateToken, async (req, res) => {
+  try {
+    const { userIdentifier, note } = req.body || {};
+    if (!userIdentifier || !String(userIdentifier).trim()) {
+      return res.status(400).json({ error: 'Укажите @username или Telegram ID продавца' });
+    }
+
+    const rawIdent = String(userIdentifier).trim();
+    let userId: string | undefined;
+    let username: string | undefined;
+
+    if (/^\d{5,16}$/.test(rawIdent)) {
+      userId = rawIdent;
+      const knownMember = memberships.find(m => String(m.userId) === rawIdent);
+      if (knownMember?.username) {
+        username = knownMember.username.replace(/^@/, '');
+      }
+    } else {
+      username = rawIdent.replace(/^@/, '').replace(/^https?:\/\/t\.me\//i, '').trim();
+      const knownMember = memberships.find(
+        m => m.username && m.username.replace(/^@/, '').toLowerCase() === username!.toLowerCase()
+      );
+      if (knownMember?.userId) {
+        userId = String(knownMember.userId);
+      }
+    }
+
+    // Check duplicate
+    const exists = trackedBuySellSellers.some(ts => {
+      if (userId && ts.userId && ts.userId === userId) return true;
+      if (username && ts.username && ts.username.toLowerCase() === username.toLowerCase()) return true;
+      if (ts.userIdentifier.toLowerCase() === rawIdent.toLowerCase()) return true;
+      return false;
+    });
+
+    if (exists) {
+      return res.status(400).json({ error: 'Этот продавец уже добавлен в список отслеживания' });
+    }
+
+    const newId = `tbss_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const newSeller: TrackedBuySellSeller = {
+      id: newId,
+      userIdentifier: rawIdent,
+      username,
+      userId,
+      note: (note || '').trim(),
+      addedAt: new Date().toISOString(),
+      active: true,
+      totalAlertsTriggered: 0
+    };
+
+    trackedBuySellSellers.unshift(newSeller);
+    await db.collection('buy_sell_tracked_sellers').doc(newId).set(cleanData(newSeller));
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SHOP',
+      user: (req as any).user?.username || 'Admin',
+      chat: 'Купи / Продай',
+      details: `Добавлен отслеживаемый продавец ${rawIdent} (${newSeller.note || 'без заметки'})`
+    });
+
+    res.json({ success: true, seller: newSeller, trackedSellers: trackedBuySellSellers });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Ошибка добавления отслеживаемого продавца' });
+  }
+});
+
+app.put('/api/buy-sell-topics/tracked-sellers/:id', authenticateToken, async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const seller = trackedBuySellSellers.find(s => s.id === id);
+    if (!seller) return res.status(404).json({ error: 'Продавец не найден' });
+
+    const { active, note } = req.body || {};
+    if (active !== undefined) seller.active = Boolean(active);
+    if (note !== undefined) seller.note = String(note).trim();
+
+    await db.collection('buy_sell_tracked_sellers').doc(id).set(cleanData(seller));
+    res.json({ success: true, seller, trackedSellers: trackedBuySellSellers });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/buy-sell-topics/tracked-sellers/:id', authenticateToken, async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    trackedBuySellSellers = trackedBuySellSellers.filter(s => s.id !== id);
+    await db.collection('buy_sell_tracked_sellers').doc(id).delete();
+    res.json({ success: true, trackedSellers: trackedBuySellSellers });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -5467,6 +5579,7 @@ let buySellGlobalConfig: BuySellGlobalConfig = {
   markerWords: [...DEFAULT_COMMERCIAL_MARKERS]
 };
 let buySellAlerts: BuySellCommercialAlert[] = [];
+let trackedBuySellSellers: TrackedBuySellSeller[] = [];
 const shopMediaGroupDecision = new Map<string, 'allowed' | 'rejected'>();
 
 function getCurrentMondayDateStr(dateInput: Date = new Date()): string {
@@ -7326,10 +7439,34 @@ async function syncData() {
       }
     });
 
+    await safeLoad('buy_sell_tracked_sellers', async () => {
+      const snap = await db.collection('buy_sell_tracked_sellers').get();
+      trackedBuySellSellers = snap.docs.map(d => ({ id: String(d.id), ...d.data() } as TrackedBuySellSeller));
+      console.log(`Loaded ${trackedBuySellSellers.length} tracked buy-sell sellers`);
+    });
+
     await safeLoad('buy_sell_alerts', async () => {
       const snap = await db.collection('buy_sell_alerts').get();
       buySellAlerts = snap.docs
-        .map(d => ({ id: String(d.id), ...d.data() } as BuySellCommercialAlert))
+        .map(d => {
+          const item = { id: String(d.id), ...d.data() } as BuySellCommercialAlert;
+          // Fix inverted historical alerts where AI reasoning stated private ad but score was inverted (>= 70)
+          const reasonLower = (item.reason || '').toLowerCase();
+          const isReasonPrivate = reasonLower.includes('личного') ||
+            reasonLower.includes('частного') ||
+            reasonLower.includes('личный') ||
+            reasonLower.includes('отсутствуют') ||
+            reasonLower.includes('частное');
+          if (isReasonPrivate && item.confidence >= 70 && !item.isKnownSeller) {
+            item.confidence = Math.max(0, 100 - item.confidence);
+            item.verdict = 'PRIVATE';
+            if (item.status === 'PENDING') {
+              item.status = 'DISMISSED';
+            }
+            db.collection('buy_sell_alerts').doc(item.id).set(cleanData(item)).catch(() => {});
+          }
+          return item;
+        })
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, 100);
       console.log(`Loaded ${buySellAlerts.length} buy-sell commercial alerts`);
@@ -7908,7 +8045,7 @@ async function analyzeBuySellPostForCommercial(
   const lowerText = postText.toLowerCase();
   const matchedMarkers: string[] = markerWords.filter(mw => mw && lowerText.includes(mw.trim().toLowerCase()));
 
-  const prompt = `Ты — эксперт-модератор мото-сообщества. Твоя задача — классифицировать объявление из топика "Купи / Продай" (Барахолка) и определить, является ли оно КОММЕРЧЕСКИМ (магазин, перекупщик, постоянная коммерческая торговля, поставщик, бизнес) или ЧАСТНЫМ (обычный участник продает свои личные б/у вещи, экипировку или личный мотоцикл).
+  const prompt = `Ты — эксперт-модератор мото-сообщества. Твоя задача — классифицировать объявление из топика "Купи / Продай" (Барахолка) и определить вероятность того, что это КОММЕРЦИЯ (магазин, перекупщик, постоянная коммерческая торговля, поставщик, бизнес) или ЧАСТНОЕ ОБЪЯВЛЕНИЕ (обычный участник продает свои личные б/у вещи, экипировку или личный мотоцикл, либо ищет запчасть для себя).
 
 Список маркерных слов повышенного коммерческого веса:
 ${markerWords.map(m => `• ${m}`).join('\n')}
@@ -7916,19 +8053,21 @@ ${markerWords.map(m => `• ${m}`).join('\n')}
 Обнаруженные в посте совпадения маркеров:
 ${matchedMarkers.length > 0 ? matchedMarkers.join(', ') : 'нет точных совпадений'}
 
-ПРАВИЛА ОЦЕНКИ:
-1. ЧАСТНОЕ объявление (вероятность коммерции 0-40%):
-- Продажа личной вещи б/у или личного мотоцикла ("продам шлем Shoei, размер M, б/у один сезон, есть царапина", "мот мой, пробег 25к, продаю в связи с переездом").
-- Единичные предметы, живой разговорный язык, отсутствие шаблонных каталожных описаний и признаков склада.
+ПРАВИЛА И ШКАЛА ОЦЕНКИ КОММЕРЦИИ (commercialProbability):
+1. ЧАСТНОЕ ОБЪЯВЛЕНИЕ (commercialProbability = 0-25%):
+- Покупка или поиск запчастей/экипа для себя ("куплю зеркала на cf moto", "ищу колодки").
+- Продажа личной вещи б/у или личного мотоцикла ("продам шлем б/у", "мот мой пробег 38к", "стекло в идеале 7500р", ссылка на личное объявление на Авито/Авто.ру б/у техники).
+- ВНИМАНИЕ: если объявление ЧАСТНОЕ, commercialProbability ОБЯЗАНА БЫТЬ НИЗКОЙ (0% - 25%). НЕ СТАВЬ 90-100%! 95% уверенности в частном объявлении означает ВСЕГО 5% коммерции!
+- вердикт: "PRIVATE", isCommercial: false.
 
-2. ПОДОЗРИТЕЛЬНОЕ объявление (вероятность коммерции 41-69%):
-- Продажа нескольких новых вещей без явного указания магазина, или частая продажа однотипных товаров.
+2. ПОДОЗРИТЕЛЬНОЕ (commercialProbability = 30-65%):
+- Продажа нескольких одинаковых новых вещей без явного указания магазина.
+- вердикт: "SUSPICIOUS", isCommercial: false.
 
-3. КОММЕРЧЕСКОЕ объявление (вероятность коммерции 70-100%):
-- Наличие фраз: "в наличии все размеры", "широкий ассортимент", "под заказ из Европы/Китая", "гарантия", "шоурум", "доставка СДЭК по РФ", "оплата на р/с / безнал", "оптом и в розницу".
-- Продажа новых товаров партиями, размерными сетками, коробками.
-- Ссылки на интернет-магазины, каналы с витринами, каталоги, прайс-листы.
-- Профессионально оформленный продающий текст с ценами "от ... руб." и условиями коммерческой доставки/возврата.
+3. ЯВНАЯ КОММЕРЦИЯ (commercialProbability = 70-100%):
+- Магазины, постоянные поставщики, перекупы с регулярным ассортиментом.
+- Фразы: "в наличии все размеры", "шоурум", "гарантия от магазина", "доставка СДЭК по РФ", "безнал/счет", "оптом и в розницу", ссылки на телеграм-магазины/витрины.
+- вердикт: "COMMERCIAL", isCommercial: true.
 
 ДАННЫЕ ОБЪЯВЛЕНИЯ:
 Чат: ${chatTitle}
@@ -7939,13 +8078,13 @@ ${matchedMarkers.length > 0 ? matchedMarkers.join(', ') : 'нет точных �
 ${postText}
 """
 
-Верни ответ СТРОГО в формате JSON без пояснений и markdown-блоков:
+Верни ответ СТРОГО в формате JSON без пояснений и markdown-тегов:
 {
   "isCommercial": boolean,
-  "confidence": number,
+  "commercialProbability": number,
   "verdict": "COMMERCIAL" | "SUSPICIOUS" | "PRIVATE",
   "matchedMarkers": ["маркер1", "маркер2"],
-  "reason": "Краткое аргументированное заключение на русском языке (1-2 предложения), почему это коммерция или частное объявление."
+  "reason": "Краткое аргументированное заключение на русском языке (1-2 предложения), почему это частное или коммерческое объявление."
 }`;
 
   try {
@@ -7959,38 +8098,78 @@ ${postText}
     }
 
     if (!parsed) {
-      const conf = matchedMarkers.length >= 2 ? 80 : (matchedMarkers.length === 1 ? 60 : 30);
+      const hasMarkers = matchedMarkers.length > 0;
+      const conf = matchedMarkers.length >= 2 ? 80 : (matchedMarkers.length === 1 ? 55 : 10);
+      const isCommercial = hasMarkers && conf >= (buySellGlobalConfig.minConfidence || 70);
       return {
-        isCommercial: conf >= (buySellGlobalConfig.minConfidence || 70),
+        isCommercial,
         confidence: conf,
-        verdict: conf >= 70 ? 'COMMERCIAL' : (conf >= 50 ? 'SUSPICIOUS' : 'PRIVATE'),
+        verdict: isCommercial ? 'COMMERCIAL' : (conf >= 40 ? 'SUSPICIOUS' : 'PRIVATE'),
         matchedMarkers,
-        reason: matchedMarkers.length > 0 ? `Обнаружены коммерческие маркеры: ${matchedMarkers.join(', ')}` : 'Частное объявление'
+        reason: hasMarkers ? `Обнаружены коммерческие маркеры: ${matchedMarkers.join(', ')}` : 'Частное объявление'
       };
     }
 
-    const confidence = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(100, Math.round(parsed.confidence))) : (parsed.isCommercial ? 85 : 20);
+    let rawScore = 0;
+    if (typeof parsed.commercialProbability === 'number') {
+      rawScore = parsed.commercialProbability;
+    } else if (typeof parsed.confidence === 'number') {
+      rawScore = parsed.confidence;
+    } else if (parsed.isCommercial) {
+      rawScore = 85;
+    } else {
+      rawScore = 10;
+    }
+    rawScore = Math.max(0, Math.min(100, Math.round(rawScore)));
+
+    const rawVerdict = String(parsed.verdict || '').toUpperCase();
+    const isExplicitPrivate = rawVerdict === 'PRIVATE' || parsed.isCommercial === false;
+    const isExplicitCommercial = rawVerdict === 'COMMERCIAL' || parsed.isCommercial === true;
+
+    let commercialProbability = rawScore;
+
+    // Detect and fix score inversion:
+    // If the model thought it was private (verdict is PRIVATE or isCommercial is false),
+    // but returned a high number (e.g. 90, 95, 100) because it meant "95% confident that it is private",
+    // invert it: 100 - 95 = 5%, 100 - 100 = 0%.
+    if (isExplicitPrivate) {
+      if (commercialProbability > 50) {
+        commercialProbability = 100 - commercialProbability;
+      }
+      commercialProbability = Math.min(commercialProbability, 25);
+    } else if (isExplicitCommercial) {
+      if (commercialProbability < 50) {
+        commercialProbability = 100 - commercialProbability;
+      }
+      commercialProbability = Math.max(commercialProbability, 70);
+    } else {
+      commercialProbability = Math.max(30, Math.min(65, commercialProbability));
+    }
+
     const minConf = buySellGlobalConfig.minConfidence || 70;
-    const isCommercial = Boolean(parsed.isCommercial || confidence >= minConf);
-    const verdict = isCommercial ? 'COMMERCIAL' : (confidence >= 45 ? 'SUSPICIOUS' : 'PRIVATE');
+    const isCommercial = !isExplicitPrivate && (rawVerdict === 'COMMERCIAL' || commercialProbability >= minConf);
+    const finalVerdict: 'COMMERCIAL' | 'SUSPICIOUS' | 'PRIVATE' = isCommercial
+      ? 'COMMERCIAL'
+      : (commercialProbability >= 40 ? 'SUSPICIOUS' : 'PRIVATE');
 
     return {
       isCommercial,
-      confidence,
-      verdict,
+      confidence: commercialProbability,
+      verdict: finalVerdict,
       matchedMarkers: Array.isArray(parsed.matchedMarkers) && parsed.matchedMarkers.length > 0 ? parsed.matchedMarkers : matchedMarkers,
       reason: parsed.reason || (isCommercial ? 'Обнаружены признаки коммерческой деятельности' : 'Частное объявление')
     };
   } catch (err: any) {
     console.error('[BuySellAI] Error analyzing post with AI:', err?.message || err);
-    const conf = matchedMarkers.length >= 2 ? 85 : (matchedMarkers.length === 1 ? 65 : 25);
-    const isCommercial = conf >= (buySellGlobalConfig.minConfidence || 70);
+    const hasMarkers = matchedMarkers.length > 0;
+    const conf = matchedMarkers.length >= 2 ? 80 : (matchedMarkers.length === 1 ? 55 : 10);
+    const isCommercial = hasMarkers && conf >= (buySellGlobalConfig.minConfidence || 70);
     return {
       isCommercial,
       confidence: conf,
-      verdict: isCommercial ? 'COMMERCIAL' : (conf >= 50 ? 'SUSPICIOUS' : 'PRIVATE'),
+      verdict: isCommercial ? 'COMMERCIAL' : (conf >= 40 ? 'SUSPICIOUS' : 'PRIVATE'),
       matchedMarkers,
-      reason: matchedMarkers.length > 0 ? `Анализ по маркерам: найдены ${matchedMarkers.join(', ')}` : 'Частное объявление'
+      reason: hasMarkers ? `Анализ по маркерам: найдены ${matchedMarkers.join(', ')}` : 'Частное объявление'
     };
   }
 }
@@ -9909,9 +10088,112 @@ async function initBot(token: string) {
           const isSenderChatAdmin = isCurrentAdmin || await isModeratorOrAdmin(ctx, chatId, ctx.from.id);
           const postText = (ctx.message && ('text' in ctx.message ? ctx.message.text : ('caption' in ctx.message ? ctx.message.caption : '')) || '').trim();
 
-          if (!isTopicServiceMsg && !isSenderChatAdmin && postText.length >= 15) {
+          if (!isTopicServiceMsg && !isSenderChatAdmin && (postText.length >= 10 || trackedBuySellSellers.length > 0)) {
             (async () => {
               try {
+                const authorName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || (username ? `@${username}` : `User ${userId}`);
+                const userHandle = username ? `@${username}` : `ID: ${userId}`;
+                const chatUsername = (ctx.chat as any)?.username;
+                const cleanChatId = String(chatId).startsWith('-100') ? String(chatId).replace('-100', '') : String(chatId);
+                const threadPart = msgThreadId ? `${msgThreadId}/` : '';
+                const messageLink = chatUsername
+                  ? `https://t.me/${chatUsername}/${threadPart}${ctx.message.message_id}`
+                  : `https://t.me/c/${cleanChatId}/${threadPart}${ctx.message.message_id}`;
+
+                // 1. Check if author is in the Tracked Sellers list
+                const senderIdStr = String(userId);
+                const senderUserClean = (username || '').toLowerCase().replace(/^@/, '');
+                const matchedTrackedSeller = trackedBuySellSellers.find(ts => {
+                  if (!ts.active) return false;
+                  const tsId = ts.userId ? String(ts.userId).trim() : '';
+                  const tsUser = (ts.username || '').toLowerCase().replace(/^@/, '').trim();
+                  const tsIdent = (ts.userIdentifier || '').toLowerCase().replace(/^@/, '').trim();
+                  if (tsId && tsId === senderIdStr) return true;
+                  if (tsUser && senderUserClean && tsUser === senderUserClean) return true;
+                  if (tsIdent && (tsIdent === senderIdStr || (senderUserClean && tsIdent === senderUserClean))) return true;
+                  return false;
+                });
+
+                if (matchedTrackedSeller) {
+                  matchedTrackedSeller.totalAlertsTriggered = (matchedTrackedSeller.totalAlertsTriggered || 0) + 1;
+                  matchedTrackedSeller.lastAlertAt = new Date().toISOString();
+                  db.collection('buy_sell_tracked_sellers').doc(matchedTrackedSeller.id).set(cleanData(matchedTrackedSeller)).catch(() => {});
+
+                  const alertId = `bsa_ts_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+                  const alertRecord: BuySellCommercialAlert = {
+                    id: alertId,
+                    chatId: String(chatId),
+                    chatTitle: effectiveChatTitle,
+                    messageThreadId: msgThreadId ? Number(msgThreadId) : undefined,
+                    messageId: ctx.message.message_id,
+                    userId: String(userId),
+                    username: username ? username.replace(/^@/, '') : undefined,
+                    authorName,
+                    confidence: 100,
+                    verdict: 'COMMERCIAL',
+                    matchedMarkers: [],
+                    reason: `Отслеживаемый продавец из списка: ${matchedTrackedSeller.note || matchedTrackedSeller.userIdentifier}`,
+                    textSnippet: postText.length > 250 ? postText.substring(0, 250) + '...' : (postText || '[Медиа/Файл]'),
+                    messageText: postText,
+                    timestamp: new Date().toISOString(),
+                    messageLink,
+                    messageUrl: messageLink,
+                    isKnownSeller: true,
+                    sellerNote: matchedTrackedSeller.note || 'Отслеживаемый продавец',
+                    status: 'PENDING'
+                  };
+
+                  buySellAlerts.unshift(alertRecord);
+                  if (buySellAlerts.length > 200) buySellAlerts.pop();
+                  db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
+
+                  const targetAdminChatId = process.env.BOOKRAY_CHAT_ID || settings.adminChatId || settings.infoChatId;
+                  if (targetAdminChatId && bot) {
+                    const adminAlertText =
+                      `🚨 <b>ВНИМАНИЕ! ОТСЛЕЖИВАЕМЫЙ ПРОДАВЕЦ В ТОПИКЕ «КУПИ / ПРОДАЙ»!</b>\n\n` +
+                      `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
+                      `🏷️ <b>Топик:</b> «${escapeHtml(buySellTopicConfig?.topicTitle || 'Купи / Продай')}»\n` +
+                      `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
+                      `🆔 <b>ID:</b> <code>${userId}</code>\n` +
+                      (matchedTrackedSeller.note ? `📋 <b>Заметка:</b> <i>${escapeHtml(matchedTrackedSeller.note)}</i>\n` : '') +
+                      `📊 <b>Статус:</b> 🔴 <b>Отслеживаемый продавец</b> (100% контроль)\n\n` +
+                      `💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+
+                    const keyboard = {
+                      inline_keyboard: [
+                        [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
+                        [
+                          { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
+                          { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${ctx.message.message_id}_${alertId}` }
+                        ],
+                        [
+                          { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+                          { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
+                        ]
+                      ]
+                    };
+
+                    bot.telegram.sendMessage(targetAdminChatId, adminAlertText, {
+                      parse_mode: 'HTML',
+                      reply_markup: keyboard,
+                      link_preview_options: { is_disabled: true }
+                    }).catch(e => console.error('[BuySellAlert] Failed to send Telegram alert for tracked seller:', e));
+                  }
+
+                  await addLog({
+                    id: Math.random().toString(36).substr(2, 9),
+                    timestamp: new Date().toISOString(),
+                    type: 'SHOP',
+                    user: authorName,
+                    chat: effectiveChatTitle,
+                    details: `⚠️ Обнаружен отслеживаемый продавец в «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}»: ${authorName} (${matchedTrackedSeller.note || 'Отслеживаемый'})`
+                  });
+                  return;
+                }
+
+                // 2. Regular AI Analysis for non-tracked users (requires at least 15 chars)
+                if (postText.length < 15) return;
+
                 const analysis = await analyzeBuySellPostForCommercial(
                   postText,
                   ctx.from,
@@ -9919,16 +10201,9 @@ async function initBot(token: string) {
                   buySellTopicConfig?.topicTitle || 'Купи / Продай'
                 );
 
-                if (analysis.isCommercial || analysis.confidence >= (buySellGlobalConfig.minConfidence || 70)) {
-                  const authorName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || (username ? `@${username}` : `User ${userId}`);
-                  const userHandle = username ? `@${username}` : `ID: ${userId}`;
-                  const chatUsername = (ctx.chat as any)?.username;
-                  const cleanChatId = String(chatId).startsWith('-100') ? String(chatId).replace('-100', '') : String(chatId);
-                  const threadPart = msgThreadId ? `${msgThreadId}/` : '';
-                  const messageLink = chatUsername
-                    ? `https://t.me/${chatUsername}/${threadPart}${ctx.message.message_id}`
-                    : `https://t.me/c/${cleanChatId}/${threadPart}${ctx.message.message_id}`;
-
+                const minConf = buySellGlobalConfig.minConfidence || 70;
+                // Only alert if AI determined it is commercial AND confidence meets threshold
+                if (analysis.isCommercial && analysis.confidence >= minConf) {
                   const alertId = `bsa_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
                   const alertRecord: BuySellCommercialAlert = {
                     id: alertId,
@@ -9944,8 +10219,10 @@ async function initBot(token: string) {
                     matchedMarkers: analysis.matchedMarkers,
                     reason: analysis.reason,
                     textSnippet: postText.length > 250 ? postText.substring(0, 250) + '...' : postText,
+                    messageText: postText,
                     timestamp: new Date().toISOString(),
                     messageLink,
+                    messageUrl: messageLink,
                     status: 'PENDING'
                   };
 
@@ -12063,14 +12340,30 @@ async function initBot(token: string) {
           details: 'Пользователь добавлен в белый список.'
         });
 
+        const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
+        const adminTag = username ? `@${username}` : (ctx.from.first_name || 'Админ');
+        const updatedText = `${currentText}\n\n✅ *СТАТУС:* Добавлен в белый список (${adminTag}). Уведомления отключены.`;
+
         try {
-          await ctx.editMessageReplyMarkup({
-            inline_keyboard: [[
-              { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` },
-              { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` }
-            ]]
+          await ctx.editMessageText(updatedText, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[
+                { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` },
+                { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` }
+              ]]
+            }
           });
-        } catch (err) {}
+        } catch (e) {
+          try {
+            await ctx.editMessageReplyMarkup({
+              inline_keyboard: [[
+                { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` },
+                { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` }
+              ]]
+            });
+          } catch (err) {}
+        }
         return;
       }
 
