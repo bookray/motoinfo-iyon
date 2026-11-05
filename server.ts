@@ -10,7 +10,13 @@ import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { GoogleGenAI } from '@google/genai';
 import { db } from './database';
-import { FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings, ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig, BuySellTopicConfig, BuySellGlobalConfig, BuySellCommercialAlert, TrackedBuySellSeller, DEFAULT_COMMERCIAL_MARKERS } from './types';
+import {
+  FilterSettings, Chat, BotSettings, ActiveMuteEntry, CompanionBotSettings,
+  ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig,
+  BuySellTopicConfig, BuySellGlobalConfig, BuySellCommercialAlert, TrackedBuySellSeller,
+  DEFAULT_COMMERCIAL_MARKERS, DEFAULT_BUY_SELL_WARNING_TEXT, DEFAULT_BUY_SELL_WARNING_BUTTONS,
+  BuySellWarningButton, BuySellAutoActionType
+} from './types';
 import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 import { buildExportXml, saveXmlExportToFile, getLatestExportXml, getExportMetadata } from './xmlExport';
 
@@ -3260,13 +3266,42 @@ app.post('/api/shop-topics/vendors', authenticateToken, async (req, res) => {
     shopVendors.unshift(newVendor);
     await db.collection('shop_vendors').doc(vendorId).set(cleanData(newVendor));
 
+    // Clear vendor from bans list if previously banned
+    bans = bans.filter(b => {
+      if (userId && String(b.userId) === String(userId)) return false;
+      if (username && b.userId.replace(/^@/, '').toLowerCase() === username.toLowerCase()) return false;
+      return true;
+    });
+    if (userId) {
+      db.collection('bans').doc(String(userId)).delete().catch(() => {});
+    }
+
+    // Auto-unban in Telegram chat if banned
+    if (bot && userId && /^\d+$/.test(String(userId))) {
+      bot.telegram.unbanChatMember(chatStr, Number(userId), { only_if_banned: true }).catch(() => {});
+    }
+
+    // Auto-whitelist vendor
+    const wlId = userId || `shop_${username}`;
+    if (!whitelist.some(w => (userId && String(w.userId) === String(userId)) || (username && w.username && w.username.replace(/^@/, '').toLowerCase() === username.toLowerCase()))) {
+      const wlEntry = {
+        id: String(wlId),
+        userId: userId ? String(userId) : String(wlId),
+        username: username ? `@${username}` : undefined,
+        firstName: newVendor.shopName,
+        addedAt: now.toISOString()
+      };
+      whitelist.push(wlEntry);
+      db.collection('whitelist').doc(String(wlId)).set(cleanData(wlEntry)).catch(() => {});
+    }
+
     await addLog({
       id: Math.random().toString(36).substr(2, 9),
       timestamp: now.toISOString(),
       type: 'SHOP',
       user: (req as any).user?.username || 'Admin',
       chat: newVendor.chatTitle || chatStr,
-      details: `Добавлен продавец «${newVendor.shopName}» (${username ? '@' + username : ''}${userId ? ' ID:' + userId : ''}), лимит: ${limitNum}/нед., до ${expDate.toLocaleDateString('ru-RU')}`
+      details: `Добавлен продавец «${newVendor.shopName}» (${username ? '@' + username : ''}${userId ? ' ID:' + userId : ''}), лимит: ${limitNum}/нед., до ${expDate.toLocaleDateString('ru-RU')} (внесен в белый список)`
     });
 
     res.json({ success: true, vendor: newVendor });
@@ -3539,7 +3574,22 @@ app.delete('/api/buy-sell-topics/config/:chatId', authenticateToken, async (req,
 
 app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, res) => {
   try {
-    const { enabled, minConfidence, markerWords, notifyChannelId, tagAdmin, adminTagHandle } = req.body;
+    const {
+      enabled,
+      minConfidence,
+      markerWords,
+      notifyChannelId,
+      tagAdmin,
+      adminTagHandle,
+      warningMessageText,
+      warningButtons,
+      warningAutoDeleteSec,
+      autoActionEnabled,
+      autoActionType,
+      autoActionMinConfidence,
+      autoActionTrackedSellers
+    } = req.body;
+
     buySellGlobalConfig = {
       ...buySellGlobalConfig,
       enabled: enabled !== undefined ? Boolean(enabled) : buySellGlobalConfig.enabled,
@@ -3547,7 +3597,14 @@ app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, re
       markerWords: Array.isArray(markerWords) ? markerWords.map((w: string) => String(w).trim().toLowerCase()).filter(Boolean) : buySellGlobalConfig.markerWords,
       notifyChannelId: notifyChannelId !== undefined ? String(notifyChannelId).trim() : (buySellGlobalConfig.notifyChannelId || ''),
       tagAdmin: tagAdmin !== undefined ? Boolean(tagAdmin) : (buySellGlobalConfig.tagAdmin !== false),
-      adminTagHandle: adminTagHandle !== undefined ? String(adminTagHandle).trim() : (buySellGlobalConfig.adminTagHandle || '@bookray')
+      adminTagHandle: adminTagHandle !== undefined ? String(adminTagHandle).trim() : (buySellGlobalConfig.adminTagHandle || '@bookray'),
+      warningMessageText: typeof warningMessageText === 'string' && warningMessageText.trim().length > 0 ? warningMessageText : (buySellGlobalConfig.warningMessageText || DEFAULT_BUY_SELL_WARNING_TEXT),
+      warningButtons: Array.isArray(warningButtons) ? warningButtons.filter(b => b && typeof b.text === 'string' && b.text.trim()) : (buySellGlobalConfig.warningButtons || DEFAULT_BUY_SELL_WARNING_BUTTONS),
+      warningAutoDeleteSec: typeof warningAutoDeleteSec === 'number' && warningAutoDeleteSec >= 0 ? warningAutoDeleteSec : (buySellGlobalConfig.warningAutoDeleteSec ?? 120),
+      autoActionEnabled: autoActionEnabled !== undefined ? Boolean(autoActionEnabled) : Boolean(buySellGlobalConfig.autoActionEnabled),
+      autoActionType: (['DELETE_AND_WARN', 'DELETE_ONLY', 'BAN'].includes(autoActionType) ? autoActionType : (buySellGlobalConfig.autoActionType || 'DELETE_AND_WARN')) as BuySellAutoActionType,
+      autoActionMinConfidence: typeof autoActionMinConfidence === 'number' ? Math.max(10, Math.min(100, autoActionMinConfidence)) : (buySellGlobalConfig.autoActionMinConfidence || 85),
+      autoActionTrackedSellers: autoActionTrackedSellers !== undefined ? Boolean(autoActionTrackedSellers) : (buySellGlobalConfig.autoActionTrackedSellers !== false)
     };
 
     await db.collection('config').doc('buy_sell_global').set(cleanData(buySellGlobalConfig));
@@ -3558,7 +3615,7 @@ app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, re
       type: 'SETTINGS',
       user: (req as any).user?.username || 'admin',
       chat: 'Global',
-      details: `Обновлены настройки «Купи / Продай»: канал алертов: ${buySellGlobalConfig.notifyChannelId || 'ЛС админа'}, тег: ${buySellGlobalConfig.tagAdmin ? buySellGlobalConfig.adminTagHandle : 'выкл'}, порог: ${buySellGlobalConfig.minConfidence}%`
+      details: `Обновлены настройки «Купи / Продай»: канал алертов: ${buySellGlobalConfig.notifyChannelId || 'ЛС админа'}, тег: ${buySellGlobalConfig.tagAdmin ? buySellGlobalConfig.adminTagHandle : 'выкл'}, порог: ${buySellGlobalConfig.minConfidence}%, авто-действие: ${buySellGlobalConfig.autoActionEnabled ? buySellGlobalConfig.autoActionType : 'выкл'}`
     });
 
     res.json({ success: true, config: buySellGlobalConfig });
@@ -3583,16 +3640,24 @@ app.post('/api/buy-sell-topics/alerts/:id/resolve', authenticateToken, async (re
       try {
         if (bot) {
           await bot.telegram.deleteMessage(al.chatId, al.messageId).catch(() => {});
+          const targetUserObj = { id: Number(al.userId), username: al.username, first_name: al.authorName };
           await applyWarning(
-            { id: Number(al.userId), username: al.username, first_name: al.authorName },
+            targetUserObj,
             (req as any).user?.username || 'admin',
             'admin',
             al.chatId,
             al.chatTitle,
             'Коммерческое объявление в топике Купи/Продай'
           );
+          await sendBuySellTopicWarning(
+            al.chatId,
+            targetUserObj,
+            al.messageThreadId
+          );
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error('Error warning user in alerts resolve:', e);
+      }
       al.status = 'RESOLVED_WARNED';
     } else if (action === 'ban') {
       try {
@@ -5583,11 +5648,144 @@ let buySellGlobalConfig: BuySellGlobalConfig = {
   markerWords: [...DEFAULT_COMMERCIAL_MARKERS],
   notifyChannelId: '',
   tagAdmin: true,
-  adminTagHandle: '@bookray'
+  adminTagHandle: '@bookray',
+  warningMessageText: DEFAULT_BUY_SELL_WARNING_TEXT,
+  warningButtons: [...DEFAULT_BUY_SELL_WARNING_BUTTONS],
+  warningAutoDeleteSec: 120,
+  autoActionEnabled: false,
+  autoActionType: 'DELETE_AND_WARN',
+  autoActionMinConfidence: 85,
+  autoActionTrackedSellers: true
 };
 let buySellAlerts: BuySellCommercialAlert[] = [];
 let trackedBuySellSellers: TrackedBuySellSeller[] = [];
 const shopMediaGroupDecision = new Map<string, 'allowed' | 'rejected'>();
+
+function cleanChatIdStr(id?: string | number): string {
+  if (!id) return '';
+  const s = String(id).trim();
+  return s.startsWith('-100') ? s.slice(4) : s;
+}
+
+function isApprovedShopVendor(
+  userId: string | number,
+  username?: string,
+  chatId?: string | number,
+  senderChatId?: string | number
+): { isVendor: boolean; vendor?: ShopVendor } {
+  if (!shopVendors || shopVendors.length === 0) return { isVendor: false };
+
+  const targetUid = userId ? String(userId).trim() : '';
+  const cleanUname = (username || '').toLowerCase().replace(/^@/, '').trim();
+  const targetSenderId = senderChatId ? String(senderChatId).trim() : '';
+  const cleanTargetChat = chatId ? cleanChatIdStr(chatId) : '';
+
+  const matched = shopVendors.find(v => {
+    if (v.active === false) return false;
+    // Check expiration if set
+    if (v.expiresAt) {
+      const expTime = new Date(v.expiresAt).getTime();
+      if (!isNaN(expTime) && expTime <= Date.now()) return false;
+    }
+
+    // Chat matching: if chatId is provided and vendor is specific to a chat
+    if (cleanTargetChat && v.chatId && v.chatId !== 'all' && v.chatId !== 'global') {
+      const vCleanChat = cleanChatIdStr(v.chatId);
+      if (vCleanChat && vCleanChat !== cleanTargetChat) return false;
+    }
+
+    // Match by numeric Telegram ID
+    if (v.userId) {
+      const vUid = String(v.userId).trim();
+      if (targetUid && vUid === targetUid) return true;
+      if (targetSenderId && vUid === targetSenderId) return true;
+    }
+
+    // Match by @username
+    if (v.username && cleanUname) {
+      const vUname = v.username.toLowerCase().replace(/^@/, '').trim();
+      if (vUname === cleanUname) return true;
+    }
+
+    return false;
+  });
+
+  return { isVendor: Boolean(matched), vendor: matched };
+}
+
+function isAnyShopVendor(userId: string | number, username?: string): boolean {
+  if (!shopVendors || shopVendors.length === 0) return false;
+  const targetUid = userId ? String(userId).trim() : '';
+  const cleanUname = (username || '').toLowerCase().replace(/^@/, '').trim();
+
+  return shopVendors.some(v => {
+    if (v.active === false) return false;
+    if (v.expiresAt) {
+      const expTime = new Date(v.expiresAt).getTime();
+      if (!isNaN(expTime) && expTime <= Date.now()) return false;
+    }
+    if (v.userId && targetUid && String(v.userId).trim() === targetUid) return true;
+    if (v.username && cleanUname && v.username.toLowerCase().replace(/^@/, '').trim() === cleanUname) return true;
+    return false;
+  });
+}
+
+async function sendBuySellTopicWarning(
+  chatId: string | number,
+  targetUser: { id: number | string; username?: string; first_name?: string; last_name?: string },
+  messageThreadId?: number
+): Promise<any> {
+  if (!bot) return null;
+  const cfg = buySellGlobalConfig;
+  const targetUid = String(targetUser.id);
+  const fullName = [targetUser.first_name, targetUser.last_name].filter(Boolean).join(' ') || (targetUser.username ? `@${targetUser.username}` : `ID ${targetUid}`);
+  const userMention = targetUser.username
+    ? `@${targetUser.username.replace(/^@/, '')}`
+    : `<a href="tg://user?id=${targetUid}">${escapeHtml(fullName)}</a>`;
+
+  const rawTemplate = (cfg.warningMessageText && cfg.warningMessageText.trim())
+    ? cfg.warningMessageText.trim()
+    : DEFAULT_BUY_SELL_WARNING_TEXT;
+
+  const warningText = rawTemplate.replace(/\{user\}/g, userMention);
+
+  const extra: any = {
+    parse_mode: 'HTML',
+    link_preview_options: { is_disabled: true }
+  };
+  if (messageThreadId) {
+    extra.message_thread_id = Number(messageThreadId);
+  }
+
+  const buttons = Array.isArray(cfg.warningButtons) && cfg.warningButtons.length > 0
+    ? cfg.warningButtons
+    : DEFAULT_BUY_SELL_WARNING_BUTTONS;
+
+  if (buttons.length > 0) {
+    const inline_keyboard = buttons
+      .filter(b => b && b.text && b.text.trim() && b.url && b.url.trim())
+      .map(b => [{ text: b.text.trim(), url: fixUrl(b.url.trim()) }]);
+    if (inline_keyboard.length > 0) {
+      extra.reply_markup = { inline_keyboard };
+    }
+  }
+
+  try {
+    const sentMsg = await bot.telegram.sendMessage(chatId, warningText, extra);
+    const autoDelSec = cfg.warningAutoDeleteSec !== undefined ? Number(cfg.warningAutoDeleteSec) : 120;
+    if (autoDelSec > 0 && sentMsg?.message_id) {
+      setTimeout(async () => {
+        try {
+          await bot!.telegram.deleteMessage(chatId, sentMsg.message_id);
+        } catch (e) {}
+      }, autoDelSec * 1000);
+    }
+    return sentMsg;
+  } catch (err: any) {
+    console.warn(`[BuySellWarning] Failed to send warning in chat ${chatId} (thread: ${messageThreadId}):`, err?.message || err);
+    return null;
+  }
+}
 
 function getCurrentMondayDateStr(dateInput: Date = new Date()): string {
   const { dateObj, dayIndex } = getProjectDate(dateInput);
@@ -5895,6 +6093,7 @@ async function checkCrossChatActivity(
     const wUser = (w.username || '').toLowerCase().replace(/^@/, '');
     return wId === userId || (cleanUserUsername && (wUser === cleanUserUsername || wId.toLowerCase().replace(/^@/, '') === cleanUserUsername));
   })) return;
+  if (isAnyShopVendor(userId, user.username)) return;
 
   const now = Date.now();
   // 2-hour window for cross-chat activity tracking
@@ -7462,6 +7661,60 @@ async function syncData() {
       shopVendors = snap.docs.map(d => ({ id: String(d.id), ...d.data() } as ShopVendor));
       await refreshShopVendorsState();
       console.log(`Loaded ${shopVendors.length} shop vendors`);
+
+      // Ensure all active, valid shop vendors are removed from bans, whitelisted, and unbanned in Telegram
+      for (const vendor of shopVendors) {
+        if (vendor.active) {
+          const vUserId = vendor.userId ? String(vendor.userId).trim() : '';
+          const vUsername = vendor.username ? vendor.username.toLowerCase().replace(/^@/, '').trim() : '';
+          
+          // 1. Remove from bans
+          const wasBanned = bans.some(b => {
+            const bId = String(b.userId || b.id).trim();
+            const bUser = (b.userId || '').replace(/^@/, '').toLowerCase().trim();
+            return (vUserId && bId === vUserId) || (vUsername && bUser === vUsername);
+          });
+          if (wasBanned) {
+            bans = bans.filter(b => {
+              const bId = String(b.userId || b.id).trim();
+              const bUser = (b.userId || '').replace(/^@/, '').toLowerCase().trim();
+              const match = (vUserId && bId === vUserId) || (vUsername && bUser === vUsername);
+              if (match) {
+                db.collection('bans').doc(b.id).delete().catch(() => {});
+              }
+              return !match;
+            });
+            console.log(`[ShopVendors] Cleared ban for approved shop vendor "${vendor.shopName}" (${vUserId || vUsername})`);
+          }
+
+          // 2. Add to whitelist if missing
+          const inWl = whitelist.some(w => {
+            const wId = String(w.userId || w.id).trim();
+            const wUser = (w.username || '').toLowerCase().replace(/^@/, '').trim();
+            return (vUserId && wId === vUserId) || (vUsername && wUser === vUsername);
+          });
+          if (!inWl && (vUserId || vUsername)) {
+            const wlId = vUserId || `vendor_${vendor.id}`;
+            const wlEntry = {
+              id: wlId,
+              userId: vUserId || undefined,
+              username: vUsername ? `@${vUsername}` : undefined,
+              firstName: vendor.shopName,
+              addedAt: new Date().toISOString()
+            };
+            whitelist.push(wlEntry);
+            db.collection('whitelist').doc(wlId).set(cleanData(wlEntry)).catch(() => {});
+          }
+
+          // 3. Unban in Telegram if bot initialized
+          if (bot && vUserId && /^\d+$/.test(vUserId)) {
+            const numId = Number(vUserId);
+            for (const chat of chats.filter(c => c.active)) {
+              bot.telegram.unbanChatMember(chat.id, numId, { only_if_banned: true }).catch(() => {});
+            }
+          }
+        }
+      }
     });
 
     await safeLoad('shop_publications', async () => {
@@ -7486,7 +7739,14 @@ async function syncData() {
           markerWords: Array.isArray(data.markerWords) && data.markerWords.length > 0 ? data.markerWords : [...DEFAULT_COMMERCIAL_MARKERS],
           notifyChannelId: typeof data.notifyChannelId === 'string' ? data.notifyChannelId : (buySellGlobalConfig.notifyChannelId || ''),
           tagAdmin: data.tagAdmin !== false,
-          adminTagHandle: data.adminTagHandle || '@bookray'
+          adminTagHandle: data.adminTagHandle || '@bookray',
+          warningMessageText: typeof data.warningMessageText === 'string' && data.warningMessageText.trim().length > 0 ? data.warningMessageText : DEFAULT_BUY_SELL_WARNING_TEXT,
+          warningButtons: Array.isArray(data.warningButtons) && data.warningButtons.length > 0 ? data.warningButtons : [...DEFAULT_BUY_SELL_WARNING_BUTTONS],
+          warningAutoDeleteSec: typeof data.warningAutoDeleteSec === 'number' ? data.warningAutoDeleteSec : 120,
+          autoActionEnabled: Boolean(data.autoActionEnabled),
+          autoActionType: data.autoActionType || 'DELETE_AND_WARN',
+          autoActionMinConfidence: typeof data.autoActionMinConfidence === 'number' ? data.autoActionMinConfidence : 85,
+          autoActionTrackedSellers: data.autoActionTrackedSellers !== false
         };
         console.log('Loaded buy-sell global config');
       }
@@ -7884,30 +8144,35 @@ async function applyWarning(
   let banned = false;
 
   if (activeWarns >= warnLimit) {
-    banned = true;
-    for (const w of warnings) {
-      if (String(w.userId) === targetUserId && String(w.chatId) === String(chatId) && w.active) {
-        w.active = false;
-        queueWrite('warnings', w.id, cleanData(w));
+    if (isAnyShopVendor(targetUserId, targetUser.username)) {
+      console.log(`[ShopVendor] Skipping auto-ban for approved shop vendor ${targetUserId} in chat ${chatId}`);
+      banned = false;
+    } else {
+      banned = true;
+      for (const w of warnings) {
+        if (String(w.userId) === targetUserId && String(w.chatId) === String(chatId) && w.active) {
+          w.active = false;
+          queueWrite('warnings', w.id, cleanData(w));
+        }
       }
-    }
 
-    if (bot) {
-      try {
-        await bot.telegram.banChatMember(chatId, targetUser.id);
-      } catch (e) {
-        console.error(`Failed to ban user ${targetUserId} after reaching warn limit in ${chatId}:`, e);
+      if (bot) {
+        try {
+          await bot.telegram.banChatMember(chatId, targetUser.id);
+        } catch (e) {
+          console.error(`Failed to ban user ${targetUserId} after reaching warn limit in ${chatId}:`, e);
+        }
       }
-    }
 
-    await addLog({
-      id: Math.random().toString(36).substr(2, 9),
-      timestamp: new Date().toISOString(),
-      type: 'BAN',
-      user: adminName,
-      chat: chatTitle,
-      details: `Пользователь ${targetUser.first_name || targetUserId} заблокирован по превышению лимита предупреждений (${activeWarns}/${warnLimit}).`
-    });
+      await addLog({
+        id: Math.random().toString(36).substr(2, 9),
+        timestamp: new Date().toISOString(),
+        type: 'BAN',
+        user: adminName,
+        chat: chatTitle,
+        details: `Пользователь ${targetUser.first_name || targetUserId} заблокирован по превышению лимита предупреждений (${activeWarns}/${warnLimit}).`
+      });
+    }
   } else {
     await addLog({
       id: Math.random().toString(36).substr(2, 9),
@@ -8331,7 +8596,8 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
       String(userId) === String(process.env.BOOKRAY_CHAT_ID) ||
       (cleanUserUsername && cleanUserUsername === adminUsername);
 
-    const isUserWhitelisted = isUserAdminOrOwner || whitelist.some(w => {
+    const isShopVendor = isAnyShopVendor(userId, user.username);
+    const isUserWhitelisted = isUserAdminOrOwner || isShopVendor || whitelist.some(w => {
       const wId = String(w.userId || w.id);
       const wUser = (w.username || '').toLowerCase().replace(/^@/, '');
       return wId === String(userId) || (cleanUserUsername && (wUser === cleanUserUsername || wId.toLowerCase().replace(/^@/, '') === cleanUserUsername));
@@ -9454,8 +9720,9 @@ async function initBot(token: string) {
       // Check for global bans
       const isGloballyBanned = bans.find(b => String(b.userId) === String(userId));
       const isWhitelisted = whitelist.some(w => String(w.userId) === String(userId) || (username && w.username && w.username.toLowerCase() === `@${username.toLowerCase()}`));
+      const isVendor = isAnyShopVendor(userId, username);
 
-      if (isGloballyBanned && !isWhitelisted && chatType !== 'private') {
+      if (isGloballyBanned && !isWhitelisted && !isVendor && chatType !== 'private') {
         try {
           await ctx.telegram.banChatMember(chatId, Number(userId));
           await ctx.deleteMessage();
@@ -10201,12 +10468,59 @@ async function initBot(token: string) {
                     status: 'PENDING'
                   };
 
+                  // Auto-action for tracked seller
+                  const isAutoActionTracked =
+                    buySellGlobalConfig.autoActionEnabled &&
+                    buySellGlobalConfig.autoActionTrackedSellers !== false;
+
+                  let autoActionLabel = '';
+                  if (isAutoActionTracked) {
+                    const actType = buySellGlobalConfig.autoActionType || 'DELETE_AND_WARN';
+                    if (actType === 'DELETE_AND_WARN') {
+                      try {
+                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
+                        const targetUserObj = { id: Number(userId), username, first_name: ctx.from.first_name };
+                        await applyWarning(
+                          targetUserObj,
+                          'Бот (авто-модерация)',
+                          'bot',
+                          String(chatId),
+                          effectiveChatTitle,
+                          `Отслеживаемый продавец в «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}»`
+                        );
+                        await sendBuySellTopicWarning(
+                          chatId,
+                          targetUserObj,
+                          msgThreadId ? Number(msgThreadId) : undefined
+                        );
+                        alertRecord.status = 'RESOLVED_WARNED';
+                        autoActionLabel = '⚠️ Пост удалён, выдан варн и предупреждение в чат';
+                      } catch (e) {
+                        console.error('[BuySellTopic] Auto-warn error for tracked seller:', e);
+                      }
+                    } else if (actType === 'DELETE_ONLY') {
+                      try {
+                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
+                        alertRecord.status = 'RESOLVED_DELETED';
+                        autoActionLabel = '🗑 Пост автоматически удалён';
+                      } catch (e) {}
+                    } else if (actType === 'BAN') {
+                      try {
+                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
+                        await ctx.telegram.banChatMember(chatId, Number(userId)).catch(() => {});
+                        alertRecord.status = 'RESOLVED_BANNED';
+                        autoActionLabel = '🚫 Автор заблокирован в чате, пост удалён';
+                      } catch (e) {}
+                    }
+                  }
+
                   buySellAlerts.unshift(alertRecord);
                   if (buySellAlerts.length > 200) buySellAlerts.pop();
                   db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
 
                   const shouldTag = buySellGlobalConfig.tagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
                   const tagLine = shouldTag ? `${formatAdminMentionHtml(buySellGlobalConfig.adminTagHandle)}\n\n` : '';
+                  const autoActionSnippet = autoActionLabel ? `\n⚡ <b>Авто-действие:</b> ${autoActionLabel}\n` : '';
 
                   const adminAlertText =
                     `${tagLine}🚨 <b>ВНИМАНИЕ! ОТСЛЕЖИВАЕМЫЙ ПРОДАВЕЦ В ТОПИКЕ «КУПИ / ПРОДАЙ»!</b>\n\n` +
@@ -10215,11 +10529,19 @@ async function initBot(token: string) {
                     `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
                     `🆔 <b>ID:</b> <code>${userId}</code>\n` +
                     (matchedTrackedSeller.note ? `📋 <b>Заметка:</b> <i>${escapeHtml(matchedTrackedSeller.note)}</i>\n` : '') +
-                    `📊 <b>Статус:</b> 🔴 <b>Отслеживаемый продавец</b> (100% контроль)\n\n` +
-                    `💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+                    `📊 <b>Статус:</b> 🔴 <b>Отслеживаемый продавец</b> (100% контроль)\n` +
+                    autoActionSnippet +
+                    `\n💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
 
                   const keyboard = {
-                    inline_keyboard: [
+                    inline_keyboard: autoActionLabel ? [
+                      [{ text: '🔗 Открыть топик в чате', url: messageLink }],
+                      [{ text: `⚡ Сработало: ${buySellGlobalConfig.autoActionType || 'ВАРН'}`, callback_data: 'noop' }],
+                      [
+                        { text: '🚫 Забанить', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+                        { text: '✅ Частное (Отмена)', callback_data: `bs_dismiss_${alertId}` }
+                      ]
+                    ] : [
                       [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
                       [
                         { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
@@ -10244,7 +10566,7 @@ async function initBot(token: string) {
                     type: 'SHOP',
                     user: authorName,
                     chat: effectiveChatTitle,
-                    details: `⚠️ Обнаружен отслеживаемый продавец в «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}»: ${authorName} (${matchedTrackedSeller.note || 'Отслеживаемый'})`
+                    details: `⚠️ Обнаружен отслеживаемый продавец в «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}»: ${authorName} (${matchedTrackedSeller.note || 'Отслеживаемый'})${autoActionLabel ? ` [${autoActionLabel}]` : ''}`
                   });
                   return;
                 }
@@ -10284,6 +10606,52 @@ async function initBot(token: string) {
                     status: 'PENDING'
                   };
 
+                  // Auto-action for commercial ad
+                  const isAutoActionAi =
+                    buySellGlobalConfig.autoActionEnabled &&
+                    analysis.confidence >= (buySellGlobalConfig.autoActionMinConfidence || 85);
+
+                  let autoActionLabel = '';
+                  if (isAutoActionAi) {
+                    const actType = buySellGlobalConfig.autoActionType || 'DELETE_AND_WARN';
+                    if (actType === 'DELETE_AND_WARN') {
+                      try {
+                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
+                        const targetUserObj = { id: Number(userId), username, first_name: ctx.from.first_name };
+                        await applyWarning(
+                          targetUserObj,
+                          'Бот (авто-модерация)',
+                          'bot',
+                          String(chatId),
+                          effectiveChatTitle,
+                          `Коммерческое объявление в «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}» (${analysis.confidence}%)`
+                        );
+                        await sendBuySellTopicWarning(
+                          chatId,
+                          targetUserObj,
+                          msgThreadId ? Number(msgThreadId) : undefined
+                        );
+                        alertRecord.status = 'RESOLVED_WARNED';
+                        autoActionLabel = '⚠️ Пост удалён, выдан варн и предупреждение в чат';
+                      } catch (e) {
+                        console.error('[BuySellTopic] Auto-warn error for commercial ad:', e);
+                      }
+                    } else if (actType === 'DELETE_ONLY') {
+                      try {
+                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
+                        alertRecord.status = 'RESOLVED_DELETED';
+                        autoActionLabel = '🗑 Пост автоматически удалён';
+                      } catch (e) {}
+                    } else if (actType === 'BAN') {
+                      try {
+                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
+                        await ctx.telegram.banChatMember(chatId, Number(userId)).catch(() => {});
+                        alertRecord.status = 'RESOLVED_BANNED';
+                        autoActionLabel = '🚫 Автор заблокирован в чате, пост удалён';
+                      } catch (e) {}
+                    }
+                  }
+
                   buySellAlerts.unshift(alertRecord);
                   if (buySellAlerts.length > 200) buySellAlerts.pop();
                   db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
@@ -10294,6 +10662,7 @@ async function initBot(token: string) {
                   const markersSnippet = analysis.matchedMarkers.length > 0
                     ? analysis.matchedMarkers.map(m => `<code>${escapeHtml(m)}</code>`).join(', ')
                     : '<i>косвенные признаки коммерции</i>';
+                  const autoActionSnippet = autoActionLabel ? `\n⚡ <b>Авто-действие:</b> ${autoActionLabel}\n` : '';
 
                   const adminAlertText =
                     `${tagLine}📢 <b>ПОДОЗРЕНИЕ НА КОММЕРЧЕСКОЕ ОБЪЯВЛЕНИЕ!</b>\n\n` +
@@ -10303,11 +10672,19 @@ async function initBot(token: string) {
                     `🆔 <b>ID:</b> <code>${userId}</code>\n\n` +
                     `📊 <b>Вероятность коммерции:</b> ${verdictColorEmoji} <b>${analysis.confidence}%</b>\n` +
                     `🎯 <b>Маркеры:</b> ${markersSnippet}\n` +
-                    `📝 <b>Заключение ИИ:</b>\n<i>${escapeHtml(analysis.reason)}</i>\n\n` +
-                    `💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+                    `📝 <b>Заключение ИИ:</b>\n<i>${escapeHtml(analysis.reason)}</i>\n` +
+                    autoActionSnippet +
+                    `\n💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
 
                   const keyboard = {
-                    inline_keyboard: [
+                    inline_keyboard: autoActionLabel ? [
+                      [{ text: '🔗 Открыть топик в чате', url: messageLink }],
+                      [{ text: `⚡ Сработало: ${buySellGlobalConfig.autoActionType || 'ВАРН'}`, callback_data: 'noop' }],
+                      [
+                        { text: '🚫 Забанить', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+                        { text: '✅ Частное (Отмена)', callback_data: `bs_dismiss_${alertId}` }
+                      ]
+                    ] : [
                       [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
                       [
                         { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
@@ -10759,8 +11136,10 @@ async function initBot(token: string) {
             }
             return b.userId === userId;
           });
+          const isWhitelisted = whitelist.some(w => String(w.userId) === String(userId) || (username && w.username && w.username.toLowerCase() === `@${username.toLowerCase()}`));
+          const isVendor = isAnyShopVendor(userId, username);
 
-          if (isBanned) {
+          if (isBanned && !isWhitelisted && !isVendor) {
             try {
               await ctx.deleteMessage();
               await ctx.banChatMember(ctx.from.id);
@@ -11722,8 +12101,9 @@ async function initBot(token: string) {
         // Check for global bans
         const isGloballyBanned = bans.find(b => String(b.userId) === String(member.id));
         const isWhitelisted = whitelist.some(w => String(w.userId) === String(member.id) || (member.username && w.username && w.username.toLowerCase() === `@${member.username.toLowerCase()}`));
+        const isVendor = isAnyShopVendor(member.id, member.username);
         
-        if (isGloballyBanned && !isWhitelisted) {
+        if (isGloballyBanned && !isWhitelisted && !isVendor) {
           try {
             await ctx.telegram.banChatMember(chatId, member.id);
             console.log(`Auto-banned globally banned user ${member.id} in chat ${chatId} on join`);
@@ -12459,32 +12839,40 @@ async function initBot(token: string) {
           const targetMsgId = Number(parts[4]);
           const alertId = parts[5];
           await ctx.answerCbQuery('⚠️ Выдаем предупреждение...').catch(() => {});
+          const al = alertId ? buySellAlerts.find(a => a.id === alertId) : undefined;
           try {
             await ctx.telegram.deleteMessage(targetChatId, targetMsgId).catch(() => {});
             const targetChat = chats.find(c => String(c.id) === String(targetChatId));
             const chatTitle = targetChat?.title || targetChatId;
             const targetMem = memberships.find(m => String(m.userId) === String(targetUserId) && String(m.chatId) === String(targetChatId));
+            const targetUserObj = {
+              id: Number(targetUserId),
+              username: targetMem?.username || al?.username,
+              first_name: targetMem?.firstName || al?.authorName
+            };
             await applyWarning(
-              { id: Number(targetUserId), username: targetMem?.username, first_name: targetMem?.firstName },
+              targetUserObj,
               username ? `@${username}` : (ctx.from.first_name || 'Админ'),
               String(ctx.from.id),
               targetChatId,
               chatTitle,
               'Коммерческое объявление в топике Купи/Продай'
             );
+            await sendBuySellTopicWarning(
+              targetChatId,
+              targetUserObj,
+              al?.messageThreadId
+            );
           } catch (e) {
             console.error('Failed to warn in bs_warn:', e);
           }
-          if (alertId) {
-            const al = buySellAlerts.find(a => a.id === alertId);
-            if (al) {
-              al.status = 'RESOLVED_WARNED';
-              db.collection('buy_sell_alerts').doc(alertId).set(cleanData(al)).catch(() => {});
-            }
+          if (alertId && al) {
+            al.status = 'RESOLVED_WARNED';
+            db.collection('buy_sell_alerts').doc(alertId).set(cleanData(al)).catch(() => {});
           }
           try {
             await ctx.editMessageReplyMarkup({
-              inline_keyboard: [[{ text: '⚠️ Варн выдан, пост удален', callback_data: 'noop' }]]
+              inline_keyboard: [[{ text: '⚠️ Варн выдан, предупреждение отправлено в чат', callback_data: 'noop' }]]
             });
           } catch (e) {}
           return;
@@ -13171,18 +13559,22 @@ syncData().then(() => {
 // Helper to fix invalid URLs for Telegram (e.g. localhost)
 function fixUrl(url: string): string {
   if (!url) return '';
+  const trimmed = url.trim();
+  if (trimmed.startsWith('@')) {
+    return `https://t.me/${trimmed.slice(1)}`;
+  }
   // Telegram doesn't allow localhost URLs
-  if (url.includes('localhost')) {
+  if (trimmed.includes('localhost')) {
     const appUrl = process.env.APP_URL || process.env.VITE_APP_URL || '';
     if (appUrl) {
-      return url.replace(/https?:\/\/localhost(:\d+)?/, appUrl);
+      return trimmed.replace(/https?:\/\/localhost(:\d+)?/, appUrl);
     }
   }
-  // Ensure it starts with http or https
-  if (!url.startsWith('http://') && !url.startsWith('https://')) {
-    return 'https://' + url;
+  // Ensure it starts with http, https or tg
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://') && !trimmed.startsWith('tg://')) {
+    return 'https://' + trimmed;
   }
-  return url;
+  return trimmed;
 }
 
 app.post('/api/broadcast', authenticateToken, async (req, res) => {

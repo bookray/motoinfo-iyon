@@ -673,6 +673,13 @@ export interface TrackedBuySellSeller {
   lastAlertAt?: string;
 }
 
+export interface BuySellWarningButton {
+  text: string;
+  url: string;
+}
+
+export type BuySellAutoActionType = 'DELETE_AND_WARN' | 'DELETE_ONLY' | 'BAN';
+
 export interface BuySellGlobalConfig {
   enabled: boolean;
   minConfidence: number;
@@ -681,6 +688,17 @@ export interface BuySellGlobalConfig {
   notifyChannelId?: string; // Channel or chat ID/username for alerts (e.g. '@channel_username' or '-100...')
   tagAdmin?: boolean; // Whether to tag/mention admin in alert (default: true)
   adminTagHandle?: string; // Admin tag/username for mentions (default: '@bookray')
+
+  // Custom warning message in chat when post is marked commercial / warning is issued
+  warningMessageText?: string;
+  warningButtons?: BuySellWarningButton[];
+  warningAutoDeleteSec?: number; // Auto-delete warning message after X seconds (default 120, 0 = keep)
+
+  // Automated action settings
+  autoActionEnabled?: boolean; // Whether to automatically apply moderation action on detected ads
+  autoActionType?: BuySellAutoActionType; // 'DELETE_AND_WARN' | 'DELETE_ONLY' | 'BAN'
+  autoActionMinConfidence?: number; // Minimum confidence to trigger auto-action (e.g. 85%)
+  autoActionTrackedSellers?: boolean; // Automatically apply action to tracked sellers (default: true)
 }
 
 export interface BuySellCommercialAlert {
@@ -714,6 +732,13 @@ export const DEFAULT_COMMERCIAL_MARKERS: string[] = [
   'предзаказ', 'прайс', 'каталог', 'дилер', 'официальный',
   'оригинал 100%', 'возврат и обмен', 'интернет-магазин',
   'цена от', 'оптовые цены', 'самовывоз из магазина', 'опт', 'дропшиппинг'
+];
+
+export const DEFAULT_BUY_SELL_WARNING_TEXT = '⚠️ {user}, в этом топике разрешены объявления только некоммерческого характера для частных лиц. Если вы хотите разместить объявление коммерческого характера, обратитесь к владельцу чата.';
+
+export const DEFAULT_BUY_SELL_WARNING_BUTTONS: BuySellWarningButton[] = [
+  { text: '💬 Написать', url: 'https://t.me/bookray' },
+  { text: '📋 Условия и цены', url: 'https://telegra.ph/Pravila-temy-Obyavleniya-magazinov-10-26' }
 ];
 
 export const Tab = {

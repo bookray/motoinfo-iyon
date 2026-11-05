@@ -33,7 +33,8 @@ import {
   AlertTriangle,
   Ban,
   Bell,
-  AtSign
+  AtSign,
+  Zap
 } from 'lucide-react';
 import {
   Chat,
@@ -44,7 +45,11 @@ import {
   BuySellGlobalConfig,
   BuySellCommercialAlert,
   TrackedBuySellSeller,
-  DEFAULT_COMMERCIAL_MARKERS
+  BuySellWarningButton,
+  BuySellAutoActionType,
+  DEFAULT_COMMERCIAL_MARKERS,
+  DEFAULT_BUY_SELL_WARNING_TEXT,
+  DEFAULT_BUY_SELL_WARNING_BUTTONS
 } from '../types';
 
 interface ShopAnnouncementsProps {
@@ -161,6 +166,19 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [resolvingAlertId, setResolvingAlertId] = useState<string | null>(null);
   const [alertFilter, setAlertFilter] = useState<'ALL' | 'PENDING' | 'RESOLVED'>('ALL');
 
+  // Buy/Sell Warning Message and Buttons in Chat
+  const [buySellWarningMessageText, setBuySellWarningMessageText] = useState<string>(DEFAULT_BUY_SELL_WARNING_TEXT);
+  const [buySellWarningButtons, setBuySellWarningButtons] = useState<BuySellWarningButton[]>([...DEFAULT_BUY_SELL_WARNING_BUTTONS]);
+  const [buySellWarningAutoDeleteSec, setBuySellWarningAutoDeleteSec] = useState<number>(120);
+  const [newWarningBtnText, setNewWarningBtnText] = useState<string>('');
+  const [newWarningBtnUrl, setNewWarningBtnUrl] = useState<string>('');
+
+  // Buy/Sell Automated Actions
+  const [globalAutoActionEnabled, setGlobalAutoActionEnabled] = useState<boolean>(false);
+  const [globalAutoActionType, setGlobalAutoActionType] = useState<BuySellAutoActionType>('DELETE_AND_WARN');
+  const [globalAutoActionMinConfidence, setGlobalAutoActionMinConfidence] = useState<number>(85);
+  const [globalAutoActionTrackedSellers, setGlobalAutoActionTrackedSellers] = useState<boolean>(true);
+
   // Tracked Sellers in Buy/Sell Topics
   const [trackedSellers, setTrackedSellers] = useState<TrackedBuySellSeller[]>([]);
   const [newSellerIdentifier, setNewSellerIdentifier] = useState<string>('');
@@ -216,6 +234,27 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           }
           if (data.buySellGlobalConfig.adminTagHandle !== undefined) {
             setGlobalAdminTagHandle(data.buySellGlobalConfig.adminTagHandle || '@bookray');
+          }
+          if (data.buySellGlobalConfig.warningMessageText) {
+            setBuySellWarningMessageText(data.buySellGlobalConfig.warningMessageText);
+          }
+          if (Array.isArray(data.buySellGlobalConfig.warningButtons)) {
+            setBuySellWarningButtons(data.buySellGlobalConfig.warningButtons);
+          }
+          if (data.buySellGlobalConfig.warningAutoDeleteSec !== undefined) {
+            setBuySellWarningAutoDeleteSec(Number(data.buySellGlobalConfig.warningAutoDeleteSec));
+          }
+          if (data.buySellGlobalConfig.autoActionEnabled !== undefined) {
+            setGlobalAutoActionEnabled(Boolean(data.buySellGlobalConfig.autoActionEnabled));
+          }
+          if (data.buySellGlobalConfig.autoActionType) {
+            setGlobalAutoActionType(data.buySellGlobalConfig.autoActionType);
+          }
+          if (data.buySellGlobalConfig.autoActionMinConfidence !== undefined) {
+            setGlobalAutoActionMinConfidence(Number(data.buySellGlobalConfig.autoActionMinConfidence));
+          }
+          if (data.buySellGlobalConfig.autoActionTrackedSellers !== undefined) {
+            setGlobalAutoActionTrackedSellers(Boolean(data.buySellGlobalConfig.autoActionTrackedSellers));
           }
         }
         if (Array.isArray(data.buySellAlerts)) {
@@ -356,14 +395,21 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           markerWords: globalMarkerWords,
           notifyChannelId: globalNotifyChannelId,
           tagAdmin: globalTagAdmin,
-          adminTagHandle: globalAdminTagHandle
+          adminTagHandle: globalAdminTagHandle,
+          warningMessageText: buySellWarningMessageText,
+          warningButtons: buySellWarningButtons,
+          warningAutoDeleteSec: buySellWarningAutoDeleteSec,
+          autoActionEnabled: globalAutoActionEnabled,
+          autoActionType: globalAutoActionType,
+          autoActionMinConfidence: globalAutoActionMinConfidence,
+          autoActionTrackedSellers: globalAutoActionTrackedSellers
         })
       });
       const data = await res.json();
       if (res.ok && data.success) {
         setGlobalBuySellFeedback({
           type: 'success',
-          text: 'Общие настройки и маркерные слова успешно сохранены!'
+          text: 'Общие настройки, авто-действия и текст предупреждения успешно сохранены!'
         });
         await loadShopData(true);
       } else {
@@ -380,6 +426,30 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
     } finally {
       setIsSavingGlobalBuySell(false);
     }
+  };
+
+  const handleAddWarningButton = () => {
+    const text = newWarningBtnText.trim();
+    let url = newWarningBtnUrl.trim();
+    if (!text || !url) return;
+    if (url.startsWith('@')) {
+      url = `https://t.me/${url.slice(1)}`;
+    } else if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('tg://')) {
+      url = `https://${url}`;
+    }
+    setBuySellWarningButtons([...buySellWarningButtons, { text, url }]);
+    setNewWarningBtnText('');
+    setNewWarningBtnUrl('');
+  };
+
+  const handleRemoveWarningButton = (index: number) => {
+    setBuySellWarningButtons(buySellWarningButtons.filter((_, idx) => idx !== index));
+  };
+
+  const handleResetWarningDefaults = () => {
+    setBuySellWarningMessageText(DEFAULT_BUY_SELL_WARNING_TEXT);
+    setBuySellWarningButtons([...DEFAULT_BUY_SELL_WARNING_BUTTONS]);
+    setBuySellWarningAutoDeleteSec(120);
   };
 
   const handleAddMarkerWord = () => {
@@ -2011,6 +2081,270 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                     <p className="text-[10px] text-slate-500 mt-1">
                       Бот формирует кликабельное упоминание по вашему Telegram ID и @нику, гарантирующее пуш-звук.
                     </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Automated Actions on Commercial Detection */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+                  <div>
+                    <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Zap className="w-4 h-4 text-amber-400" />
+                      <span>Автоматические действия при обнаружении коммерции</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Автоматическое удаление, вынесение варна или бан без необходимости ручной обработки каждого уведомления
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={globalAutoActionEnabled}
+                      onChange={e => setGlobalAutoActionEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-600"></div>
+                  </label>
+                </div>
+
+                {globalAutoActionEnabled && (
+                  <div className="space-y-4 pt-1">
+                    {/* Action Type Selector */}
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-300 mb-2">
+                        Выберите действие при обнаружении:
+                      </label>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setGlobalAutoActionType('DELETE_AND_WARN')}
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            globalAutoActionType === 'DELETE_AND_WARN'
+                              ? 'bg-amber-950/40 border-amber-500/50 text-white shadow-sm'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800/60'
+                          }`}
+                        >
+                          <div className="text-xs font-bold flex items-center gap-1.5 mb-1 text-amber-300">
+                            <AlertTriangle className="w-4 h-4" />
+                            <span>Удалить и предупредить</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 leading-tight">
+                            Удаляет пост, выдает варн и отправляет предупреждение с правилами и кнопками в топик
+                          </p>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setGlobalAutoActionType('DELETE_ONLY')}
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            globalAutoActionType === 'DELETE_ONLY'
+                              ? 'bg-indigo-950/40 border-indigo-500/50 text-white shadow-sm'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800/60'
+                          }`}
+                        >
+                          <div className="text-xs font-bold flex items-center gap-1.5 mb-1 text-indigo-300">
+                            <Trash2 className="w-4 h-4" />
+                            <span>Только удалить</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 leading-tight">
+                            Тихо удаляет рекламный пост из топика без предупреждения и варна
+                          </p>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setGlobalAutoActionType('BAN')}
+                          className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                            globalAutoActionType === 'BAN'
+                              ? 'bg-rose-950/40 border-rose-500/50 text-white shadow-sm'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white hover:bg-slate-800/60'
+                          }`}
+                        >
+                          <div className="text-xs font-bold flex items-center gap-1.5 mb-1 text-rose-300">
+                            <Ban className="w-4 h-4" />
+                            <span>Забанить автора</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 leading-tight">
+                            Удаляет пост и навсегда блокирует автора в чате
+                          </p>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Confidence Slider & Tracked Sellers Toggle */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                      <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[11px] font-semibold text-slate-300">
+                            Порог уверенности ИИ для авто-действия:
+                          </span>
+                          <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 font-mono text-xs font-bold border border-amber-500/30">
+                            {globalAutoActionMinConfidence}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={50}
+                          max={95}
+                          step={5}
+                          value={globalAutoActionMinConfidence}
+                          onChange={e => setGlobalAutoActionMinConfidence(Number(e.target.value))}
+                          className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-amber-500"
+                        />
+                        <div className="flex justify-between text-[10px] text-slate-500 font-mono">
+                          <span>Чувствительный (50%)</span>
+                          <span>Рекомендуемый (85%)</span>
+                          <span>Строгий (95%)</span>
+                        </div>
+                      </div>
+
+                      <div className="p-3.5 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-3">
+                        <div>
+                          <span className="text-[11px] font-semibold text-slate-300 block">
+                            Применять к отслеживаемым продавцам
+                          </span>
+                          <span className="text-[10px] text-slate-500 mt-0.5 block">
+                            Мгновенно выполнять авто-действие при публикации пользователями из вашего списка продавцов
+                          </span>
+                        </div>
+                        <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={globalAutoActionTrackedSellers}
+                            onChange={e => setGlobalAutoActionTrackedSellers(e.target.checked)}
+                            className="w-4 h-4 rounded text-amber-600 bg-slate-900 border-slate-700 focus:ring-0 focus:ring-offset-0 cursor-pointer"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Warning Message in Chat and Buttons */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-slate-800/80">
+                  <div>
+                    <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <MessageSquare className="w-4 h-4 text-sky-400" />
+                      <span>Текст предупреждения в чате и кнопки</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Отправляется в топик «Купи / Продай» при нажатии кнопки «Предупредить» или при авто-действии с упоминанием автора
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleResetWarningDefaults}
+                    className="px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-400 hover:text-white text-[11px] font-semibold flex items-center gap-1 cursor-pointer transition-all self-start sm:self-auto"
+                    title="Сбросить на стандартный текст и кнопки"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    <span>По умолчанию</span>
+                  </button>
+                </div>
+
+                {/* Textarea */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-[11px] font-semibold text-slate-300">
+                      Шаблон сообщения:
+                    </label>
+                    <span className="text-[10px] text-slate-500">
+                      Используйте <code className="text-sky-300 font-mono">{'{user}'}</code> для упоминания автора
+                    </span>
+                  </div>
+                  <textarea
+                    rows={3}
+                    value={buySellWarningMessageText}
+                    onChange={e => setBuySellWarningMessageText(e.target.value)}
+                    placeholder="⚠️ {user}, в этом топике разрешены объявления только некоммерческого характера..."
+                    className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-sans leading-relaxed"
+                  />
+                </div>
+
+                {/* Inline Buttons list */}
+                <div className="space-y-2 pt-1">
+                  <label className="text-[11px] font-semibold text-slate-300 block">
+                    Кнопки под сообщением ({buySellWarningButtons.length}):
+                  </label>
+
+                  <div className="space-y-1.5">
+                    {buySellWarningButtons.map((btn, bIdx) => (
+                      <div
+                        key={bIdx}
+                        className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-900 border border-slate-800"
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="px-2.5 py-1 rounded-lg bg-indigo-500/20 text-indigo-300 text-xs font-semibold shrink-0">
+                            {btn.text}
+                          </span>
+                          <span className="text-xs text-slate-400 truncate font-mono text-[11px]">
+                            {btn.url}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveWarningButton(bIdx)}
+                          className="p-1 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 cursor-pointer transition-colors shrink-0"
+                          title="Удалить кнопку"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Add button input row */}
+                  <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 pt-1">
+                    <input
+                      type="text"
+                      value={newWarningBtnText}
+                      onChange={e => setNewWarningBtnText(e.target.value)}
+                      placeholder="Надпись: 💬 Написать"
+                      className="sm:col-span-2 bg-slate-900 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
+                    />
+                    <input
+                      type="text"
+                      value={newWarningBtnUrl}
+                      onChange={e => setNewWarningBtnUrl(e.target.value)}
+                      placeholder="Ссылка: https://t.me/bookray или @bookray"
+                      className="sm:col-span-2 bg-slate-900 border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 font-mono text-[11px]"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddWarningButton}
+                      disabled={!newWarningBtnText.trim() || !newWarningBtnUrl.trim()}
+                      className="sm:col-span-1 px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold flex items-center justify-center gap-1 cursor-pointer transition-all disabled:opacity-40"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Кнопка</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Auto delete timer */}
+                <div className="pt-2 border-t border-slate-800/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <span className="text-[11px] font-semibold text-slate-300 block">
+                      Автоудаление предупреждения из темы:
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      Через сколько секунд бот удалит сервисное предупреждение (0 — оставлять навсегда)
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={0}
+                      max={3600}
+                      step={10}
+                      value={buySellWarningAutoDeleteSec}
+                      onChange={e => setBuySellWarningAutoDeleteSec(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-24 bg-slate-900 border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white text-center font-mono focus:outline-none focus:border-indigo-500"
+                    />
+                    <span className="text-xs text-slate-400">сек.</span>
                   </div>
                 </div>
               </div>
