@@ -6596,6 +6596,85 @@ async function sendAlertToDestination(
   return false;
 }
 
+interface BanNotificationParams {
+  chatId: string | number;
+  chatTitle?: string;
+  userId: string | number;
+  userFullName?: string;
+  username?: string | null;
+  banReason: string;
+  triggerType: 'GLOBAL_BAN' | 'WARN_LIMIT' | 'BUY_SELL_COMMERCIAL' | 'BUY_SELL_TRACKED' | 'MULTI_CHAT' | 'ADMIN_CMD' | 'OTHER';
+  triggerMessageSnippet?: string;
+  originalMessageId?: number;
+}
+
+async function sendBanNotificationToChannel(params: BanNotificationParams): Promise<boolean> {
+  if (!bot) return false;
+  try {
+    const { chatId, chatTitle, userId, userFullName, username, banReason, triggerType, triggerMessageSnippet } = params;
+
+    const preferredTarget = 
+      (settings as any)?.alertsChannelId ||
+      buySellGlobalConfig.notifyChannelId ||
+      filters.multiChatNotifyChannelId ||
+      settings?.infoChatId;
+
+    const shouldTag = (settings as any)?.tagAdminOnAlerts !== false;
+    const tagLine = shouldTag ? `${formatAdminMentionHtml((settings as any)?.alertsAdminTag || filters.multiChatAdminTag || buySellGlobalConfig.adminTagHandle)}\n\n` : '';
+
+    let header = '🚨 <b>БЛОКИРОВКА ПОЛЬЗОВАТЕЛЯ В ЧАТЕ</b>';
+    if (triggerType === 'GLOBAL_BAN') {
+      header = '🚨 <b>АВТО-БЛОКИРОВКА В ЧАТЕ (ГЛОБАЛЬНЫЙ БАН-ЛИСТ)</b>';
+    } else if (triggerType === 'WARN_LIMIT') {
+      header = '🚨 <b>БЛОКИРОВКА В ЧАТЕ (ЛИМИТ ПРЕДУПРЕЖДЕНИЙ)</b>';
+    } else if (triggerType === 'BUY_SELL_COMMERCIAL') {
+      header = '🚨 <b>АВТО-БЛОКИРОВКА (КОММЕРЦИЯ В «КУПИ / ПРОДАЙ»)</b>';
+    } else if (triggerType === 'BUY_SELL_TRACKED') {
+      header = '🚨 <b>АВТО-БЛОКИРОВКА (ОТСЛЕЖИВАЕМЫЙ ПРОДАВЕЦ)</b>';
+    } else if (triggerType === 'MULTI_CHAT') {
+      header = '🚨 <b>БЛОКИРОВКА ПОЛЬЗОВАТЕЛЯ (СПАМ В ЧАТАХ)</b>';
+    }
+
+    const effectiveTitle = chatTitle || chats.find(c => String(c.id) === String(chatId))?.title || `Чат ${chatId}`;
+    const authorName = userFullName || (username ? `@${username.replace(/^@/, '')}` : `User ${userId}`);
+    const userHandle = username ? `@${username.replace(/^@/, '')}` : 'нет юзернейма';
+
+    let msgBlock = '';
+    if (triggerMessageSnippet && triggerMessageSnippet.trim()) {
+      msgBlock = `\n💬 <b>Сообщение пользователя:</b>\n<blockquote>${escapeHtml(triggerMessageSnippet.trim().slice(0, 350))}</blockquote>\n`;
+    }
+
+    const text =
+      `${tagLine}${header}\n\n` +
+      `📍 <b>Чат:</b> ${escapeHtml(effectiveTitle)} (<code>${chatId}</code>)\n` +
+      `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
+      `🆔 <b>ID:</b> <code>${userId}</code>\n\n` +
+      `⚠️ <b>Причина блокировки:</b>\n<b>${escapeHtml(banReason)}</b>\n` +
+      msgBlock +
+      `\n<i>Бот заблокировал пользователя в чате. Вы можете разблокировать его в 1 клик или внести в белый список.</i>`;
+
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: '✅ Разбанить и в белый список', callback_data: `unban_wl_${userId}_${chatId}` },
+          { text: '🗑 Только разбанить', callback_data: `unban_only_${userId}_${chatId}` }
+        ],
+        [
+          { text: '👤 Профиль в Telegram', url: `tg://user?id=${userId}` }
+        ]
+      ]
+    };
+
+    return await sendAlertToDestination(preferredTarget, text, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    });
+  } catch (err: any) {
+    console.error('[BanNotifier] Failed to send ban notification to channel:', err?.message || err);
+    return false;
+  }
+}
+
 function formatSummaryForTelegramHtml(
   text: string, 
   blackListPosts?: BlackListPost[], 
@@ -8159,6 +8238,16 @@ async function applyWarning(
       if (bot) {
         try {
           await bot.telegram.banChatMember(chatId, targetUser.id);
+          sendBanNotificationToChannel({
+            chatId,
+            chatTitle,
+            userId: targetUser.id,
+            userFullName: [targetUser.first_name, targetUser.last_name].filter(Boolean).join(' ') || (targetUser.username ? `@${targetUser.username}` : `User ${targetUser.id}`),
+            username: targetUser.username,
+            banReason: `Превышение лимита предупреждений (${activeWarns}/${warnLimit}). Последнее нарушение: ${reason || 'Нарушение правил'}`,
+            triggerType: 'WARN_LIMIT',
+            triggerMessageSnippet: `Выдано администратором ${adminName}: ${reason || 'Нарушение правил'}`
+          }).catch(err => console.error('[ApplyWarning] Ban alert error:', err));
         } catch (e) {
           console.error(`Failed to ban user ${targetUserId} after reaching warn limit in ${chatId}:`, e);
         }
@@ -9718,14 +9807,53 @@ async function initBot(token: string) {
       }
 
       // Check for global bans
-      const isGloballyBanned = bans.find(b => String(b.userId) === String(userId));
-      const isWhitelisted = whitelist.some(w => String(w.userId) === String(userId) || (username && w.username && w.username.toLowerCase() === `@${username.toLowerCase()}`));
+      const userNormId = String(userId);
+      const userNormUsername = username ? username.toLowerCase().replace(/^@/, '') : '';
+      const isGloballyBanned = bans.find(b => {
+        const bId = String(b.userId || '').trim();
+        if (bId === userNormId) return true;
+        if (bId.startsWith('@') && userNormUsername && bId.toLowerCase() === `@${userNormUsername}`) return true;
+        if (b.username && userNormUsername && b.username.toLowerCase().replace(/^@/, '') === userNormUsername) return true;
+        return false;
+      });
+      const isWhitelisted = whitelist.some(w => {
+        const wId = String(w.userId || '').trim();
+        if (wId === userNormId) return true;
+        if (w.username && userNormUsername && w.username.toLowerCase().replace(/^@/, '') === userNormUsername) return true;
+        return false;
+      });
       const isVendor = isAnyShopVendor(userId, username);
 
       if (isGloballyBanned && !isWhitelisted && !isVendor && chatType !== 'private') {
         try {
           await ctx.telegram.banChatMember(chatId, Number(userId));
-          await ctx.deleteMessage();
+          const msgSnippet = (ctx.message as any)?.text || (ctx.message as any)?.caption || '[Медиа/Файл]';
+          await ctx.deleteMessage().catch(() => {});
+
+          const banReason = isGloballyBanned.reason || 'Внесён в глобальный бан-лист бота';
+          const userFullName = [ctx.from?.first_name, ctx.from?.last_name].filter(Boolean).join(' ') || (username ? `@${username}` : `User ${userId}`);
+          const chatTitle = (ctx.chat && 'title' in ctx.chat) ? ctx.chat.title : `Чат ${chatId}`;
+
+          await sendBanNotificationToChannel({
+            chatId,
+            chatTitle,
+            userId,
+            userFullName,
+            username,
+            banReason: `Глобальный бан-лист: ${banReason}`,
+            triggerType: 'GLOBAL_BAN',
+            triggerMessageSnippet: msgSnippet
+          });
+
+          await addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'BAN',
+            user: userFullName,
+            chat: chatTitle,
+            details: `Авто-блокировка по глобальному бан-листу: ${banReason}. Сообщение удалено.`
+          });
+
           console.log(`Auto-banned globally banned user ${userId} in chat ${chatId} after message`);
           return;
         } catch (e) {
@@ -10510,6 +10638,16 @@ async function initBot(token: string) {
                         await ctx.telegram.banChatMember(chatId, Number(userId)).catch(() => {});
                         alertRecord.status = 'RESOLVED_BANNED';
                         autoActionLabel = '🚫 Автор заблокирован в чате, пост удалён';
+                        sendBanNotificationToChannel({
+                          chatId,
+                          chatTitle: effectiveChatTitle,
+                          userId,
+                          userFullName: authorName,
+                          username,
+                          banReason: `Отслеживаемый продавец в топике «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}» (${matchedTrackedSeller.note || 'Отслеживаемый продавец'})`,
+                          triggerType: 'BUY_SELL_TRACKED',
+                          triggerMessageSnippet: alertRecord.textSnippet
+                        }).catch(e => console.error('[TrackedSellerBan] Alert error:', e));
                       } catch (e) {}
                     }
                   }
@@ -10648,6 +10786,16 @@ async function initBot(token: string) {
                         await ctx.telegram.banChatMember(chatId, Number(userId)).catch(() => {});
                         alertRecord.status = 'RESOLVED_BANNED';
                         autoActionLabel = '🚫 Автор заблокирован в чате, пост удалён';
+                        sendBanNotificationToChannel({
+                          chatId,
+                          chatTitle: effectiveChatTitle,
+                          userId,
+                          userFullName: authorName,
+                          username,
+                          banReason: `Коммерческое объявление в топике «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}» (уверенность ИИ: ${analysis.confidence}%)`,
+                          triggerType: 'BUY_SELL_COMMERCIAL',
+                          triggerMessageSnippet: alertRecord.textSnippet
+                        }).catch(e => console.error('[CommercialAdBan] Alert error:', e));
                       } catch (e) {}
                     }
                   }
@@ -11130,26 +11278,49 @@ async function initBot(token: string) {
         // Moderation Logic (for chats with active automated protection)
         if (chat.active) {
           // Check Global Ban List (ID or Username)
-          const isBanned = bans.some(b => {
-            if (b.userId.startsWith('@')) {
-              return ctx.from.username && `@${ctx.from.username.toLowerCase()}` === b.userId.toLowerCase();
-            }
-            return b.userId === userId;
+          const matchedBan = bans.find(b => {
+            const bId = String(b.userId || '').trim();
+            if (bId === String(userId)) return true;
+            if (bId.startsWith('@') && username && bId.toLowerCase() === `@${username.toLowerCase()}`) return true;
+            if (b.username && username && b.username.toLowerCase().replace(/^@/, '') === username.toLowerCase()) return true;
+            return false;
           });
-          const isWhitelisted = whitelist.some(w => String(w.userId) === String(userId) || (username && w.username && w.username.toLowerCase() === `@${username.toLowerCase()}`));
+          const isBanned = !!matchedBan;
+          const isWhitelisted = whitelist.some(w => {
+            const wId = String(w.userId || '').trim();
+            if (wId === String(userId)) return true;
+            if (w.username && username && w.username.toLowerCase().replace(/^@/, '') === username.toLowerCase()) return true;
+            return false;
+          });
           const isVendor = isAnyShopVendor(userId, username);
 
           if (isBanned && !isWhitelisted && !isVendor) {
             try {
-              await ctx.deleteMessage();
+              const msgSnippet = (ctx.message && 'text' in ctx.message) ? ctx.message.text : ((ctx.message as any)?.caption || '[Медиа/Файл]');
+              await ctx.deleteMessage().catch(() => {});
               await ctx.banChatMember(ctx.from.id);
+
+              const banReason = matchedBan?.reason || 'Внесён в глобальный бан-лист бота';
+              const userFullName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || (username ? `@${username}` : `User ${userId}`);
+
+              await sendBanNotificationToChannel({
+                chatId,
+                chatTitle: chat.title,
+                userId: ctx.from.id,
+                userFullName,
+                username,
+                banReason: `Глобальный бан-лист: ${banReason}`,
+                triggerType: 'GLOBAL_BAN',
+                triggerMessageSnippet: msgSnippet
+              });
+
               await addLog({
                 id: Math.random().toString(36).substr(2, 9),
                 timestamp: new Date().toISOString(),
                 type: 'BAN',
-                user: ctx.from.first_name,
+                user: userFullName,
                 chat: chat.title,
-                details: 'Пользователь удален (глобальный бан-лист).'
+                details: `Пользователь удален (глобальный бан-лист: ${banReason}).`
               });
               return;
             } catch (e) {
@@ -12099,14 +12270,43 @@ async function initBot(token: string) {
       const newMembers = (ctx.message as any).new_chat_members.filter((m: any) => !m.is_bot);
       for (const member of newMembers) {
         // Check for global bans
-        const isGloballyBanned = bans.find(b => String(b.userId) === String(member.id));
-        const isWhitelisted = whitelist.some(w => String(w.userId) === String(member.id) || (member.username && w.username && w.username.toLowerCase() === `@${member.username.toLowerCase()}`));
+        const memberIdStr = String(member.id);
+        const memberUserClean = (member.username || '').toLowerCase().replace(/^@/, '');
+        const isGloballyBanned = bans.find(b => {
+          const bId = String(b.userId || '').trim();
+          if (bId === memberIdStr) return true;
+          if (bId.startsWith('@') && memberUserClean && bId.toLowerCase() === `@${memberUserClean}`) return true;
+          if (b.username && memberUserClean && b.username.toLowerCase().replace(/^@/, '') === memberUserClean) return true;
+          return false;
+        });
+        const isWhitelisted = whitelist.some(w => {
+          const wId = String(w.userId || '').trim();
+          if (wId === memberIdStr) return true;
+          if (w.username && memberUserClean && w.username.toLowerCase().replace(/^@/, '') === memberUserClean) return true;
+          return false;
+        });
         const isVendor = isAnyShopVendor(member.id, member.username);
         
         if (isGloballyBanned && !isWhitelisted && !isVendor) {
           try {
             await ctx.telegram.banChatMember(chatId, member.id);
             console.log(`Auto-banned globally banned user ${member.id} in chat ${chatId} on join`);
+
+            const banReason = isGloballyBanned.reason || 'Внесён в глобальный бан-лист бота';
+            const userFullName = [member.first_name, member.last_name].filter(Boolean).join(' ') || (member.username ? `@${member.username}` : `User ${member.id}`);
+            const chatTitle = chat.title || `Чат ${chatId}`;
+
+            sendBanNotificationToChannel({
+              chatId,
+              chatTitle,
+              userId: member.id,
+              userFullName,
+              username: member.username,
+              banReason: `Глобальный бан-лист: ${banReason}`,
+              triggerType: 'GLOBAL_BAN',
+              triggerMessageSnippet: 'Попытка входа / присоединения к чату'
+            }).catch(e => console.error('[JoinBan] Alert error:', e));
+
             continue; // Skip tracking for banned user
           } catch (e) {
             console.error(`Failed to auto-ban globally banned user ${member.id} in chat ${chatId}:`, (e as Error).message);
@@ -12633,11 +12833,11 @@ async function initBot(token: string) {
           await ctx.answerCbQuery(`🗑 Сообщения удалены (${cleanRes.deletedCount} сообщ. в ${cleanRes.chatsCount} чатах)!`);
 
           const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
-          const updatedText = `${currentText}\n\n🧹 *СТАТУС:* Все сообщения удалены во всех чатах (${cleanRes.deletedCount} сообщ., ${adminTag}).`;
+          const updatedText = `${currentText}\n\n🧹 <b>СТАТУС:</b> Все сообщения удалены во всех чатах (${cleanRes.deletedCount} сообщ., ${adminTag}).`;
 
           try {
             await ctx.editMessageText(updatedText, {
-              parse_mode: 'Markdown',
+              parse_mode: 'HTML',
               reply_markup: {
                 inline_keyboard: [
                   [{ text: '🚫 Заблокировать глобально', callback_data: `mc_ban_${targetUserId}` }],
@@ -12645,7 +12845,16 @@ async function initBot(token: string) {
                 ]
               }
             });
-          } catch (e) {}
+          } catch (e) {
+            try {
+              await ctx.editMessageReplyMarkup({
+                inline_keyboard: [
+                  [{ text: '🚫 Заблокировать глобально', callback_data: `mc_ban_${targetUserId}` }],
+                  [{ text: '✅ В белый список', callback_data: `mc_wl_${targetUserId}` }]
+                ]
+              });
+            } catch (err) {}
+          }
           return;
         }
 
@@ -12713,11 +12922,11 @@ async function initBot(token: string) {
 
         const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
         const cleanNotice = isBanAndClean ? ` + удалено ${cleanRes?.deletedCount || 0} сообщ.` : '';
-        const updatedText = `${currentText}\n\n🛑 *СТАТУС:* Заблокирован во всех чатах${cleanNotice} (${adminTag}).`;
+        const updatedText = `${currentText}\n\n🛑 <b>СТАТУС:</b> Заблокирован во всех чатах${cleanNotice} (${adminTag}).`;
 
         try {
           await ctx.editMessageText(updatedText, {
-            parse_mode: 'Markdown',
+            parse_mode: 'HTML',
             reply_markup: {
               inline_keyboard: [[
                 { text: '⛔ Заблокирован (Глобальный бан)', callback_data: `mc_info_banned_${targetUserId}` },
@@ -12743,11 +12952,11 @@ async function initBot(token: string) {
         await ctx.answerCbQuery('✅ Пользователь добавлен в белый список!', { show_alert: true }).catch(() => {});
 
         // Remove from global ban list if present
-        const banIndex = bans.findIndex(b => String(b.userId) === String(targetUserId));
+        const banIndex = bans.findIndex(b => String(b.userId) === String(targetUserId) || (b.username && b.username.toLowerCase().replace(/^@/, '') === String(targetUserId).toLowerCase()));
         if (banIndex !== -1) {
           bans.splice(banIndex, 1);
-          queueDelete('bans', targetUserId);
         }
+        queueDelete('bans', targetUserId);
 
         // Add to Whitelist
         const existingWlIndex = whitelist.findIndex(w => String(w.userId) === String(targetUserId));
@@ -12764,11 +12973,12 @@ async function initBot(token: string) {
           queueWrite('whitelist', targetUserId, cleanData(newWl));
         }
 
-        // Unban in chats asynchronously in background
-        const userMembershipsList = memberships.filter(m => String(m.userId) === String(targetUserId));
-        Promise.allSettled(
-          userMembershipsList.map(m => ctx.telegram.unbanChatMember(m.chatId, Number(targetUserId), { only_if_banned: true }))
-        ).catch(() => {});
+        // Unban in all active chats
+        for (const chat of chats.filter(c => c.active)) {
+          try {
+            await ctx.telegram.unbanChatMember(chat.id, Number(targetUserId), { only_if_banned: true });
+          } catch (e) {}
+        }
 
         await addLog({
           id: Math.random().toString(36).substr(2, 9),
@@ -12780,12 +12990,12 @@ async function initBot(token: string) {
         });
 
         const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
-        const adminTag = username ? `@${username}` : (ctx.from.first_name || 'Админ');
-        const updatedText = `${currentText}\n\n✅ *СТАТУС:* Добавлен в белый список (${adminTag}). Уведомления отключены.`;
+        const adminTag = username ? `@${username}` : (ctx.from?.first_name || 'Админ');
+        const updatedText = `${currentText}\n\n✅ <b>СТАТУС:</b> Добавлен в белый список (${adminTag}). Уведомления отключены.`;
 
         try {
           await ctx.editMessageText(updatedText, {
-            parse_mode: 'Markdown',
+            parse_mode: 'HTML',
             reply_markup: {
               inline_keyboard: [[
                 { text: '✅ В белом списке', callback_data: `mc_info_wl_${targetUserId}` },
@@ -12803,6 +13013,101 @@ async function initBot(token: string) {
             });
           } catch (err) {}
         }
+        return;
+      }
+
+      if (data.startsWith('unban_wl_') || data.startsWith('unban_only_')) {
+        const isWhitelist = data.startsWith('unban_wl_');
+        const rawPayload = isWhitelist ? data.replace('unban_wl_', '') : data.replace('unban_only_', '');
+        const parts = rawPayload.split('_');
+        const targetUserId = parts[0];
+        const targetChatId = parts[1];
+
+        await ctx.answerCbQuery(isWhitelist ? '✅ Разблокируем и вносим в белый список...' : '✅ Разблокируем пользователя...').catch(() => {});
+
+        // 1. Remove from global ban list if present
+        const banIndex = bans.findIndex(b => String(b.userId) === String(targetUserId) || (b.username && b.username.toLowerCase().replace(/^@/, '') === String(targetUserId).toLowerCase()));
+        if (banIndex !== -1) {
+          bans.splice(banIndex, 1);
+        }
+        queueDelete('bans', targetUserId);
+
+        // 2. Unban in the target chat
+        if (targetChatId) {
+          try {
+            await ctx.telegram.unbanChatMember(targetChatId, Number(targetUserId), { only_if_banned: true });
+          } catch (e) {}
+        }
+
+        // 3. Unban in all other active chats
+        for (const c of chats.filter(ch => ch.active)) {
+          try {
+            await ctx.telegram.unbanChatMember(c.id, Number(targetUserId), { only_if_banned: true });
+          } catch (e) {}
+        }
+
+        // 4. If whitelist requested, add to whitelist
+        const userMem = memberships.find(m => String(m.userId) === String(targetUserId));
+        if (isWhitelist) {
+          const existingWlIndex = whitelist.findIndex(w => String(w.userId) === String(targetUserId));
+          if (existingWlIndex === -1) {
+            const newWl = {
+              id: targetUserId,
+              userId: targetUserId,
+              username: userMem?.username || (targetUserId === '150097903' ? '@bookray' : null),
+              firstName: userMem?.firstName || (targetUserId === '150097903' ? 'Свинцовый парашют' : `User ${targetUserId}`),
+              addedAt: new Date().toISOString()
+            };
+            whitelist.push(newWl);
+            queueWrite('whitelist', targetUserId, cleanData(newWl));
+          }
+        }
+
+        const adminTag = username ? `@${username}` : (ctx.from?.first_name || 'Админ');
+        const currentText = (ctx.callbackQuery.message && 'text' in ctx.callbackQuery.message) ? ctx.callbackQuery.message.text : '';
+        const statusLine = isWhitelist
+          ? `\n\n✅ <b>СТАТУС:</b> Разблокирован и добавлен в белый список (${adminTag}).`
+          : `\n\n✅ <b>СТАТУС:</b> Разблокирован во всех чатах (${adminTag}).`;
+
+        try {
+          await ctx.editMessageText(`${currentText}${statusLine}`, {
+            parse_mode: 'HTML',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  { text: isWhitelist ? '✅ В белом списке' : '✅ Разблокирован', callback_data: `mc_info_wl_${targetUserId}` },
+                  { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` }
+                ],
+                [
+                  { text: '👤 Профиль', url: `tg://user?id=${targetUserId}` }
+                ]
+              ]
+            }
+          });
+        } catch (e) {
+          try {
+            await ctx.editMessageReplyMarkup({
+              inline_keyboard: [
+                [
+                  { text: isWhitelist ? '✅ В белом списке' : '✅ Разблокирован', callback_data: `mc_info_wl_${targetUserId}` },
+                  { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` }
+                ],
+                [
+                  { text: '👤 Профиль', url: `tg://user?id=${targetUserId}` }
+                ]
+              ]
+            });
+          } catch (err) {}
+        }
+
+        await addLog({
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().toISOString(),
+          type: isWhitelist ? 'WHITELIST' : 'UNBAN',
+          user: userMem?.username || `ID ${targetUserId}`,
+          chat: targetChatId || 'Все чаты',
+          details: `Пользователь ID ${targetUserId} разблокирован${isWhitelist ? ' и добавлен в белый список' : ''} через уведомление (${adminTag}).`
+        });
         return;
       }
 
