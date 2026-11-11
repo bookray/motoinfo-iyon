@@ -3015,10 +3015,12 @@ app.get('/api/shop-topics', authenticateToken, async (req, res) => {
       };
     });
     const enrichedVendors = shopVendors.map(v => {
-      const chatObj = chats.find(c => String(c.id) === String(v.chatId));
+      const isGlobal = v.chatId === 'all' || v.chatId === 'global' || v.scope === 'ALL_CHATS';
+      const chatObj = isGlobal ? null : chats.find(c => String(c.id) === String(v.chatId));
       return {
         ...v,
-        chatTitle: chatObj?.title || v.chatTitle || v.chatId
+        scope: isGlobal ? 'ALL_CHATS' : (v.scope || 'CHAT'),
+        chatTitle: isGlobal ? 'Все чаты (Глобально)' : (chatObj?.title || v.chatTitle || v.chatId)
       };
     });
     const enrichedBuySellTopics = buySellTopics.map(t => {
@@ -3233,13 +3235,14 @@ app.delete('/api/shop-topics/config/:chatId', authenticateToken, async (req, res
 
 app.post('/api/shop-topics/vendors', authenticateToken, async (req, res) => {
   try {
-    const { chatId, shopName, contactInfo, userIdentifier, weeklyLimit, durationDays, expiresAt: customExpiresAt } = req.body;
+    const { chatId, scope, shopName, contactInfo, userIdentifier, weeklyLimit, durationDays, expiresAt: customExpiresAt } = req.body;
     if (!chatId || !userIdentifier) {
-      return res.status(400).json({ error: 'Укажите чат и @username или Telegram ID продавца' });
+      return res.status(400).json({ error: 'Укажите чат (или все чаты) и @username или Telegram ID продавца' });
     }
 
     const chatStr = String(chatId);
-    const chatObj = chats.find(c => String(c.id) === chatStr);
+    const isGlobal = chatStr === 'all' || chatStr === 'global' || scope === 'ALL_CHATS';
+    const chatObj = isGlobal ? null : chats.find(c => String(c.id) === chatStr);
     const rawIdent = String(userIdentifier).trim();
 
     let userId: string | undefined;
@@ -3271,8 +3274,9 @@ app.post('/api/shop-topics/vendors', authenticateToken, async (req, res) => {
     const vendorId = `vendor_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const newVendor: ShopVendor = {
       id: vendorId,
-      chatId: chatStr,
-      chatTitle: chatObj?.title || chatStr,
+      chatId: isGlobal ? 'all' : chatStr,
+      chatTitle: isGlobal ? 'Все чаты (Глобально)' : (chatObj?.title || chatStr),
+      scope: isGlobal ? 'ALL_CHATS' : 'CHAT',
       shopName: (shopName || (username ? `@${username}` : `Магазин ${userId}`)).trim(),
       contactInfo: (contactInfo || '').trim(),
       userId,
@@ -3299,9 +3303,15 @@ app.post('/api/shop-topics/vendors', authenticateToken, async (req, res) => {
       db.collection('bans').doc(String(userId)).delete().catch(() => {});
     }
 
-    // Auto-unban in Telegram chat if banned
+    // Auto-unban in Telegram chat(s) if banned
     if (bot && userId && /^\d+$/.test(String(userId))) {
-      bot.telegram.unbanChatMember(chatStr, Number(userId), { only_if_banned: true }).catch(() => {});
+      if (isGlobal) {
+        for (const c of chats) {
+          bot.telegram.unbanChatMember(String(c.id), Number(userId), { only_if_banned: true }).catch(() => {});
+        }
+      } else {
+        bot.telegram.unbanChatMember(chatStr, Number(userId), { only_if_banned: true }).catch(() => {});
+      }
     }
 
     // Auto-whitelist vendor
@@ -3323,8 +3333,8 @@ app.post('/api/shop-topics/vendors', authenticateToken, async (req, res) => {
       timestamp: now.toISOString(),
       type: 'SHOP',
       user: (req as any).user?.username || 'Admin',
-      chat: newVendor.chatTitle || chatStr,
-      details: `Добавлен продавец «${newVendor.shopName}» (${username ? '@' + username : ''}${userId ? ' ID:' + userId : ''}), лимит: ${limitNum}/нед., до ${expDate.toLocaleDateString('ru-RU')} (внесен в белый список)`
+      chat: isGlobal ? 'Все чаты (Глобально)' : (newVendor.chatTitle || chatStr),
+      details: `Добавлен продавец «${newVendor.shopName}» (${username ? '@' + username : ''}${userId ? ' ID:' + userId : ''}), лимит: ${limitNum}/нед.${isGlobal ? ' во всех чатах' : ''}, до ${expDate.toLocaleDateString('ru-RU')} (внесен в белый список)`
     });
 
     res.json({ success: true, vendor: newVendor });
@@ -3357,8 +3367,30 @@ app.put('/api/shop-topics/vendors/:id', authenticateToken, async (req, res) => {
       }
     }
 
+    let updatedChatId = existing.chatId;
+    let updatedChatTitle = existing.chatTitle;
+    let updatedScope: 'CHAT' | 'ALL_CHATS' = existing.scope || (existing.chatId === 'all' ? 'ALL_CHATS' : 'CHAT');
+
+    if (updates.chatId !== undefined || updates.scope !== undefined) {
+      const targetChatId = updates.chatId !== undefined ? String(updates.chatId) : existing.chatId;
+      const isTargetGlobal = targetChatId === 'all' || targetChatId === 'global' || updates.scope === 'ALL_CHATS';
+      if (isTargetGlobal) {
+        updatedChatId = 'all';
+        updatedChatTitle = 'Все чаты (Глобально)';
+        updatedScope = 'ALL_CHATS';
+      } else {
+        const foundChat = chats.find(c => String(c.id) === targetChatId);
+        updatedChatId = targetChatId;
+        updatedChatTitle = foundChat ? foundChat.title : (updates.chatTitle || targetChatId);
+        updatedScope = 'CHAT';
+      }
+    }
+
     const updatedVendor: ShopVendor = {
       ...existing,
+      chatId: updatedChatId,
+      chatTitle: updatedChatTitle,
+      scope: updatedScope,
       shopName: updates.shopName !== undefined ? String(updates.shopName).trim() : existing.shopName,
       contactInfo: updates.contactInfo !== undefined ? String(updates.contactInfo).trim() : existing.contactInfo,
       userId: updatedUserId,
@@ -5711,8 +5743,9 @@ function isApprovedShopVendor(
       if (!isNaN(expTime) && expTime <= Date.now()) return false;
     }
 
-    // Chat matching: if chatId is provided and vendor is specific to a chat
-    if (cleanTargetChat && v.chatId && v.chatId !== 'all' && v.chatId !== 'global') {
+    // Chat matching: if vendor is global, they match across all chats!
+    const isVendorGlobal = v.chatId === 'all' || v.chatId === 'global' || v.scope === 'ALL_CHATS';
+    if (!isVendorGlobal && cleanTargetChat && v.chatId) {
       const vCleanChat = cleanChatIdStr(v.chatId);
       if (vCleanChat && vCleanChat !== cleanTargetChat) return false;
     }
@@ -9831,7 +9864,8 @@ async function initBot(token: string) {
         }
 
         const activeVendorsCount = shopVendors.filter(
-          v => String(v.chatId) === chatId && v.active && (!v.expiresAt || new Date(v.expiresAt).getTime() > Date.now())
+          v => (String(v.chatId) === chatId || v.chatId === 'all' || v.chatId === 'global' || v.scope === 'ALL_CHATS') &&
+            v.active && (!v.expiresAt || new Date(v.expiresAt).getTime() > Date.now())
         ).length;
 
         await addLog({
@@ -9880,7 +9914,9 @@ async function initBot(token: string) {
           );
         }
 
-        const chatVendors = shopVendors.filter(v => String(v.chatId) === chatId);
+        const chatVendors = shopVendors.filter(
+          v => String(v.chatId) === chatId || v.chatId === 'all' || v.chatId === 'global' || v.scope === 'ALL_CHATS'
+        );
         const activeVendors = chatVendors.filter(v => v.active && (!v.expiresAt || new Date(v.expiresAt).getTime() > Date.now()));
 
         let vendorsListText = '';
@@ -9890,7 +9926,9 @@ async function initBot(token: string) {
           vendorsListText = '\n<b>Активные продавцы:</b>\n' + activeVendors.slice(0, 15).map((v, idx) => {
             const daysLeft = v.expiresAt ? Math.max(0, Math.ceil((new Date(v.expiresAt).getTime() - Date.now()) / (24 * 3600 * 1000))) : 30;
             const ident = v.username ? `@${v.username}` : `ID:${v.userId}`;
-            return `${idx + 1}. <b>${escapeHtml(v.shopName)}</b> (${escapeHtml(ident)}) — <code>${v.currentWeekMessages}/${v.weeklyLimit}</code> за нед. (ост. ${daysLeft} дн.)`;
+            const isGlobal = v.chatId === 'all' || v.chatId === 'global' || v.scope === 'ALL_CHATS';
+            const scopeTag = isGlobal ? ' [🌐 Все чаты]' : '';
+            return `${idx + 1}. <b>${escapeHtml(v.shopName)}</b> (${escapeHtml(ident)})${scopeTag} — <code>${v.currentWeekMessages}/${v.weeklyLimit}</code> за нед. (ост. ${daysLeft} дн.)`;
           }).join('\n');
         }
 
@@ -10448,13 +10486,26 @@ async function initBot(token: string) {
               const cleanSenderUsername = ((username || '').replace(/^@/, '') || senderChatUsername).toLowerCase();
               const effectiveSenderId = msgAny?.sender_chat?.id ? String(msgAny.sender_chat.id) : String(userId);
 
-              // Find matching vendor in this chat by Telegram ID or @username
-              const vendorIdx = shopVendors.findIndex(v => {
+              // Find matching vendor in this chat by Telegram ID or @username:
+              // 1. First priority: chat-specific vendor configuration
+              let vendorIdx = shopVendors.findIndex(v => {
+                if (v.chatId === 'all' || v.chatId === 'global' || v.scope === 'ALL_CHATS') return false;
                 if (String(v.chatId) !== String(chatId)) return false;
                 if (v.userId && (String(v.userId) === String(userId) || String(v.userId) === effectiveSenderId)) return true;
                 if (v.username && cleanSenderUsername && v.username.replace(/^@/, '').toLowerCase() === cleanSenderUsername) return true;
                 return false;
               });
+
+              // 2. Second priority: global vendor (authorized across ALL chats with shared weekly limit)
+              if (vendorIdx === -1) {
+                vendorIdx = shopVendors.findIndex(v => {
+                  const isGlobal = v.chatId === 'all' || v.chatId === 'global' || v.scope === 'ALL_CHATS';
+                  if (!isGlobal) return false;
+                  if (v.userId && (String(v.userId) === String(userId) || String(v.userId) === effectiveSenderId)) return true;
+                  if (v.username && cleanSenderUsername && v.username.replace(/^@/, '').toLowerCase() === cleanSenderUsername) return true;
+                  return false;
+                });
+              }
 
               const sendShopTopicWarningInChat = async () => {
                 const effectiveNotify = shopGlobalWarningConfig?.notifyInTopicOnDelete !== undefined
@@ -10601,6 +10652,7 @@ async function initBot(token: string) {
               }
 
               const weeklyLimit = vendor.weeklyLimit || shopTopicConfig.defaultWeeklyLimit || 5;
+              const isGlobalVendor = vendor.chatId === 'all' || vendor.chatId === 'global' || vendor.scope === 'ALL_CHATS';
               if ((vendor.currentWeekMessages || 0) >= weeklyLimit) {
                 if (albumId) {
                   shopMediaGroupDecision.set(albumId, 'rejected');
@@ -10621,7 +10673,7 @@ async function initBot(token: string) {
                   type: 'SHOP',
                   user: vendor.shopName,
                   chat: effectiveChatTitle,
-                  details: `Удалено сообщение магазина «${vendor.shopName}» — превышен недельный лимит (${vendor.currentWeekMessages}/${weeklyLimit})`
+                  details: `Удалено сообщение магазина «${vendor.shopName}» — превышен недельный лимит (${vendor.currentWeekMessages}/${weeklyLimit}${isGlobalVendor ? ' суммарно по всем чатам' : ''})`
                 });
                 return;
               }
@@ -10662,13 +10714,17 @@ async function initBot(token: string) {
               }
               await db.collection('shop_publications').doc(pubEntry.id).set(cleanData(pubEntry)).catch(() => {});
 
+              const limitScopeDesc = isGlobalVendor
+                ? `${vendor.currentWeekMessages}/${weeklyLimit} за неделю суммарно по всем чатам`
+                : `${vendor.currentWeekMessages}/${weeklyLimit} за неделю`;
+
               await addLog({
                 id: Math.random().toString(36).substr(2, 9),
                 timestamp: new Date().toISOString(),
                 type: 'SHOP',
                 user: vendor.shopName,
                 chat: effectiveChatTitle,
-                details: `Одобрена публикация магазина «${vendor.shopName}» от ${username ? '@' + username : authorName} (${vendor.currentWeekMessages}/${weeklyLimit} за неделю)`
+                details: `Одобрена публикация магазина «${vendor.shopName}» от ${username ? '@' + username : authorName} (${limitScopeDesc})`
               });
 
               // Return early so general chat link/media filters don't delete the approved shop announcement

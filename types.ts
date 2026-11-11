@@ -622,6 +622,7 @@ export interface ShopVendor {
   id: string;
   chatId: string;
   chatTitle?: string;
+  scope?: 'CHAT' | 'ALL_CHATS';
   shopName: string;
   contactInfo?: string;
   userId?: string;

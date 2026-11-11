@@ -34,7 +34,8 @@ import {
   Ban,
   Bell,
   AtSign,
-  Zap
+  Zap,
+  Globe
 } from 'lucide-react';
 import {
   Chat,
@@ -124,6 +125,7 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
 
   // Add vendor modal / form state
   const [isAddVendorOpen, setIsAddVendorOpen] = useState<boolean>(false);
+  const [newVendorChatId, setNewVendorChatId] = useState<string>('all');
   const [newShopName, setNewShopName] = useState<string>('');
   const [newUserIdentifier, setNewUserIdentifier] = useState<string>('');
   const [newContactInfo, setNewContactInfo] = useState<string>('');
@@ -134,6 +136,7 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
 
   // Edit vendor modal state
   const [editingVendor, setEditingVendor] = useState<ShopVendor | null>(null);
+  const [editChatId, setEditChatId] = useState<string>('all');
   const [editShopName, setEditShopName] = useState<string>('');
   const [editUserIdentifier, setEditUserIdentifier] = useState<string>('');
   const [editContactInfo, setEditContactInfo] = useState<string>('');
@@ -586,8 +589,12 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const displayedVendors = useMemo(() => {
     const q = vendorSearch.trim().toLowerCase();
     return vendors.filter(v => {
-      if (!showAllChatsVendors && selectedChatId && String(v.chatId) !== String(selectedChatId)) {
-        return false;
+      const isGlobal = v.chatId === 'all' || v.chatId === 'global' || v.scope === 'ALL_CHATS';
+      // If filtering by specific chat, include chat-specific vendors AND global vendors (since they have access to this chat)
+      if (!showAllChatsVendors && selectedChatId) {
+        if (!isGlobal && String(v.chatId) !== String(selectedChatId)) {
+          return false;
+        }
       }
       if (!q) return true;
       return (
@@ -595,7 +602,8 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
         v.username?.toLowerCase().includes(q) ||
         v.userId?.toLowerCase().includes(q) ||
         v.contactInfo?.toLowerCase().includes(q) ||
-        v.chatTitle?.toLowerCase().includes(q)
+        v.chatTitle?.toLowerCase().includes(q) ||
+        (isGlobal && ('все чаты'.includes(q) || 'глобально'.includes(q) || 'global'.includes(q)))
       );
     });
   }, [vendors, selectedChatId, showAllChatsVendors, vendorSearch]);
@@ -699,12 +707,14 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
 
   const handleAddVendor = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedChatId) return;
+    const effectiveChatId = newVendorChatId || selectedChatId || 'all';
+    if (!effectiveChatId) return;
     if (!newUserIdentifier.trim()) {
       setVendorError('Укажите @username или числовой Telegram ID продавца');
       return;
     }
 
+    const isGlobal = effectiveChatId === 'all';
     setIsAddingVendor(true);
     setVendorError(null);
     try {
@@ -712,7 +722,8 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          chatId: selectedChatId,
+          chatId: effectiveChatId,
+          scope: isGlobal ? 'ALL_CHATS' : 'CHAT',
           shopName: newShopName.trim() || newUserIdentifier.trim(),
           userIdentifier: newUserIdentifier.trim(),
           contactInfo: newContactInfo.trim(),
@@ -797,6 +808,8 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
 
   const openEditModal = (vendor: ShopVendor) => {
     setEditingVendor(vendor);
+    const isGlobal = vendor.chatId === 'all' || vendor.scope === 'ALL_CHATS';
+    setEditChatId(isGlobal ? 'all' : (vendor.chatId || selectedChatId || 'all'));
     setEditShopName(vendor.shopName);
     setEditUserIdentifier(vendor.username ? `@${vendor.username}` : (vendor.userId || ''));
     setEditContactInfo(vendor.contactInfo || '');
@@ -808,11 +821,14 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
     e.preventDefault();
     if (!editingVendor) return;
     setIsSavingEdit(true);
+    const isTargetGlobal = editChatId === 'all';
     try {
       const res = await authenticatedFetch(`/api/shop-topics/vendors/${editingVendor.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          chatId: editChatId,
+          scope: isTargetGlobal ? 'ALL_CHATS' : 'CHAT',
           shopName: editShopName.trim(),
           userIdentifier: editUserIdentifier.trim(),
           contactInfo: editContactInfo.trim(),
@@ -1499,8 +1515,13 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                 className="p-4 rounded-2xl bg-slate-950 border border-emerald-500/30 space-y-4"
               >
                 <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400">
-                    Добавление магазина в чат «{selectedChat?.title || selectedChatId}»
+                  <h4 className="text-xs font-bold uppercase tracking-wider text-emerald-400 flex items-center gap-1.5">
+                    <Store className="w-4 h-4" />
+                    <span>
+                      {newVendorChatId === 'all'
+                        ? 'Добавление продавца: Все чаты (Глобальный доступ)'
+                        : `Добавление магазина в чат «${chats.find(c => String(c.id) === newVendorChatId)?.title || selectedChat?.title || newVendorChatId}»`}
+                    </span>
                   </h4>
                   <button
                     type="button"
@@ -1511,7 +1532,27 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                   </button>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-300 mb-1">
+                      Область доступа *
+                    </label>
+                    <select
+                      value={newVendorChatId}
+                      onChange={e => setNewVendorChatId(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                    >
+                      <option value="all">🌐 Все чаты (Глобальный доступ)</option>
+                      <optgroup label="Один конкретный чат">
+                        {chats.map(c => (
+                          <option key={c.id} value={String(c.id)}>
+                            {c.title || `Чат ${c.id}`}
+                          </option>
+                        ))}
+                      </optgroup>
+                    </select>
+                  </div>
+
                   <div>
                     <label className="block text-[11px] font-bold text-slate-300 mb-1">
                       @username или Telegram ID *
@@ -1541,7 +1582,7 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
 
                   <div>
                     <label className="block text-[11px] font-bold text-slate-300 mb-1">
-                      Лимит сообщений в неделю
+                      {newVendorChatId === 'all' ? 'Лимит на ВСЕ чаты (в нед.)' : 'Лимит сообщений в нед.'}
                     </label>
                     <input
                       type="number"
@@ -1572,6 +1613,15 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                     </select>
                   </div>
                 </div>
+
+                {newVendorChatId === 'all' && (
+                  <div className="p-3 rounded-xl bg-purple-500/10 border border-purple-500/30 flex items-start gap-2.5 text-xs text-purple-200">
+                    <Globe className="w-4 h-4 text-purple-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold text-purple-300">Базовый глобальный тариф:</span> {newWeeklyLimit} сообщений в неделю <b>суммарно по всем подключённым чатам</b>. Продавец может опубликовать, например, 3 сообщения в одном чате и по 1 в двух других — бот посчитает все публикации в общий лимит {newWeeklyLimit}, и при превышении лимита автоматически заблокирует дальнейшие публикации до понедельника.
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end">
                   <div className="sm:col-span-8">
@@ -1666,6 +1716,13 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                           <div className="flex flex-wrap items-center gap-2">
                             <span className="text-sm font-bold text-white">{vendor.shopName}</span>
 
+                            {(vendor.chatId === 'all' || vendor.scope === 'ALL_CHATS') && (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] font-bold rounded-md bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-sm shadow-purple-950/40">
+                                <Globe className="w-3 h-3 text-purple-400" />
+                                <span>Все чаты (Глобально)</span>
+                              </span>
+                            )}
+
                             {vendor.username && (
                               <span className="px-2 py-0.5 text-xs font-mono rounded-md bg-blue-500/10 text-blue-300 border border-blue-500/25">
                                 @{vendor.username}
@@ -1715,10 +1772,17 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                           </div>
 
                           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
-                            {showAllChatsVendors && (
-                              <span className="text-indigo-300 font-medium">
-                                Чат: {vendor.chatTitle || vendor.chatId}
+                            {vendor.chatId === 'all' || vendor.scope === 'ALL_CHATS' ? (
+                              <span className="text-purple-300 font-semibold flex items-center gap-1">
+                                <Globe className="w-3 h-3" />
+                                <span>Охват: Все чаты (единый суммарный лимит)</span>
                               </span>
+                            ) : (
+                              (showAllChatsVendors || selectedChatId !== String(vendor.chatId)) && (
+                                <span className="text-indigo-300 font-medium">
+                                  Чат: {vendor.chatTitle || vendor.chatId}
+                                </span>
+                              )
                             )}
                             {vendor.contactInfo && <span>Контакты: {vendor.contactInfo}</span>}
                             <span>Всего публикаций: {vendor.totalPostsCount || 0}</span>
@@ -1732,9 +1796,18 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
 
                         {/* Weekly Limit Progress & Controls */}
                         <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
-                          <div className="min-w-[170px] bg-slate-900/90 border border-slate-800 rounded-xl p-2.5">
+                          <div className="min-w-[180px] bg-slate-900/90 border border-slate-800 rounded-xl p-2.5">
                             <div className="flex items-center justify-between text-xs mb-1.5">
-                              <span className="text-slate-400 font-medium">За неделю (с Пн):</span>
+                              <span className="text-slate-400 font-medium flex items-center gap-1">
+                                {vendor.chatId === 'all' || vendor.scope === 'ALL_CHATS' ? (
+                                  <>
+                                    <Globe className="w-3 h-3 text-purple-400" />
+                                    <span>Во всех чатах:</span>
+                                  </>
+                                ) : (
+                                  <span>За неделю (с Пн):</span>
+                                )}
+                              </span>
                               <span
                                 className={`font-mono font-bold ${
                                   isLimitReached ? 'text-rose-400' : 'text-emerald-400'
@@ -1755,6 +1828,11 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                                 style={{ width: `${ratio}%` }}
                               />
                             </div>
+                            {(vendor.chatId === 'all' || vendor.scope === 'ALL_CHATS') && (
+                              <div className="text-[10px] text-purple-300/80 mt-1">
+                                Лимит действует суммарно по всем чатам
+                              </div>
+                            )}
                           </div>
 
                           <div className="flex items-center gap-1.5">
@@ -2968,6 +3046,32 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
             </div>
 
             <form onSubmit={handleSaveVendorEdit} className="space-y-3">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1">
+                  Область доступа (Чат)
+                </label>
+                <select
+                  value={editChatId}
+                  onChange={e => setEditChatId(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2 text-xs text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/40"
+                >
+                  <option value="all">🌐 Все чаты (Глобальный доступ — единый лимит)</option>
+                  <optgroup label="Один конкретный чат">
+                    {chats.map(c => (
+                      <option key={c.id} value={String(c.id)}>
+                        {c.title || `Чат ${c.id}`}
+                      </option>
+                    ))}
+                  </optgroup>
+                </select>
+                {editChatId === 'all' && (
+                  <p className="text-[11px] text-purple-300 mt-1 flex items-center gap-1">
+                    <Globe className="w-3 h-3 text-purple-400 shrink-0" />
+                    <span>Единый лимит действует суммарно по всем темам подключённых чатов.</span>
+                  </p>
+                )}
+              </div>
+
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
                   Название магазина
