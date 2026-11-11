@@ -182,6 +182,8 @@ export interface FilterSettings {
   multiChatNotifyChannelId?: string;
   multiChatTagAdmin?: boolean;
   multiChatAdminTag?: string;
+  crossChatWindowDays?: number;
+  crossChatMinSimilarity?: number;
   warnLimit: number;
   warnAction?: 'BAN' | 'MUTE';
   reputationEnabled?: boolean;

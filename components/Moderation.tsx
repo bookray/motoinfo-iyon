@@ -747,6 +747,42 @@ export const Moderation: React.FC<ModerationProps> = ({
                       </span>
                     </div>
                   </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-slate-900/60">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
+                        Период проверки рассылки (дней)
+                      </label>
+                      <input 
+                        type="number" 
+                        min="1"
+                        max="30"
+                        value={filters.crossChatWindowDays ?? 7}
+                        onChange={(e) => onUpdateFilters({...filters, crossChatWindowDays: parseInt(e.target.value) || 7})}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-mono"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-1 block">
+                        По умолчанию 7 дней. Поиск одинаковых постов за этот срок.
+                      </span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
+                        Порог сходства текста (%)
+                      </label>
+                      <input 
+                        type="number" 
+                        min="50"
+                        max="100"
+                        value={filters.crossChatMinSimilarity ?? 85}
+                        onChange={(e) => onUpdateFilters({...filters, crossChatMinSimilarity: parseInt(e.target.value) || 85})}
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-mono"
+                      />
+                      <span className="text-[10px] text-slate-500 mt-1 block">
+                        85% — защита от спама. Приветствия («привет», «спасибо» и т.п.) исключаются.
+                      </span>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

@@ -1583,8 +1583,31 @@ app.get('/api/memberships/multi-chat', (req, res) => {
 
   // Mark users who have active cross-chat spam activity in sliding window
   for (const [uId, recentList] of userRecentCrossChatMessages.entries()) {
-    const uniqueRecentChats = new Set(recentList.map(r => r.chatId));
-    if (uniqueRecentChats.size >= 2) {
+    let hasDuplicateSpam = false;
+    for (let i = 0; i < recentList.length && !hasDuplicateSpam; i++) {
+      const msgA = recentList[i];
+      const normA = normalizeSpamCheckText(msgA.text);
+      if (!msgA.isForward && normA.length < 15) continue;
+
+      for (let j = i + 1; j < recentList.length; j++) {
+        const msgB = recentList[j];
+        if (msgA.chatId === msgB.chatId) continue;
+        if (msgA.isForward && msgB.isForward) {
+          if ((msgA.forwardSource && msgA.forwardSource === msgB.forwardSource) || (normA && normA === normalizeSpamCheckText(msgB.text))) {
+            hasDuplicateSpam = true;
+            break;
+          }
+        } else if (normA.length >= 15) {
+          const normB = normalizeSpamCheckText(msgB.text);
+          if (normB.length >= 15 && calculateTextSimilarity(normA, normB) >= 0.85) {
+            hasDuplicateSpam = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (hasDuplicateSpam) {
       let u = userMap.get(uId);
       if (!u && recentList.length > 0) {
         // Create user entry if not already present
@@ -6075,6 +6098,83 @@ async function recordChatMessage(record: {
   queueWrite('chat_messages', cleanRecord.id, cleanData(cleanRecord));
 }
 
+const COMMON_GREETINGS_AND_COURTESIES = [
+  'доброго времени суток', 'доброе утро', 'добрый день', 'добрый вечер', 'доброй ночи', 'спокойной ночи',
+  'приветствую', 'здравствуйте', 'здравствуй', 'здрасьте', 'приветики', 'приветик', 'привет',
+  'всем привет', 'всем доброе утро', 'всем добра', 'привет всем', 'привет народ',
+  'здорово', 'здарова', 'здаров', 'здоров', 'хай', 'хей', 'салют', 'ку', 'йоу',
+  'всегда пожалуйста', 'рад помочь', 'не за что', 'пожалуйста', 'спасибочки', 'спасибо', 'спасиб', 'пасиб', 'благодарю', 'благодарствую', 'от души',
+  'ок', 'окей', 'хорошо', 'ладно', 'понял', 'принято', 'ясно', 'плюсую', 'согласен', 'красавчик', 'отлично',
+  'good morning', 'good afternoon', 'good evening', 'thank you', 'thanks', 'hello', 'hey', 'hi'
+];
+
+function normalizeSpamCheckText(rawText: string): string {
+  if (!rawText) return '';
+  let text = rawText.toLowerCase();
+
+  // Удаляем ссылки и юзернеймы, чтобы не засорять сравнение
+  text = text.replace(/https?:\/\/\S+/gi, ' ');
+  text = text.replace(/t\.me\/\S+/gi, ' ');
+  text = text.replace(/@[a-zA-Z0-9_]+/g, ' ');
+
+  // Удаляем слова приветствий и вежливости (отсортированы от самых длинных)
+  for (const phrase of COMMON_GREETINGS_AND_COURTESIES) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(^|[\\s,;:.!?—–«»"'\`()-])${escaped}([\\s,;:.!?—–«»"'\`()-]|$|\n)`, 'gi');
+    text = text.replace(regex, ' ');
+  }
+
+  // Оставляем только буквы и цифры
+  text = text.replace(/[^a-zа-яё0-9]/gi, ' ');
+
+  // Убираем повторяющиеся пробелы
+  text = text.replace(/\s+/g, ' ').trim();
+  return text;
+}
+
+function calculateTextSimilarity(str1: string, str2: string): number {
+  if (str1 === str2) return 1.0;
+  if (!str1 || !str2) return 0;
+
+  if (str1.length >= 25 && str2.length >= 25) {
+    if (str1.includes(str2) || str2.includes(str1)) {
+      return Math.min(str1.length, str2.length) / Math.max(str1.length, str2.length);
+    }
+  }
+
+  const words1 = new Set(str1.split(' ').filter(w => w.length >= 3));
+  const words2 = new Set(str2.split(' ').filter(w => w.length >= 3));
+  let wordSim = 0;
+  if (words1.size > 0 && words2.size > 0) {
+    let commonWords = 0;
+    for (const w of words1) {
+      if (words2.has(w)) commonWords++;
+    }
+    const unionWords = new Set([...words1, ...words2]).size;
+    wordSim = unionWords > 0 ? (commonWords / unionWords) : 0;
+  }
+
+  const getBigrams = (s: string) => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const bg = s.slice(i, i + 2);
+      map.set(bg, (map.get(bg) || 0) + 1);
+    }
+    return map;
+  };
+  const b1 = getBigrams(str1);
+  const b2 = getBigrams(str2);
+  let intersection = 0;
+  for (const [bg, count1] of b1.entries()) {
+    const count2 = b2.get(bg) || 0;
+    intersection += Math.min(count1, count2);
+  }
+  const total = (str1.length - 1) + (str2.length - 1);
+  const charSim = total > 0 ? (2 * intersection) / total : 0;
+
+  return Math.max(wordSim, charSim);
+}
+
 async function checkCrossChatActivity(
   chatId: string,
   user: { id: number; username?: string; first_name?: string; last_name?: string },
@@ -6096,90 +6196,168 @@ async function checkCrossChatActivity(
   if (isAnyShopVendor(userId, user.username)) return;
 
   const now = Date.now();
-  // 2-hour window for cross-chat activity tracking
-  const windowMs = 2 * 3600 * 1000;
+  // Configurable sliding window in days (default 7 days as requested by user)
+  const windowDays = (filters as any)?.crossChatWindowDays || 7;
+  const windowMs = windowDays * 24 * 3600 * 1000;
+  const minSimilarityThreshold = ((filters as any)?.crossChatMinSimilarity || 85) / 100;
 
   let userMsgs = userRecentCrossChatMessages.get(userId) || [];
   userMsgs = userMsgs.filter(m => now - m.timestamp < windowMs);
+
+  const currentChatIdStr = String(chatId);
+  const currentRawText = (msgInfo.text || '').trim();
+  const currentNormalized = normalizeSpamCheckText(currentRawText);
+
   userMsgs.push({
-    chatId: String(chatId),
+    chatId: currentChatIdStr,
     messageId: msgInfo.messageId,
     timestamp: now,
     isForward: Boolean(msgInfo.isForward),
     forwardSource: msgInfo.forwardSource,
-    text: msgInfo.text
+    text: currentRawText
   });
+  if (userMsgs.length > 300) userMsgs.shift();
   userRecentCrossChatMessages.set(userId, userMsgs);
 
-  // Distinct chats where user sent/forwarded messages recently
-  const uniqueChatIds = Array.from(new Set(userMsgs.map(m => m.chatId)));
-  const hasForwards = userMsgs.some(m => m.isForward);
+  // We only check for duplicate broadcast spam if:
+  // 1) The message is forwarded, OR
+  // 2) The normalized message text has sufficient meaningful length (>= 15 characters).
+  // Short casual chit-chat ("Серега хвастает))", "привет", "да", "не знаю", "согласен") is SKIPPED!
+  const isMeaningfulText = currentNormalized.length >= 15;
+  const isForward = Boolean(msgInfo.isForward);
 
-  // Alert threshold: notify if user posted into >= 2 chats in recent window
-  if (uniqueChatIds.length >= 2) {
-    const lastAlert = lastCrossChatAlertTime.get(userId) || 0;
-    // 5-minute cooldown between alerts for same user
-    if (now - lastAlert >= 5 * 60 * 1000) {
-      lastCrossChatAlertTime.set(userId, now);
+  if (!isForward && !isMeaningfulText) {
+    return;
+  }
 
-      const shouldTag = filters.multiChatTagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
-      const tagLine = shouldTag ? `${formatAdminMentionHtml(filters.multiChatAdminTag || (settings as any)?.alertsAdminTag)}\n\n` : '';
+  // Find all messages from this user in OTHER chats within the window that are identical or highly similar
+  const matchingDuplicateMessages: Array<{ chatId: string; messageId: number; timestamp: number; similarity: number; text: string }> = [];
 
-      const chatNames = uniqueChatIds.map(cId => {
-        const c = chats.find(ch => String(ch.id) === String(cId));
-        return c ? c.title : cId;
-      }).join(', ');
+  for (const prevMsg of userMsgs) {
+    if (prevMsg.chatId === currentChatIdStr) continue;
 
-      const userFullName = [user.first_name, user.last_name].filter(Boolean).join(' ') || `Пользователь ${userId}`;
-      const userHandle = user.username ? `@${user.username}` : `ID: ${userId}`;
-      const snippet = msgInfo.text 
-        ? (msgInfo.text.length > 250 ? msgInfo.text.substring(0, 250) + '...' : msgInfo.text) 
-        : (msgInfo.isForward ? '[Пересланное сообщение/медиа]' : '[Медиа]');
+    let isMatch = false;
+    let similarity = 0;
 
-      const forwardNotice = hasForwards 
-        ? `\n↪️ <b>Тип:</b> Пересылка сообщений (Forward)` + (msgInfo.forwardSource ? ` (Откуда: <code>${escapeHtml(msgInfo.forwardSource)}</code>)` : '')
-        : '';
+    if (isForward && prevMsg.isForward) {
+      if (msgInfo.forwardSource && prevMsg.forwardSource && msgInfo.forwardSource === prevMsg.forwardSource) {
+        isMatch = true;
+        similarity = 1.0;
+      } else if (currentNormalized && currentNormalized.length >= 10) {
+        const prevNormalized = normalizeSpamCheckText(prevMsg.text);
+        if (currentNormalized === prevNormalized) {
+          isMatch = true;
+          similarity = 1.0;
+        }
+      }
+    } else if (isMeaningfulText && !prevMsg.isForward) {
+      const prevNormalized = normalizeSpamCheckText(prevMsg.text);
+      if (prevNormalized.length >= 15) {
+        if (currentNormalized === prevNormalized) {
+          isMatch = true;
+          similarity = 1.0;
+        } else {
+          const sim = calculateTextSimilarity(currentNormalized, prevNormalized);
+          if (sim >= minSimilarityThreshold) {
+            isMatch = true;
+            similarity = sim;
+          }
+        }
+      }
+    }
 
-      const alertMsg = 
-        `${tagLine}🚨 <b>ОБНАРУЖЕН СПАМ / РАССЫЛКА В НЕСКОЛЬКИХ ЧАТАХ!</b>\n\n` +
-        `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(userFullName)}</a> (${userHandle})\n` +
-        `🆔 <b>ID:</b> <code>${userId}</code>\n` +
-        `📊 <b>Разослано в ${uniqueChatIds.length} чат(-ов):</b>\n` +
-        `📍 <i>${escapeHtml(chatNames)}</i>${forwardNotice}\n\n` +
-        `💬 <b>Последнее сообщение:</b>\n<blockquote>${escapeHtml(snippet)}</blockquote>\n\n` +
-        `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
-
-      const keyboard = {
-        inline_keyboard: [
-          [
-            { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
-          ],
-          [
-            { text: '🗑 Удалить все сообщения', callback_data: `mc_clean_${userId}` },
-            { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
-          ],
-          [
-            { text: '✅ В белый список', callback_data: `mc_wl_${userId}` },
-            { text: '👤 Профиль', url: `tg://user?id=${userId}` }
-          ]
-        ]
-      };
-
-      const targetDest = filters.multiChatNotifyChannelId || (settings as any)?.alertsChannelId || settings?.infoChatId;
-      await sendAlertToDestination(targetDest, alertMsg, {
-        parse_mode: 'HTML',
-        reply_markup: keyboard
-      });
-
-      await addLog({
-        id: Math.random().toString(36).substr(2, 9),
-        timestamp: new Date().toISOString(),
-        type: 'WARN',
-        user: userFullName,
-        chat: `${uniqueChatIds.length} чатов`,
-        details: `🚨 Рассылка по чатам: пользователь ${userHandle} отправил сообщения в ${uniqueChatIds.length} чатов.${hasForwards ? ' [пересылка]' : ''}`
+    if (isMatch) {
+      matchingDuplicateMessages.push({
+        chatId: prevMsg.chatId,
+        messageId: prevMsg.messageId,
+        timestamp: prevMsg.timestamp,
+        similarity,
+        text: prevMsg.text
       });
     }
+  }
+
+  // If no duplicate found in other chats, return early! (User is just chatting normally)
+  if (matchingDuplicateMessages.length === 0) {
+    return;
+  }
+
+  // Distinct chats where this EXACT OR NEAR-IDENTICAL message was broadcasted
+  const duplicateChatIds = Array.from(new Set([currentChatIdStr, ...matchingDuplicateMessages.map(m => m.chatId)]));
+
+  // Must have appeared in at least 2 different chats!
+  if (duplicateChatIds.length < 2) {
+    return;
+  }
+
+  const highestSimilarity = Math.max(...matchingDuplicateMessages.map(m => m.similarity));
+  const similarityPercent = Math.round(highestSimilarity * 100);
+
+  const lastAlert = lastCrossChatAlertTime.get(userId) || 0;
+  // 5-minute cooldown between alerts for same user
+  if (now - lastAlert >= 5 * 60 * 1000) {
+    lastCrossChatAlertTime.set(userId, now);
+
+    const shouldTag = filters.multiChatTagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
+    const tagLine = shouldTag ? `${formatAdminMentionHtml(filters.multiChatAdminTag || (settings as any)?.alertsAdminTag)}\n\n` : '';
+
+    const chatNames = duplicateChatIds.map(cId => {
+      const c = chats.find(ch => String(ch.id) === String(cId));
+      return c ? c.title : cId;
+    }).join(', ');
+
+    const userFullName = [user.first_name, user.last_name].filter(Boolean).join(' ') || `Пользователь ${userId}`;
+    const userHandle = user.username ? `@${user.username}` : `ID: ${userId}`;
+    const snippet = currentRawText 
+      ? (currentRawText.length > 250 ? currentRawText.substring(0, 250) + '...' : currentRawText) 
+      : (msgInfo.isForward ? '[Пересланное сообщение/медиа]' : '[Медиа]');
+
+    const forwardNotice = isForward 
+      ? `\n↪️ <b>Тип:</b> Пересылка сообщений (Forward)` + (msgInfo.forwardSource ? ` (Откуда: <code>${escapeHtml(msgInfo.forwardSource)}</code>)` : '')
+      : '';
+
+    const matchQualityLabel = similarityPercent >= 99 ? 'точное совпадение' : `сходство ${similarityPercent}%`;
+
+    const alertMsg = 
+      `${tagLine}🚨 <b>ОБНАРУЖЕН СПАМ / РАССЫЛКА ОДИНАКОВЫХ СООБЩЕНИЙ!</b>\n\n` +
+      `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(userFullName)}</a> (${userHandle})\n` +
+      `🆔 <b>ID:</b> <code>${userId}</code>\n` +
+      `📊 <b>Разослано в ${duplicateChatIds.length} чат(-ов) за последние ${windowDays} дн.:</b>\n` +
+      `📍 <i>${escapeHtml(chatNames)}</i>${forwardNotice}\n` +
+      `🎯 <b>Сходство сообщений:</b> <b>${similarityPercent}%</b> (<i>${matchQualityLabel}</i>)\n\n` +
+      `💬 <b>Текст рассылки:</b>\n<blockquote>${escapeHtml(snippet)}</blockquote>\n\n` +
+      `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
+
+    const keyboard = {
+      inline_keyboard: [
+        [
+          { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
+        ],
+        [
+          { text: '🗑 Удалить все сообщения', callback_data: `mc_clean_${userId}` },
+          { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
+        ],
+        [
+          { text: '✅ В белый список', callback_data: `mc_wl_${userId}` },
+          { text: '👤 Профиль', url: `tg://user?id=${userId}` }
+        ]
+      ]
+    };
+
+    const targetDest = filters.multiChatNotifyChannelId || (settings as any)?.alertsChannelId || settings?.infoChatId;
+    await sendAlertToDestination(targetDest, alertMsg, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard
+    });
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'WARN',
+      user: userFullName,
+      chat: `${duplicateChatIds.length} чатов`,
+      details: `🚨 Рассылка одинаковых сообщений (${matchQualityLabel}): пользователь ${userHandle} отправил дубликаты в ${duplicateChatIds.length} чатов.`
+    });
   }
 }
 
@@ -7318,6 +7496,8 @@ let filters: FilterSettings = {
   userVoteDuration: 1440,
   notifyMultiChat: false,
   multiChatThreshold: 5,
+  crossChatWindowDays: 7,
+  crossChatMinSimilarity: 85,
   warnLimit: 3,
   warnAction: 'BAN' as 'BAN' | 'MUTE',
   reputationEnabled: true,
