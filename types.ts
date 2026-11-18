@@ -182,6 +182,8 @@ export interface FilterSettings {
   multiChatNotifyChannelId?: string;
   multiChatTagAdmin?: boolean;
   multiChatAdminTag?: string;
+  /** Text sent after pressing "Отправить предложение" in a multi-chat alert. */
+  advertisingOfferText?: string;
   crossChatWindowDays?: number;
   crossChatMinSimilarity?: number;
   warnLimit: number;
@@ -199,6 +201,18 @@ export interface FilterSettings {
   channelSubscriptionMuteHours?: number;
   tagAdminsEnabled?: boolean;
   tagAdminsMessage?: string;
+}
+
+export interface TrackedTelegramUser {
+  userId: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  notifyChatId: string;
+  addedAt: string;
+  addedBy?: string;
+  lastAlertAt?: string;
+  totalAlerts?: number;
 }
 
 export interface ActiveMuteEntry {
