@@ -201,6 +201,8 @@ export interface FilterSettings {
   channelSubscriptionMuteHours?: number;
   tagAdminsEnabled?: boolean;
   tagAdminsMessage?: string;
+  adOfferMessageText?: string;
+  adOfferSenderName?: string;
 }
 
 export interface TrackedTelegramUser {

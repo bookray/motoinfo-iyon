@@ -15,7 +15,7 @@ import {
   ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig,
   BuySellTopicConfig, BuySellGlobalConfig, BuySellCommercialAlert, TrackedBuySellSeller,
   DEFAULT_COMMERCIAL_MARKERS, DEFAULT_BUY_SELL_WARNING_TEXT, DEFAULT_BUY_SELL_WARNING_BUTTONS,
-  BuySellWarningButton, BuySellAutoActionType, TrackedTelegramUser
+  BuySellWarningButton, BuySellAutoActionType
 } from './types';
 import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 import { buildExportXml, saveXmlExportToFile, getLatestExportXml, getExportMetadata } from './xmlExport';
@@ -5678,7 +5678,6 @@ let statsHistory: any[] = [];
 let bans: any[] = [];
 let tasks: any[] = [];
 let memberships: any[] = [];
-let trackedTelegramUsers: TrackedTelegramUser[] = [];
 let whitelist: any[] = [];
 let chatBans: any[] = [];
 let reputations: any[] = [];
@@ -5715,6 +5714,51 @@ let buySellGlobalConfig: BuySellGlobalConfig = {
 };
 let buySellAlerts: BuySellCommercialAlert[] = [];
 let trackedBuySellSellers: TrackedBuySellSeller[] = [];
+
+export interface TrackedSpamUser {
+  id: string;
+  userId: string;
+  username?: string;
+  firstName?: string;
+  addedAt: string;
+}
+let trackedSpamUsers: TrackedSpamUser[] = [];
+
+function buildMessageLink(chatId: string, messageId: number, chatUsername?: string): string {
+  const cleanUser = (chatUsername || '').replace(/^@/, '').trim();
+  if (cleanUser) {
+    return `https://t.me/${cleanUser}/${messageId}`;
+  }
+  const cleanChatId = String(chatId).replace(/^-100/, '').replace(/^-/, '');
+  return `https://t.me/c/${cleanChatId}/${messageId}`;
+}
+
+function buildMultiChatAlertKeyboard(userId: string | number, messageUrl: string) {
+  const isTracked = trackedSpamUsers.some(ts => String(ts.userId) === String(userId));
+  const trackBtnText = isTracked ? '👁 Снять с отслеживания' : '👁 Отслеживать';
+  const trackCb = isTracked ? `mc_untrack_${userId}` : `mc_track_${userId}`;
+
+  return {
+    inline_keyboard: [
+      [
+        { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
+      ],
+      [
+        { text: '🗑 Удалить все сообщения', callback_data: `mc_clean_${userId}` },
+        { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
+      ],
+      [
+        { text: '🔗 Перейти к сообщению', url: messageUrl },
+        { text: trackBtnText, callback_data: trackCb }
+      ],
+      [
+        { text: '✅ В белый список', callback_data: `mc_wl_${userId}` },
+        { text: '📨 Отправить предложение', callback_data: `mc_offer_${userId}` }
+      ]
+    ]
+  };
+}
+
 const shopMediaGroupDecision = new Map<string, 'allowed' | 'rejected'>();
 
 function cleanChatIdStr(id?: string | number): string {
@@ -6132,53 +6176,6 @@ async function recordChatMessage(record: {
   queueWrite('chat_messages', cleanRecord.id, cleanData(cleanRecord));
 }
 
-function buildTelegramMessageLink(chatId: string | number, messageId: number, messageThreadId?: number, chatUsername?: string) {
-  const threadPart = messageThreadId ? `${messageThreadId}/` : '';
-  if (chatUsername) return `https://t.me/${chatUsername.replace(/^@/, '')}/${threadPart}${messageId}`;
-  const cleanChatId = String(chatId).replace(/^-100/, '').replace(/^-/, '');
-  return `https://t.me/c/${cleanChatId}/${threadPart}${messageId}`;
-}
-
-async function notifyTrackedUserMessage(params: {
-  chatId: string | number;
-  chatTitle: string;
-  chatUsername?: string;
-  messageId: number;
-  messageThreadId?: number;
-  userId: string;
-  username?: string;
-  firstName?: string;
-  lastName?: string;
-  text?: string;
-}) {
-  if (!bot) return;
-  const tracked = trackedTelegramUsers.find(item => item.userId === String(params.userId));
-  if (!tracked) return;
-
-  const authorName = [params.firstName, params.lastName].filter(Boolean).join(' ') || (params.username ? `@${params.username}` : `ID ${params.userId}`);
-  const topicLine = params.messageThreadId ? `\n🏷️ <b>Тема:</b> <code>${params.messageThreadId}</code>` : '';
-  const textPreview = (params.text || '[Медиа/вложение]').trim().slice(0, 500);
-  const messageLink = buildTelegramMessageLink(params.chatId, params.messageId, params.messageThreadId, params.chatUsername);
-  const alertText =
-    `👁 <b>Отслеживаемый пользователь отправил сообщение</b>\n\n` +
-    `👤 <b>Автор:</b> <a href="tg://user?id=${params.userId}">${escapeHtml(authorName)}</a>${params.username ? ` (@${escapeHtml(params.username)})` : ''}\n` +
-    `📍 <b>Чат:</b> ${escapeHtml(params.chatTitle)}${topicLine}\n` +
-    `💬 <b>Сообщение:</b>\n<blockquote>${escapeHtml(textPreview)}</blockquote>`;
-
-  try {
-    await bot.telegram.sendMessage(tracked.notifyChatId, alertText, {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-      reply_markup: { inline_keyboard: [[{ text: '🔗 Перейти к сообщению', url: messageLink }]] }
-    });
-    tracked.lastAlertAt = new Date().toISOString();
-    tracked.totalAlerts = (tracked.totalAlerts || 0) + 1;
-    db.collection('config').doc('tracked_users').set(cleanData({ users: trackedTelegramUsers })).catch(() => {});
-  } catch (error: any) {
-    console.error(`[Tracking] Failed to notify about user ${params.userId}:`, error?.message || error);
-  }
-}
-
 const COMMON_GREETINGS_AND_COURTESIES = [
   'доброго времени суток', 'доброе утро', 'добрый день', 'добрый вечер', 'доброй ночи', 'спокойной ночи',
   'приветствую', 'здравствуйте', 'здравствуй', 'здрасьте', 'приветики', 'приветик', 'привет',
@@ -6409,27 +6406,13 @@ async function checkCrossChatActivity(
       `💬 <b>Текст рассылки:</b>\n<blockquote>${escapeHtml(snippet)}</blockquote>\n\n` +
       `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
 
-    const currentChat = chats.find(c => String(c.id) === String(chatId));
-    const currentMessageLink = buildTelegramMessageLink(chatId, msgInfo.messageId, undefined, currentChat?.username);
-    const keyboard = {
-      inline_keyboard: [
-        [
-          { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
-        ],
-        [
-          { text: '🗑 Удалить все сообщения', callback_data: `mc_clean_${userId}` },
-          { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
-        ],
-        [
-          { text: '✅ В белый список', callback_data: `mc_wl_${userId}` }
-        ],
-        [{ text: '🔗 Перейти к сообщению', url: currentMessageLink }],
-        [
-          { text: '👁 Отслеживать', callback_data: `mc_track_${userId}` },
-          { text: '📨 Отправить предложение', callback_data: `mc_offer_${userId}` }
-        ]
-      ]
-    };
+    const lastMatchingMsg = matchingDuplicateMessages[matchingDuplicateMessages.length - 1];
+    const targetChatId = lastMatchingMsg ? lastMatchingMsg.chatId : (duplicateChatIds[0] || '');
+    const targetMsgId = lastMatchingMsg ? lastMatchingMsg.messageId : 0;
+    const targetChatObj = chats.find(c => String(c.id) === String(targetChatId));
+    const messageUrl = targetMsgId > 0 ? buildMessageLink(targetChatId, targetMsgId, targetChatObj?.username) : `https://t.me/c/${String(targetChatId).replace(/^-100/, '')}/1`;
+
+    const keyboard = buildMultiChatAlertKeyboard(userId, messageUrl);
 
     const targetDest = filters.multiChatNotifyChannelId || (settings as any)?.alertsChannelId || settings?.infoChatId;
     await sendAlertToDestination(targetDest, alertMsg, {
@@ -7583,7 +7566,6 @@ let filters: FilterSettings = {
   userVoteDuration: 1440,
   notifyMultiChat: false,
   multiChatThreshold: 5,
-  advertisingOfferText: 'Здравствуйте! Мы заметили вашу активность в наших мотосообществах.\n\nМожем предложить размещение рекламы. Актуальные форматы, условия и цены уточняйте у администратора.',
   crossChatWindowDays: 7,
   crossChatMinSimilarity: 85,
   warnLimit: 3,
@@ -7596,7 +7578,9 @@ let filters: FilterSettings = {
   channelSubscriptionMessage: '',
   channelSubscriptionMuteHours: 6,
   tagAdminsEnabled: false,
-  tagAdminsMessage: ''
+  tagAdminsMessage: '',
+  adOfferMessageText: 'Здравствуйте! Предлагаем размещение рекламы в наших мото-чатах и каналах. Доступные варианты и тарифы:\n\n1. Пост в теме «Объявления магазинов» — 500 руб.\n2. Закреп сообщения на 24 часа — 1500 руб.\n3. Рассылка по всем чатам — 3000 руб.\n\nБудем рады сотрудничеству!',
+  adOfferSenderName: 'Администратор (@bookray)'
 };
 let settings: BotSettings = {
   botToken: process.env.TELEGRAM_BOT_TOKEN || '',
@@ -7745,14 +7729,6 @@ async function syncData() {
       if (filtersDoc.exists) {
         filters = { ...filters, ...filtersDoc.data() as any };
         console.log('Loaded moderation filters');
-      }
-    });
-
-    await safeLoad('config/tracked_users', async () => {
-      const trackedDoc = await db.collection('config').doc('tracked_users').get();
-      if (trackedDoc.exists && Array.isArray((trackedDoc.data() as any)?.users)) {
-        trackedTelegramUsers = (trackedDoc.data() as any).users;
-        console.log(`Loaded ${trackedTelegramUsers.length} tracked Telegram users`);
       }
     });
 
@@ -8138,6 +8114,12 @@ async function syncData() {
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
         .slice(0, 100);
       console.log(`Loaded ${buySellAlerts.length} buy-sell commercial alerts`);
+    });
+
+    await safeLoad('tracked_spam_users', async () => {
+      const snap = await db.collection('tracked_spam_users').get();
+      trackedSpamUsers = snap.docs.map(d => ({ id: String(d.id), ...d.data() } as TrackedSpamUser));
+      console.log(`Loaded ${trackedSpamUsers.length} tracked spam users`);
     });
 
     // Ensure owner/admin is permanently in whitelist
@@ -8879,7 +8861,7 @@ async function notifyInfoChat(type: 'JOIN' | 'LEAVE', chatId: string, user: { id
     .catch(e => console.error(`Failed to send ${type} notification:`, e));
 }
 
-async function trackMembership(chatId: string, user: { id: number, username?: string, first_name?: string, last_name?: string }, isMessage = false, messageLink?: string) {
+async function trackMembership(chatId: string, user: { id: number, username?: string, first_name?: string, last_name?: string }, isMessage = false) {
   const userId = user.id.toString();
   
   // Exclude the bot itself from tracking
@@ -8991,26 +8973,11 @@ async function trackMembership(chatId: string, user: { id: number, username?: st
           `состоит в <b>${userMemberships.length} чатах</b>.\n\n` +
           `📍 <b>Чаты:</b> ${escapeHtml(chatTitles)}`;
         
-        const actionRow: any[] = [
-          { text: '👁 Отслеживать', callback_data: `mc_track_${userId}` },
-          { text: '📨 Отправить предложение', callback_data: `mc_offer_${userId}` }
-        ];
-        const keyboard = {
-          inline_keyboard: [
-            [
-              { text: '🚫 Забанить и удалить всё', callback_data: `mc_ban_clean_${userId}` }
-            ],
-            [
-              { text: '🗑 Удалить сообщения', callback_data: `mc_clean_${userId}` },
-              { text: '⛔ Только забанить', callback_data: `mc_ban_${userId}` }
-            ],
-            [
-              { text: '✅ В белый список', callback_data: `mc_wl_${userId}` }
-            ],
-            ...(messageLink ? [[{ text: '🔗 Перейти к сообщению', url: messageLink }]] : []),
-            actionRow
-          ]
-        };
+        const firstMemChatId = userMemberships[0]?.chatId || chats[0]?.id || '';
+        const firstMemChatObj = chats.find(c => String(c.id) === String(firstMemChatId));
+        const messageUrl = firstMemChatId ? buildMessageLink(firstMemChatId, 1, firstMemChatObj?.username) : `tg://user?id=${userId}`;
+
+        const keyboard = buildMultiChatAlertKeyboard(userId, messageUrl);
 
         const targetDest = filters.multiChatNotifyChannelId || (settings as any)?.alertsChannelId || settings?.infoChatId;
         await sendAlertToDestination(targetDest, alertMsg, { parse_mode: 'HTML', reply_markup: keyboard });
@@ -10068,6 +10035,8 @@ async function initBot(token: string) {
       const chatType = ctx.chat.type;
       const userId = ctx.from.id.toString();
       const username = ctx.from.username;
+      const userNormId = String(userId);
+      const userNormUsername = username ? username.toLowerCase().replace(/^@/, '') : '';
 
       // Detect and record service pinned message in general message stream if present
       if ((ctx.message as any)?.pinned_message) {
@@ -10092,9 +10061,36 @@ async function initBot(token: string) {
         return ctx.reply('✅ Этот чат установлен как информационный для уведомлений о входах/выходах.');
       }
 
+      // Check if user is tracked for spam / all messages across all chats/topics
+      const isTrackedSpamUser = trackedSpamUsers.some(ts => {
+        const tsId = String(ts.userId);
+        const tsUname = (ts.username || '').toLowerCase().replace(/^@/, '');
+        return tsId === userNormId || (tsUname && userNormUsername && tsUname === userNormUsername);
+      });
+      if (isTrackedSpamUser && chatType !== 'private') {
+        const chatObj = chats.find(c => String(c.id) === chatId);
+        const chatTitle = chatObj ? chatObj.title : chatId;
+        const userFullName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || `Пользователь ${userId}`;
+        const userHandle = username ? `@${username}` : `ID: ${userId}`;
+        const msgText = (ctx.message as any)?.text || (ctx.message as any)?.caption || '[Медиа/Файл]';
+        const msgId = ctx.message.message_id;
+        const msgUrl = buildMessageLink(chatId, msgId, chatObj?.username);
+
+        const trackAlertMsg = 
+          `🔔 <b>Уведомление отслеживания!</b>\n\n` +
+          `👤 <b>Пользователь:</b> <a href="tg://user?id=${userId}">${escapeHtml(userFullName)}</a> (${userHandle})\n` +
+          `📍 <b>Чат:</b> <code>${escapeHtml(chatTitle)}</code>\n` +
+          `💬 <b>Сообщение:</b>\n<blockquote>${escapeHtml(msgText.length > 300 ? msgText.substring(0, 300) + '...' : msgText)}</blockquote>\n\n` +
+          `⏰ <i>${new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })} (МСК)</i>`;
+
+        const targetDest = filters.multiChatNotifyChannelId || (settings as any)?.alertsChannelId || settings?.infoChatId;
+        await sendAlertToDestination(targetDest, trackAlertMsg, {
+          parse_mode: 'HTML',
+          reply_markup: buildMultiChatAlertKeyboard(userId, msgUrl)
+        }).catch(() => {});
+      }
+
       // Check for global bans
-      const userNormId = String(userId);
-      const userNormUsername = username ? username.toLowerCase().replace(/^@/, '') : '';
       const isGloballyBanned = bans.find(b => {
         const bId = String(b.userId || '').trim();
         if (bId === userNormId) return true;
@@ -10406,15 +10402,12 @@ async function initBot(token: string) {
         await updateChat(chat);
         
         // Track membership on message
-        const membershipMessageLink = ctx.message?.message_id
-          ? buildTelegramMessageLink(chatId, ctx.message.message_id, (ctx.message as any)?.message_thread_id, (ctx.chat as any)?.username)
-          : undefined;
         await trackMembership(chatId, {
           id: Number(userId),
           username: ctx.from.username,
           first_name: ctx.from.first_name,
           last_name: ctx.from.last_name
-        }, true, membershipMessageLink);
+        }, true);
 
         // Detect if forward and extract text / caption
         const msg = ctx.message as any;
@@ -10461,19 +10454,6 @@ async function initBot(token: string) {
             timestamp: new Date().toISOString(),
             isForward,
             forwardSource
-          });
-
-          await notifyTrackedUserMessage({
-            chatId,
-            chatTitle: ('title' in ctx.chat ? ctx.chat.title : `Чат ${chatId}`),
-            chatUsername: (ctx.chat as any)?.username,
-            messageId: ctx.message.message_id,
-            messageThreadId: (ctx.message as any)?.message_thread_id,
-            userId: String(userId),
-            username: ctx.from.username,
-            firstName: ctx.from.first_name,
-            lastName: ctx.from.last_name,
-            text: rawText
           });
 
           // Check real-time cross-chat spam activity
@@ -13141,71 +13121,6 @@ async function initBot(token: string) {
         return;
       }
 
-      if (data.startsWith('mc_track_')) {
-        const targetUserId = data.replace('mc_track_', '');
-        const notifyChatId = String((ctx.callbackQuery as any)?.message?.chat?.id || ctx.chat?.id || settings.infoChatId || '');
-        if (!notifyChatId) {
-          return ctx.answerCbQuery('Не удалось определить чат для уведомлений.', { show_alert: true });
-        }
-
-        const membership = memberships.find(m => String(m.userId) === targetUserId);
-        const existing = trackedTelegramUsers.find(item => item.userId === targetUserId);
-        if (existing) {
-          existing.notifyChatId = notifyChatId;
-          existing.username = membership?.username?.replace(/^@/, '') || existing.username;
-          existing.firstName = membership?.firstName || existing.firstName;
-          existing.lastName = membership?.lastName || existing.lastName;
-          existing.addedBy = username ? `@${username}` : (ctx.from.first_name || 'Админ');
-        } else {
-          trackedTelegramUsers.push({
-            userId: targetUserId,
-            username: membership?.username?.replace(/^@/, ''),
-            firstName: membership?.firstName,
-            lastName: membership?.lastName,
-            notifyChatId,
-            addedAt: new Date().toISOString(),
-            addedBy: username ? `@${username}` : (ctx.from.first_name || 'Админ'),
-            totalAlerts: 0
-          });
-        }
-        await db.collection('config').doc('tracked_users').set(cleanData({ users: trackedTelegramUsers }));
-        await addLog({
-          id: Math.random().toString(36).substr(2, 9),
-          timestamp: new Date().toISOString(),
-          type: 'SYSTEM',
-          user: username ? `@${username}` : (ctx.from.first_name || 'Админ'),
-          chat: 'MultiChat',
-          details: `Включено отслеживание пользователя ${targetUserId}; уведомления направляются в ${notifyChatId}.`
-        });
-        return ctx.answerCbQuery(existing ? '👁 Отслеживание обновлено.' : '👁 Пользователь добавлен в отслеживание.');
-      }
-
-      if (data.startsWith('mc_offer_')) {
-        const targetUserId = data.replace('mc_offer_', '');
-        const offerText = (filters.advertisingOfferText || '').trim();
-        if (!offerText) {
-          return ctx.answerCbQuery('Сначала заполните текст предложения в админке.', { show_alert: true });
-        }
-        try {
-          await ctx.telegram.sendMessage(Number(targetUserId), offerText, {
-            parse_mode: 'HTML',
-            link_preview_options: { is_disabled: true }
-          });
-          await addLog({
-            id: Math.random().toString(36).substr(2, 9),
-            timestamp: new Date().toISOString(),
-            type: 'SYSTEM',
-            user: username ? `@${username}` : (ctx.from.first_name || 'Админ'),
-            chat: 'MultiChat',
-            details: `Отправлено рекламное предложение пользователю ${targetUserId}.`
-          });
-          return ctx.answerCbQuery('📨 Предложение отправлено.');
-        } catch (error: any) {
-          console.warn(`[Offer] Cannot send offer to ${targetUserId}:`, error?.message || error);
-          return ctx.answerCbQuery('Не удалось написать пользователю: он должен сначала открыть диалог с ботом.', { show_alert: true });
-        }
-      }
-
       if (data.startsWith('mc_ban_clean_') || data.startsWith('mc_clean_') || data.startsWith('mc_ban_')) {
         const isCleanOnly = data.startsWith('mc_clean_');
         const isBanAndClean = data.startsWith('mc_ban_clean_');
@@ -13328,6 +13243,79 @@ async function initBot(token: string) {
               ]]
             });
           } catch (err) {}
+        }
+        return;
+      }
+
+      if (data.startsWith('mc_track_') || data.startsWith('mc_untrack_')) {
+        const isUntrack = data.startsWith('mc_untrack_');
+        const targetUserId = data.replace('mc_track_', '').replace('mc_untrack_', '');
+
+        if (isUntrack) {
+          trackedSpamUsers = trackedSpamUsers.filter(u => String(u.userId) !== String(targetUserId));
+          await db.collection('tracked_spam_users').doc(targetUserId).delete().catch(() => {});
+          await ctx.answerCbQuery('👁 Пользователь снят с отслеживания.');
+        } else {
+          const userMem = memberships.find(m => String(m.userId) === String(targetUserId));
+          const existing = trackedSpamUsers.find(u => String(u.userId) === String(targetUserId));
+          if (!existing) {
+            const newTracked: TrackedSpamUser = {
+              id: targetUserId,
+              userId: targetUserId,
+              username: userMem?.username,
+              firstName: userMem?.firstName || `User ${targetUserId}`,
+              addedAt: new Date().toISOString()
+            };
+            trackedSpamUsers.push(newTracked);
+            await db.collection('tracked_spam_users').doc(targetUserId).set(cleanData(newTracked)).catch(() => {});
+          }
+          await ctx.answerCbQuery('👁 Пользователь добавлен на отслеживание! Все сообщения будут приходить в оповещения.', { show_alert: true });
+        }
+
+        try {
+          const msg = ctx.callbackQuery.message;
+          if (msg && 'reply_markup' in msg && msg.reply_markup?.inline_keyboard) {
+            const updatedKeyboard = {
+              inline_keyboard: msg.reply_markup.inline_keyboard.map((row: any[]) =>
+                row.map((btn: any) => {
+                  if (btn.callback_data?.startsWith('mc_track_') || btn.callback_data?.startsWith('mc_untrack_')) {
+                    const nowTracked = trackedSpamUsers.some(u => String(u.userId) === String(targetUserId));
+                    return {
+                      text: nowTracked ? '👁 Снять с отслеживания' : '👁 Отслеживать',
+                      callback_data: nowTracked ? `mc_untrack_${targetUserId}` : `mc_track_${targetUserId}`
+                    };
+                  }
+                  return btn;
+                })
+              )
+            };
+            await ctx.editMessageReplyMarkup(updatedKeyboard);
+          }
+        } catch (e) {}
+        return;
+      }
+
+      if (data.startsWith('mc_offer_')) {
+        const targetUserId = data.replace('mc_offer_', '');
+        const senderName = (filters as any).adOfferSenderName || 'Администратор (@bookray)';
+        const offerText = (filters as any).adOfferMessageText || 'Здравствуйте! Предлагаем размещение рекламы в наших мото-чатах и каналах. Доступные варианты и тарифы:\n\n1. Пост в теме «Объявления магазинов» — 500 руб.\n2. Закреп сообщения на 24 часа — 1500 руб.\n3. Рассылка по всем чатам — 3000 руб.\n\nБудем рады сотрудничеству!';
+        
+        const fullOfferText = `<b>📨 Предложение о размещении рекламы от ${escapeHtml(senderName)}:</b>\n\n${escapeHtml(offerText)}`;
+
+        try {
+          await bot.telegram.sendMessage(targetUserId, fullOfferText, { parse_mode: 'HTML' });
+          await ctx.answerCbQuery('📨 Предложение о размещении рекламы успешно отправлено пользователю в ЛС!', { show_alert: true });
+          await addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'SHOP',
+            user: username ? `@${username}` : 'Admin',
+            chat: `User ${targetUserId}`,
+            details: `Отправлено коммерческое предложение о рекламе пользователю ID ${targetUserId}`
+          });
+        } catch (err: any) {
+          console.error(`Failed to send ad offer to user ${targetUserId}:`, err?.message || err);
+          await ctx.answerCbQuery(`❌ Не удалось отправить ЛС пользователю (возможно, он не запускал бота): ${err?.message || 'Forbidden'}`, { show_alert: true });
         }
         return;
       }
@@ -13462,6 +13450,9 @@ async function initBot(token: string) {
                 [
                   { text: isWhitelist ? '✅ В белом списке' : '✅ Разблокирован', callback_data: `mc_info_wl_${targetUserId}` },
                   { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` }
+                ],
+                [
+                  { text: '👤 Профиль', url: `tg://user?id=${targetUserId}` }
                 ]
               ]
             }
@@ -13473,6 +13464,9 @@ async function initBot(token: string) {
                 [
                   { text: isWhitelist ? '✅ В белом списке' : '✅ Разблокирован', callback_data: `mc_info_wl_${targetUserId}` },
                   { text: '🚫 Заблокировать', callback_data: `mc_ban_${targetUserId}` }
+                ],
+                [
+                  { text: '👤 Профиль', url: `tg://user?id=${targetUserId}` }
                 ]
               ]
             });
