@@ -195,6 +195,7 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [deleteOffTopicChat, setDeleteOffTopicChat] = useState<boolean>(true);
   const [warnOnBuySearch, setWarnOnBuySearch] = useState<boolean>(true);
   const [buySearchWarningText, setBuySearchWarningText] = useState<string>(DEFAULT_BUY_SEARCH_WARNING_TEXT);
+  const [buySearchWarningAutoDeleteMinutes, setBuySearchWarningAutoDeleteMinutes] = useState<number>(5);
 
   // Tracked Sellers in Buy/Sell Topics
   const [trackedSellers, setTrackedSellers] = useState<TrackedBuySellSeller[]>([]);
@@ -302,6 +303,9 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           }
           if (data.buySellGlobalConfig.buySearchWarningText) {
             setBuySearchWarningText(data.buySellGlobalConfig.buySearchWarningText);
+          }
+          if (data.buySellGlobalConfig.buySearchWarningAutoDeleteMinutes !== undefined) {
+            setBuySearchWarningAutoDeleteMinutes(Number(data.buySellGlobalConfig.buySearchWarningAutoDeleteMinutes));
           }
         }
         if (Array.isArray(data.buySellAlerts)) {
@@ -459,7 +463,8 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           gracePeriodMinutes,
           deleteOffTopicChat,
           warnOnBuySearch,
-          buySearchWarningText
+          buySearchWarningText,
+          buySearchWarningAutoDeleteMinutes
         })
       });
       const data = await res.json();
@@ -2636,6 +2641,27 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                         <span className="text-[10px] text-slate-500 block">
                           Используйте <code className="text-emerald-300 font-mono">{'{user}'}</code> для упоминания автора (обязательно содержит ссылку https://t.me/MotoBlackList).
                         </span>
+                        <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-slate-800/70">
+                          <div>
+                            <span className="text-[11px] font-semibold text-slate-300 block">
+                              Автоудаление предупреждения для покупателей:
+                            </span>
+                            <span className="text-[10px] text-slate-500">
+                              Через сколько минут бот удалит предупреждение из темы (0 — не удалять)
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              max={1440}
+                              value={buySearchWarningAutoDeleteMinutes}
+                              onChange={e => setBuySearchWarningAutoDeleteMinutes(Math.max(0, parseInt(e.target.value) || 0))}
+                              className="w-20 bg-slate-900 border border-slate-700/80 rounded-xl px-3 py-1.5 text-xs text-white text-center font-mono focus:outline-none focus:border-emerald-500"
+                            />
+                            <span className="text-xs text-slate-400">мин.</span>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>

@@ -3652,7 +3652,8 @@ app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, re
       gracePeriodMinutes,
       deleteOffTopicChat,
       warnOnBuySearch,
-      buySearchWarningText
+      buySearchWarningText,
+      buySearchWarningAutoDeleteMinutes
     } = req.body;
 
     buySellGlobalConfig = {
@@ -3679,7 +3680,8 @@ app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, re
       gracePeriodMinutes: typeof gracePeriodMinutes === 'number' ? Math.max(1, Math.min(120, Math.round(gracePeriodMinutes))) : (buySellGlobalConfig.gracePeriodMinutes ?? 10),
       deleteOffTopicChat: deleteOffTopicChat !== undefined ? Boolean(deleteOffTopicChat) : (buySellGlobalConfig.deleteOffTopicChat !== false),
       warnOnBuySearch: warnOnBuySearch !== undefined ? Boolean(warnOnBuySearch) : (buySellGlobalConfig.warnOnBuySearch !== false),
-      buySearchWarningText: typeof buySearchWarningText === 'string' && buySearchWarningText.trim().length > 0 ? buySearchWarningText : (buySellGlobalConfig.buySearchWarningText || DEFAULT_BUY_SEARCH_WARNING_TEXT)
+      buySearchWarningText: typeof buySearchWarningText === 'string' && buySearchWarningText.trim().length > 0 ? buySearchWarningText : (buySellGlobalConfig.buySearchWarningText || DEFAULT_BUY_SEARCH_WARNING_TEXT),
+      buySearchWarningAutoDeleteMinutes: typeof buySearchWarningAutoDeleteMinutes === 'number' ? Math.max(0, Math.min(1440, Math.round(buySearchWarningAutoDeleteMinutes))) : (buySellGlobalConfig.buySearchWarningAutoDeleteMinutes ?? 5)
     };
 
     await db.collection('config').doc('buy_sell_global').set(cleanData(buySellGlobalConfig));
@@ -5740,7 +5742,8 @@ let buySellGlobalConfig: BuySellGlobalConfig = {
   gracePeriodMinutes: 10,
   deleteOffTopicChat: true,
   warnOnBuySearch: true,
-  buySearchWarningText: DEFAULT_BUY_SEARCH_WARNING_TEXT
+  buySearchWarningText: DEFAULT_BUY_SEARCH_WARNING_TEXT,
+  buySearchWarningAutoDeleteMinutes: 5
 };
 let buySellAlerts: BuySellCommercialAlert[] = [];
 let trackedBuySellSellers: TrackedBuySellSeller[] = [];
@@ -8117,7 +8120,8 @@ async function syncData() {
           gracePeriodMinutes: typeof data.gracePeriodMinutes === 'number' ? data.gracePeriodMinutes : 10,
           deleteOffTopicChat: data.deleteOffTopicChat !== false,
           warnOnBuySearch: data.warnOnBuySearch !== false,
-          buySearchWarningText: typeof data.buySearchWarningText === 'string' && data.buySearchWarningText.trim().length > 0 ? data.buySearchWarningText : DEFAULT_BUY_SEARCH_WARNING_TEXT
+          buySearchWarningText: typeof data.buySearchWarningText === 'string' && data.buySearchWarningText.trim().length > 0 ? data.buySearchWarningText : DEFAULT_BUY_SEARCH_WARNING_TEXT,
+          buySearchWarningAutoDeleteMinutes: typeof data.buySearchWarningAutoDeleteMinutes === 'number' ? data.buySearchWarningAutoDeleteMinutes : 5
         };
         console.log('Loaded buy-sell global config');
       }
@@ -9596,7 +9600,18 @@ async function evaluatePendingBuySellPost(entry: PendingBuySellPost) {
         link_preview_options: { is_disabled: true }
       };
       if (entry.messageThreadId) sendOpts.message_thread_id = entry.messageThreadId;
-      await bot.telegram.sendMessage(entry.chatId, warnHtml, sendOpts).catch(() => {});
+      const sentWarn = await bot.telegram.sendMessage(entry.chatId, warnHtml, sendOpts).catch(async () => {
+        delete sendOpts.reply_parameters;
+        return await bot?.telegram.sendMessage(entry.chatId, warnHtml, sendOpts).catch(() => null);
+      });
+      const autoDelMin = buySellGlobalConfig.buySearchWarningAutoDeleteMinutes ?? 5;
+      if (autoDelMin > 0 && sentWarn?.message_id) {
+        const warnMsgId = sentWarn.message_id;
+        const targetChatId = entry.chatId;
+        setTimeout(() => {
+          bot?.telegram.deleteMessage(targetChatId, warnMsgId).catch(() => {});
+        }, autoDelMin * 60 * 1000);
+      }
     }
     return;
   }
@@ -9816,10 +9831,17 @@ async function handleBuySellTopicEntry(params: {
             link_preview_options: { is_disabled: true }
           };
           if (msgThreadId) sendOpts.message_thread_id = Number(msgThreadId);
-          await bot.telegram.sendMessage(chatId, warnHtml, sendOpts).catch(async () => {
+          const sentWarn = await bot.telegram.sendMessage(chatId, warnHtml, sendOpts).catch(async () => {
             delete sendOpts.reply_parameters;
-            await bot?.telegram.sendMessage(chatId, warnHtml, sendOpts).catch(() => {});
+            return await bot?.telegram.sendMessage(chatId, warnHtml, sendOpts).catch(() => null);
           });
+          const autoDelMin = buySellGlobalConfig.buySearchWarningAutoDeleteMinutes ?? 5;
+          if (autoDelMin > 0 && sentWarn?.message_id) {
+            const warnMsgId = sentWarn.message_id;
+            setTimeout(() => {
+              bot?.telegram.deleteMessage(chatId, warnMsgId).catch(() => {});
+            }, autoDelMin * 60 * 1000);
+          }
 
           await addLog({
             id: Math.random().toString(36).substr(2, 9),
@@ -9827,7 +9849,7 @@ async function handleBuySellTopicEntry(params: {
             type: 'SHOP',
             user: authorName,
             chat: effectiveChatTitle,
-            details: `Выдано предупреждение о мошенниках (MotoBlackList) на запрос о поиске детали в «${topicTitle}»`
+            details: `Выдано предупреждение о мошенниках (MotoBlackList) на запрос о поиске детали в «${topicTitle}»${autoDelMin > 0 ? ` (автоудаление через ${autoDelMin} мин.)` : ''}`
           });
         }
         return;

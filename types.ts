@@ -730,6 +730,7 @@ export interface BuySellGlobalConfig {
   deleteOffTopicChat?: boolean;
   warnOnBuySearch?: boolean;
   buySearchWarningText?: string;
+  buySearchWarningAutoDeleteMinutes?: number;
 }
 
 export interface BuySellCommercialAlert {
