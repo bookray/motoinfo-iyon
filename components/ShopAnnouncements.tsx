@@ -35,7 +35,8 @@ import {
   Bell,
   AtSign,
   Zap,
-  Globe
+  Globe,
+  Shield
 } from 'lucide-react';
 import {
   Chat,
@@ -50,7 +51,8 @@ import {
   BuySellAutoActionType,
   DEFAULT_COMMERCIAL_MARKERS,
   DEFAULT_BUY_SELL_WARNING_TEXT,
-  DEFAULT_BUY_SELL_WARNING_BUTTONS
+  DEFAULT_BUY_SELL_WARNING_BUTTONS,
+  DEFAULT_BUY_SEARCH_WARNING_TEXT
 } from '../types';
 
 interface ShopAnnouncementsProps {
@@ -182,6 +184,18 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [globalAutoActionMinConfidence, setGlobalAutoActionMinConfidence] = useState<number>(85);
   const [globalAutoActionTrackedSellers, setGlobalAutoActionTrackedSellers] = useState<boolean>(true);
 
+  // Buy/Sell User Ad Moderation & Anti-Flud
+  const [userAdModerationEnabled, setUserAdModerationEnabled] = useState<boolean>(true);
+  const [requirePhoto, setRequirePhoto] = useState<boolean>(true);
+  const [requireCity, setRequireCity] = useState<boolean>(true);
+  const [requireDeliveryInfo, setRequireDeliveryInfo] = useState<boolean>(true);
+  const [requirePrice, setRequirePrice] = useState<boolean>(true);
+  const [requireContacts, setRequireContacts] = useState<boolean>(true);
+  const [gracePeriodMinutes, setGracePeriodMinutes] = useState<number>(10);
+  const [deleteOffTopicChat, setDeleteOffTopicChat] = useState<boolean>(true);
+  const [warnOnBuySearch, setWarnOnBuySearch] = useState<boolean>(true);
+  const [buySearchWarningText, setBuySearchWarningText] = useState<string>(DEFAULT_BUY_SEARCH_WARNING_TEXT);
+
   // Tracked Sellers in Buy/Sell Topics
   const [trackedSellers, setTrackedSellers] = useState<TrackedBuySellSeller[]>([]);
   const [newSellerIdentifier, setNewSellerIdentifier] = useState<string>('');
@@ -258,6 +272,36 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           }
           if (data.buySellGlobalConfig.autoActionTrackedSellers !== undefined) {
             setGlobalAutoActionTrackedSellers(Boolean(data.buySellGlobalConfig.autoActionTrackedSellers));
+          }
+          if (data.buySellGlobalConfig.userAdModerationEnabled !== undefined) {
+            setUserAdModerationEnabled(Boolean(data.buySellGlobalConfig.userAdModerationEnabled));
+          }
+          if (data.buySellGlobalConfig.requirePhoto !== undefined) {
+            setRequirePhoto(Boolean(data.buySellGlobalConfig.requirePhoto));
+          }
+          if (data.buySellGlobalConfig.requireCity !== undefined) {
+            setRequireCity(Boolean(data.buySellGlobalConfig.requireCity));
+          }
+          if (data.buySellGlobalConfig.requireDeliveryInfo !== undefined) {
+            setRequireDeliveryInfo(Boolean(data.buySellGlobalConfig.requireDeliveryInfo));
+          }
+          if (data.buySellGlobalConfig.requirePrice !== undefined) {
+            setRequirePrice(Boolean(data.buySellGlobalConfig.requirePrice));
+          }
+          if (data.buySellGlobalConfig.requireContacts !== undefined) {
+            setRequireContacts(Boolean(data.buySellGlobalConfig.requireContacts));
+          }
+          if (data.buySellGlobalConfig.gracePeriodMinutes !== undefined) {
+            setGracePeriodMinutes(Number(data.buySellGlobalConfig.gracePeriodMinutes));
+          }
+          if (data.buySellGlobalConfig.deleteOffTopicChat !== undefined) {
+            setDeleteOffTopicChat(Boolean(data.buySellGlobalConfig.deleteOffTopicChat));
+          }
+          if (data.buySellGlobalConfig.warnOnBuySearch !== undefined) {
+            setWarnOnBuySearch(Boolean(data.buySellGlobalConfig.warnOnBuySearch));
+          }
+          if (data.buySellGlobalConfig.buySearchWarningText) {
+            setBuySearchWarningText(data.buySellGlobalConfig.buySearchWarningText);
           }
         }
         if (Array.isArray(data.buySellAlerts)) {
@@ -405,7 +449,17 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           autoActionEnabled: globalAutoActionEnabled,
           autoActionType: globalAutoActionType,
           autoActionMinConfidence: globalAutoActionMinConfidence,
-          autoActionTrackedSellers: globalAutoActionTrackedSellers
+          autoActionTrackedSellers: globalAutoActionTrackedSellers,
+          userAdModerationEnabled,
+          requirePhoto,
+          requireCity,
+          requireDeliveryInfo,
+          requirePrice,
+          requireContacts,
+          gracePeriodMinutes,
+          deleteOffTopicChat,
+          warnOnBuySearch,
+          buySearchWarningText
         })
       });
       const data = await res.json();
@@ -2425,6 +2479,167 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                     <span className="text-xs text-slate-400">сек.</span>
                   </div>
                 </div>
+              </div>
+
+              {/* User Ad Format Moderation & Anti-Flud Section */}
+              <div className="p-4 rounded-xl bg-slate-950 border border-slate-800 space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800/80">
+                  <div>
+                    <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                      <Shield className="w-4 h-4 text-emerald-400" />
+                      <span>ИИ-модерация объявлений пользователей и порядок в теме</span>
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Проверка наличия фото, города, доставки, цены и контактов, 10 минут на исправление, предупреждение покупателям о мошенниках (MotoBlackList) и удаление оффтопа
+                    </p>
+                  </div>
+                  <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                    <input
+                      type="checkbox"
+                      checked={userAdModerationEnabled}
+                      onChange={e => setUserAdModerationEnabled(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                  </label>
+                </div>
+
+                {userAdModerationEnabled && (
+                  <div className="space-y-4">
+                    <div>
+                      <span className="text-[11px] font-semibold text-slate-300 block mb-2">
+                        Обязательные пункты в объявлении о продаже (при отсутствии бот тегнет автора и даст {gracePeriodMinutes} мин. на правку):
+                      </span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                        <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer hover:border-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={requirePhoto}
+                            onChange={e => setRequirePhoto(e.target.checked)}
+                            className="w-4 h-4 rounded text-emerald-600 bg-slate-950 border-slate-700 focus:ring-0"
+                          />
+                          <span className="text-xs text-slate-200 font-medium">📷 Фотография товара</span>
+                        </label>
+                        <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer hover:border-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={requireCity}
+                            onChange={e => setRequireCity(e.target.checked)}
+                            className="w-4 h-4 rounded text-emerald-600 bg-slate-950 border-slate-700 focus:ring-0"
+                          />
+                          <span className="text-xs text-slate-200 font-medium">🏙 Город</span>
+                        </label>
+                        <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer hover:border-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={requireDeliveryInfo}
+                            onChange={e => setRequireDeliveryInfo(e.target.checked)}
+                            className="w-4 h-4 rounded text-emerald-600 bg-slate-950 border-slate-700 focus:ring-0"
+                          />
+                          <span className="text-xs text-slate-200 font-medium">🚚 Информация о доставке</span>
+                        </label>
+                        <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer hover:border-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={requirePrice}
+                            onChange={e => setRequirePrice(e.target.checked)}
+                            className="w-4 h-4 rounded text-emerald-600 bg-slate-950 border-slate-700 focus:ring-0"
+                          />
+                          <span className="text-xs text-slate-200 font-medium">💰 Обязательная цена</span>
+                        </label>
+                        <label className="flex items-center gap-2.5 p-2.5 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer hover:border-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={requireContacts}
+                            onChange={e => setRequireContacts(e.target.checked)}
+                            className="w-4 h-4 rounded text-emerald-600 bg-slate-950 border-slate-700 focus:ring-0"
+                          />
+                          <span className="text-xs text-slate-200 font-medium">📞 Контакты / связь</span>
+                        </label>
+                        <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-slate-900 border border-slate-800">
+                          <span className="text-xs text-slate-200 font-medium">⏱ На правку:</span>
+                          <div className="flex items-center gap-1.5">
+                            <input
+                              type="number"
+                              min={1}
+                              max={120}
+                              value={gracePeriodMinutes}
+                              onChange={e => setGracePeriodMinutes(Math.max(1, parseInt(e.target.value) || 10))}
+                              className="w-16 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs text-white text-center font-mono focus:outline-none focus:border-emerald-500"
+                            />
+                            <span className="text-[11px] text-slate-400">мин</span>
+                          </div>
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-1.5">
+                        Примечание: ссылки на avito.ru и auto.ru разрешены и автоматически учитываются как часть объявления/контактов.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                      <label className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer">
+                        <div>
+                          <span className="text-xs font-semibold text-white block">
+                            Удалять оффтоп и просто общение
+                          </span>
+                          <span className="text-[10px] text-slate-400 mt-0.5 block">
+                            Сообщения не о продаже или поиске деталей сразу удаляются из темы
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={deleteOffTopicChat}
+                          onChange={e => setDeleteOffTopicChat(e.target.checked)}
+                          className="w-4 h-4 rounded text-rose-500 bg-slate-950 border-slate-700 focus:ring-0 shrink-0"
+                        />
+                      </label>
+
+                      <label className="flex items-center justify-between gap-3 p-3 rounded-xl bg-slate-900 border border-slate-800 cursor-pointer">
+                        <div>
+                          <span className="text-xs font-semibold text-white block">
+                            Предупреждать о мошенниках при поиске
+                          </span>
+                          <span className="text-[10px] text-slate-400 mt-0.5 block">
+                            При запросах «куплю/ищу» тегать автора со ссылкой на MotoBlackList
+                          </span>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={warnOnBuySearch}
+                          onChange={e => setWarnOnBuySearch(e.target.checked)}
+                          className="w-4 h-4 rounded text-amber-500 bg-slate-950 border-slate-700 focus:ring-0 shrink-0"
+                        />
+                      </label>
+                    </div>
+
+                    {warnOnBuySearch && (
+                      <div className="space-y-1.5 pt-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[11px] font-semibold text-slate-300">
+                            Текст предупреждения для покупателей (поиск запчастей):
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setBuySearchWarningText(DEFAULT_BUY_SEARCH_WARNING_TEXT)}
+                            className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>По умолчанию</span>
+                          </button>
+                        </div>
+                        <textarea
+                          rows={4}
+                          value={buySearchWarningText}
+                          onChange={e => setBuySearchWarningText(e.target.value)}
+                          className="w-full bg-slate-900 border border-slate-700/80 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 leading-relaxed"
+                        />
+                        <span className="text-[10px] text-slate-500 block">
+                          Используйте <code className="text-emerald-300 font-mono">{'{user}'}</code> для упоминания автора (обязательно содержит ссылку https://t.me/MotoBlackList).
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {globalBuySellFeedback && (

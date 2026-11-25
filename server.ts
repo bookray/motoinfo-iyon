@@ -15,7 +15,7 @@ import {
   ShopTopicConfig, ShopVendor, ShopPublicationLog, ShopGlobalWarningConfig,
   BuySellTopicConfig, BuySellGlobalConfig, BuySellCommercialAlert, TrackedBuySellSeller,
   DEFAULT_COMMERCIAL_MARKERS, DEFAULT_BUY_SELL_WARNING_TEXT, DEFAULT_BUY_SELL_WARNING_BUTTONS,
-  BuySellWarningButton, BuySellAutoActionType
+  DEFAULT_BUY_SEARCH_WARNING_TEXT, BuySellWarningButton, BuySellAutoActionType
 } from './types';
 import { CHATS_CATALOG, findChatInCatalog, getChatSummaries, addChatSummary, ChatDailySummary, loadRealDigestsFromDatabase, CHAT_TO_DB_MAPPING } from './chatsCatalog';
 import { buildExportXml, saveXmlExportToFile, getLatestExportXml, getExportMetadata } from './xmlExport';
@@ -3642,7 +3642,17 @@ app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, re
       autoActionEnabled,
       autoActionType,
       autoActionMinConfidence,
-      autoActionTrackedSellers
+      autoActionTrackedSellers,
+      userAdModerationEnabled,
+      requirePhoto,
+      requireCity,
+      requireDeliveryInfo,
+      requirePrice,
+      requireContacts,
+      gracePeriodMinutes,
+      deleteOffTopicChat,
+      warnOnBuySearch,
+      buySearchWarningText
     } = req.body;
 
     buySellGlobalConfig = {
@@ -3659,7 +3669,17 @@ app.post('/api/buy-sell-topics/global-config', authenticateToken, async (req, re
       autoActionEnabled: autoActionEnabled !== undefined ? Boolean(autoActionEnabled) : Boolean(buySellGlobalConfig.autoActionEnabled),
       autoActionType: (['DELETE_AND_WARN', 'DELETE_ONLY', 'BAN'].includes(autoActionType) ? autoActionType : (buySellGlobalConfig.autoActionType || 'DELETE_AND_WARN')) as BuySellAutoActionType,
       autoActionMinConfidence: typeof autoActionMinConfidence === 'number' ? Math.max(10, Math.min(100, autoActionMinConfidence)) : (buySellGlobalConfig.autoActionMinConfidence || 85),
-      autoActionTrackedSellers: autoActionTrackedSellers !== undefined ? Boolean(autoActionTrackedSellers) : (buySellGlobalConfig.autoActionTrackedSellers !== false)
+      autoActionTrackedSellers: autoActionTrackedSellers !== undefined ? Boolean(autoActionTrackedSellers) : (buySellGlobalConfig.autoActionTrackedSellers !== false),
+      userAdModerationEnabled: userAdModerationEnabled !== undefined ? Boolean(userAdModerationEnabled) : (buySellGlobalConfig.userAdModerationEnabled !== false),
+      requirePhoto: requirePhoto !== undefined ? Boolean(requirePhoto) : (buySellGlobalConfig.requirePhoto !== false),
+      requireCity: requireCity !== undefined ? Boolean(requireCity) : (buySellGlobalConfig.requireCity !== false),
+      requireDeliveryInfo: requireDeliveryInfo !== undefined ? Boolean(requireDeliveryInfo) : (buySellGlobalConfig.requireDeliveryInfo !== false),
+      requirePrice: requirePrice !== undefined ? Boolean(requirePrice) : (buySellGlobalConfig.requirePrice !== false),
+      requireContacts: requireContacts !== undefined ? Boolean(requireContacts) : (buySellGlobalConfig.requireContacts !== false),
+      gracePeriodMinutes: typeof gracePeriodMinutes === 'number' ? Math.max(1, Math.min(120, Math.round(gracePeriodMinutes))) : (buySellGlobalConfig.gracePeriodMinutes ?? 10),
+      deleteOffTopicChat: deleteOffTopicChat !== undefined ? Boolean(deleteOffTopicChat) : (buySellGlobalConfig.deleteOffTopicChat !== false),
+      warnOnBuySearch: warnOnBuySearch !== undefined ? Boolean(warnOnBuySearch) : (buySellGlobalConfig.warnOnBuySearch !== false),
+      buySearchWarningText: typeof buySearchWarningText === 'string' && buySearchWarningText.trim().length > 0 ? buySearchWarningText : (buySellGlobalConfig.buySearchWarningText || DEFAULT_BUY_SEARCH_WARNING_TEXT)
     };
 
     await db.collection('config').doc('buy_sell_global').set(cleanData(buySellGlobalConfig));
@@ -5710,7 +5730,17 @@ let buySellGlobalConfig: BuySellGlobalConfig = {
   autoActionEnabled: false,
   autoActionType: 'DELETE_AND_WARN',
   autoActionMinConfidence: 85,
-  autoActionTrackedSellers: true
+  autoActionTrackedSellers: true,
+  userAdModerationEnabled: true,
+  requirePhoto: true,
+  requireCity: true,
+  requireDeliveryInfo: true,
+  requirePrice: true,
+  requireContacts: true,
+  gracePeriodMinutes: 10,
+  deleteOffTopicChat: true,
+  warnOnBuySearch: true,
+  buySearchWarningText: DEFAULT_BUY_SEARCH_WARNING_TEXT
 };
 let buySellAlerts: BuySellCommercialAlert[] = [];
 let trackedBuySellSellers: TrackedBuySellSeller[] = [];
@@ -8077,7 +8107,17 @@ async function syncData() {
           autoActionEnabled: Boolean(data.autoActionEnabled),
           autoActionType: data.autoActionType || 'DELETE_AND_WARN',
           autoActionMinConfidence: typeof data.autoActionMinConfidence === 'number' ? data.autoActionMinConfidence : 85,
-          autoActionTrackedSellers: data.autoActionTrackedSellers !== false
+          autoActionTrackedSellers: data.autoActionTrackedSellers !== false,
+          userAdModerationEnabled: data.userAdModerationEnabled !== false,
+          requirePhoto: data.requirePhoto !== false,
+          requireCity: data.requireCity !== false,
+          requireDeliveryInfo: data.requireDeliveryInfo !== false,
+          requirePrice: data.requirePrice !== false,
+          requireContacts: data.requireContacts !== false,
+          gracePeriodMinutes: typeof data.gracePeriodMinutes === 'number' ? data.gracePeriodMinutes : 10,
+          deleteOffTopicChat: data.deleteOffTopicChat !== false,
+          warnOnBuySearch: data.warnOnBuySearch !== false,
+          buySearchWarningText: typeof data.buySearchWarningText === 'string' && data.buySearchWarningText.trim().length > 0 ? data.buySearchWarningText : DEFAULT_BUY_SEARCH_WARNING_TEXT
         };
         console.log('Loaded buy-sell global config');
       }
@@ -8836,6 +8876,1099 @@ ${postText}
       matchedMarkers,
       reason: hasMarkers ? `Анализ по маркерам: найдены ${matchedMarkers.join(', ')}` : 'Частное объявление'
     };
+  }
+}
+
+type BuySellMissingField = 'photo' | 'city' | 'delivery' | 'price' | 'contacts' | 'avitoLink';
+
+interface BuySellUserModerationResult {
+  category: 'SALE' | 'BUY_SEARCH' | 'CHAT';
+  missingFields: BuySellMissingField[];
+  hasAvitoOrAutoRuLink: boolean;
+  reason: string;
+}
+
+interface PendingBuySellPost {
+  key: string;
+  chatId: string;
+  chatTitle: string;
+  chatUsername?: string;
+  messageThreadId?: number;
+  topicTitle: string;
+  userId: string;
+  username?: string;
+  firstName?: string;
+  lastName?: string;
+  authorName: string;
+  primaryMessageId: number;
+  messageIds: number[];
+  messageTexts: Record<number, string>;
+  hasPhoto: boolean;
+  combinedText: string;
+  warningMessageId?: number;
+  missingFields: BuySellMissingField[];
+  commercialChecked?: boolean;
+  expiresAt: number;
+  timer: NodeJS.Timeout;
+}
+
+interface BuySellMediaGroupEntry {
+  key: string;
+  chatId: string;
+  chatTitle: string;
+  chatUsername?: string;
+  messageThreadId?: number;
+  topicConfig: BuySellTopicConfig;
+  from: { id: number; username?: string; first_name?: string; last_name?: string };
+  messageIds: number[];
+  messageTexts: Record<number, string>;
+  hasPhoto: boolean;
+  replyToMessageId?: number;
+  timer: NodeJS.Timeout;
+}
+
+const pendingBuySellPosts = new Map<string, PendingBuySellPost>();
+const buySellMediaGroupBuffer = new Map<string, BuySellMediaGroupEntry>();
+
+function messageHasPhoto(msg: any): boolean {
+  if (!msg) return false;
+  if (Array.isArray(msg.photo) && msg.photo.length > 0) return true;
+  if (msg.document?.mime_type && String(msg.document.mime_type).toLowerCase().startsWith('image/')) return true;
+  return false;
+}
+
+function extractMessageFullTextWithUrls(msg: any): string {
+  if (!msg) return '';
+  const baseText = String(msg.text || msg.caption || '').trim();
+  const entities = Array.isArray(msg.entities) ? msg.entities : (Array.isArray(msg.caption_entities) ? msg.caption_entities : []);
+  const extraUrls: string[] = [];
+  for (const ent of entities) {
+    if (ent && ent.type === 'text_link' && typeof ent.url === 'string' && ent.url.trim()) {
+      const url = ent.url.trim();
+      if (!baseText.includes(url)) {
+        extraUrls.push(url);
+      }
+    }
+  }
+  return extraUrls.length > 0 ? `${baseText}\n${extraUrls.join(' ')}`.trim() : baseText;
+}
+
+function formatBuySellUserMentionHtml(userId: string | number, authorName: string, username?: string): string {
+  const link = `<a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a>`;
+  return username ? `${link} (@${escapeHtml(username.replace(/^@/, ''))})` : link;
+}
+
+function findPendingBuySellPostByMessageId(chatId: string, messageId: number): PendingBuySellPost | undefined {
+  for (const entry of pendingBuySellPosts.values()) {
+    if (String(entry.chatId) === String(chatId) && entry.messageIds.includes(Number(messageId))) {
+      return entry;
+    }
+  }
+  return undefined;
+}
+
+function findPendingBuySellPostForFollowUp(
+  chatId: string,
+  userId: string,
+  replyToMessageId?: number
+): PendingBuySellPost | undefined {
+  if (replyToMessageId) {
+    for (const entry of pendingBuySellPosts.values()) {
+      if (
+        String(entry.chatId) === String(chatId) &&
+        String(entry.userId) === String(userId) &&
+        (entry.warningMessageId === Number(replyToMessageId) || entry.messageIds.includes(Number(replyToMessageId)))
+      ) {
+        return entry;
+      }
+    }
+  }
+  // Fallback: latest active pending post by the same user in this chat
+  let latest: PendingBuySellPost | undefined;
+  for (const entry of pendingBuySellPosts.values()) {
+    if (String(entry.chatId) === String(chatId) && String(entry.userId) === String(userId)) {
+      if (!latest || entry.expiresAt > latest.expiresAt) {
+        latest = entry;
+      }
+    }
+  }
+  return latest;
+}
+
+function clearPendingBuySellPost(key: string) {
+  const entry = pendingBuySellPosts.get(key);
+  if (entry) {
+    clearTimeout(entry.timer);
+    pendingBuySellPosts.delete(key);
+  }
+}
+
+async function classifyAndValidateBuySellMessage(
+  postText: string,
+  hasPhoto: boolean,
+  user: { id: number; username?: string; first_name?: string; last_name?: string },
+  chatTitle: string,
+  topicTitle: string
+): Promise<BuySellUserModerationResult> {
+  const trimmed = (postText || '').trim();
+  const hasAvitoOrAutoRuLink = /(?:https?:\/\/)?(?:www\.|m\.)?(?:avito\.ru|auto\.ru)\b/i.test(trimmed);
+
+  // Quick deterministic check when user sent ONLY a sticker/gif/voice or zero-text without photo
+  if (!trimmed && !hasPhoto) {
+    return {
+      category: 'CHAT',
+      missingFields: [],
+      hasAvitoOrAutoRuLink: false,
+      reason: 'Сообщение без текста и без фото товара (оффтоп/флуд)'
+    };
+  }
+
+  // Deterministic photo-only post without caption: cannot tell if sale/search/chat; treat as incomplete SALE so user has 10 min to add description/price/city/delivery/contacts
+  if (!trimmed && hasPhoto) {
+    const missing: BuySellMissingField[] = [];
+    if (buySellGlobalConfig.requireCity !== false) missing.push('city');
+    if (buySellGlobalConfig.requireDeliveryInfo !== false) missing.push('delivery');
+    if (buySellGlobalConfig.requirePrice !== false) missing.push('price');
+    if (buySellGlobalConfig.requireContacts !== false) missing.push('contacts');
+    return {
+      category: 'SALE',
+      missingFields: missing,
+      hasAvitoOrAutoRuLink: false,
+      reason: 'Отправлено фото без текста и обязательных полей объявления'
+    };
+  }
+
+  const prompt = `Ты — строгий, но справедливый модератор темы "${topicTitle}" (Барахолка: Купи / Продай) в мото-чате "${chatTitle}".
+Проанализируй сообщение пользователя и верни строго JSON.
+
+ШАГ 1 — ОПРЕДЕЛИ КАТЕГОРИЮ ("category"):
+1. "SALE" — пользователь ПРОДАЁТ, ОТДАЁТ или МЕНЯЕТ товар (мотоцикл, экипировку, запчасти, аксессуары), либо даёт ссылку на продажу (avito.ru, auto.ru и т.п.). Даже если объявление неполное (например, просто "Продам шлем" или только цена), это "SALE".
+2. "BUY_SEARCH" — пользователь ИЩЕТ или ХОЧЕТ КУПИТЬ запчасть, экипировку или мотоцикл ("куплю фару", "ищу передний диск на R6", "может у кого завалялся пластик", "кто продаёт кофры?").
+3. "CHAT" — обычное общение, флуд, комментарии не являющиеся самостоятельным объявлением о продаже или поиске покупки ("привет", "норм мот", "дорого!", "подскажите как настроить карб", "удачи в продаже", "где покатать сегодня?", обсуждение цены, споры, шутки, мемы, вопросы по ремонту без покупки/продажи).
+
+ШАГ 2 — ТОЛЬКО ДЛЯ "SALE", ПРОВЕРЬ НАЛИЧИЕ ОБЯЗАТЕЛЬНЫХ ПОЛЕЙ:
+- "hasCity": boolean — указан ли город / населённый пункт / регион (например: Москва, СПб, МСК, Питер, Краснодар, Екатеринбург, МО и т.д.).
+- "hasDeliveryInfo": boolean — указана ли информация о доставке или самовывозе (например: "самовывоз", "отправлю ТК/СДЭК/Почтой", "авито доставка", "доставка по РФ", "без пересыла", "пересыл за ваш счёт", "встреча в городе").
+- "hasPrice": boolean — указана ли конкретная обязательная цена в цифрах/валюте (например: "5000", "5к", "15 000 р", "350$", "цена 12000"). Фразы "цена договорная", "в лс", "предлагайте" без конкретной суммы СЧИТАЮТСЯ отсутствием обязательной цены (hasPrice = false)! Исключение: "отдам даром" / "бесплатно" (hasPrice = true).
+- "hasContacts": boolean — указаны ли контакты/способ связи для покупателя (номер телефона, @username в тексте, ссылка на Telegram/WhatsApp/Avito/Auto.ru, или явное указание "писать в ЛС / личку / звонить по телефону").
+- "mentionsAvitoWithoutLink": boolean — true ТОЛЬКО если автор написал, что объявление есть на Avito/Авито или Auto.ru/Авто.ру (например "выложил на авито", "см. авто.ру"), но при этом в тексте НЕТ ссылки на avito.ru или auto.ru. Если он просто продаёт напрямую без упоминания Avito/Auto.ru, ставь false.
+
+ДАННЫЕ СООБЩЕНИЯ:
+Есть прикреплённое фото: ${hasPhoto ? 'ДА' : 'НЕТ'}
+Есть ссылка avito.ru / auto.ru в тексте: ${hasAvitoOrAutoRuLink ? 'ДА' : 'НЕТ'}
+Автор: ${user.first_name || ''} ${user.last_name || ''} (@${user.username || 'без_ника'})
+Текст сообщения:
+"""
+${trimmed}
+"""
+
+Верни ответ СТРОГО в формате JSON без markdown и пояснений:
+{
+  "category": "SALE" | "BUY_SEARCH" | "CHAT",
+  "hasCity": boolean,
+  "hasDeliveryInfo": boolean,
+  "hasPrice": boolean,
+  "hasContacts": boolean,
+  "mentionsAvitoWithoutLink": boolean,
+  "reason": "Короткое объяснение на русском (1 предложение)"
+}`;
+
+  const applyMissingCheck = (parsed: {
+    category: 'SALE' | 'BUY_SEARCH' | 'CHAT';
+    hasCity?: boolean;
+    hasDeliveryInfo?: boolean;
+    hasPrice?: boolean;
+    hasContacts?: boolean;
+    mentionsAvitoWithoutLink?: boolean;
+    reason?: string;
+  }): BuySellUserModerationResult => {
+    if (parsed.category !== 'SALE') {
+      return {
+        category: parsed.category,
+        missingFields: [],
+        hasAvitoOrAutoRuLink,
+        reason: parsed.reason || (parsed.category === 'BUY_SEARCH' ? 'Поиск / покупка детали' : 'Оффтоп / общение в теме')
+      };
+    }
+
+    const missingFields: BuySellMissingField[] = [];
+    if (buySellGlobalConfig.requirePhoto !== false && !hasPhoto) {
+      missingFields.push('photo');
+    }
+    if (buySellGlobalConfig.requireCity !== false && !parsed.hasCity) {
+      missingFields.push('city');
+    }
+    if (buySellGlobalConfig.requireDeliveryInfo !== false && !parsed.hasDeliveryInfo) {
+      missingFields.push('delivery');
+    }
+    if (buySellGlobalConfig.requirePrice !== false && !parsed.hasPrice) {
+      missingFields.push('price');
+    }
+    if (buySellGlobalConfig.requireContacts !== false && !parsed.hasContacts) {
+      missingFields.push('contacts');
+    }
+    if (parsed.mentionsAvitoWithoutLink && !hasAvitoOrAutoRuLink) {
+      missingFields.push('avitoLink');
+    }
+
+    return {
+      category: 'SALE',
+      missingFields,
+      hasAvitoOrAutoRuLink,
+      reason: parsed.reason || (missingFields.length === 0 ? 'Объявление соответствует требованиям' : `Отсутствуют: ${missingFields.join(', ')}`)
+    };
+  };
+
+  try {
+    const rawResult = await generateAIResponse(prompt);
+    const jsonMatch = rawResult.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const catRaw = String(parsed.category || '').toUpperCase();
+      const category: 'SALE' | 'BUY_SEARCH' | 'CHAT' =
+        catRaw === 'SALE' ? 'SALE' : (catRaw === 'BUY_SEARCH' ? 'BUY_SEARCH' : 'CHAT');
+
+      return applyMissingCheck({
+        category,
+        hasCity: Boolean(parsed.hasCity),
+        hasDeliveryInfo: Boolean(parsed.hasDeliveryInfo),
+        hasPrice: Boolean(parsed.hasPrice),
+        hasContacts: Boolean(parsed.hasContacts),
+        mentionsAvitoWithoutLink: Boolean(parsed.mentionsAvitoWithoutLink),
+        reason: typeof parsed.reason === 'string' ? parsed.reason : ''
+      });
+    }
+  } catch (err: any) {
+    console.error('[BuySellUserMod] AI error, using heuristic fallback:', err?.message || err);
+  }
+
+  // Deterministic heuristic fallback if AI is temporarily unavailable
+  const lower = trimmed.toLowerCase();
+  const isBuySearch = /\b(куплю|ищу|разыскиваю|нужен|нужна|нужны|приобрету|подкиньте|подскажите где купить)\b/i.test(lower);
+  const isSale =
+    hasAvitoOrAutoRuLink ||
+    /\b(продам|продаю|продается|продаётся|отдам|обменяю|цена|стоимость|торг|самовывоз|пробег|состояние)\b/i.test(lower) ||
+    hasPhoto;
+
+  if (isBuySearch && !/\b(продам|продаю)\b/i.test(lower)) {
+    return applyMissingCheck({ category: 'BUY_SEARCH', reason: 'Запрос на покупку / поиск детали' });
+  }
+  if (!isSale) {
+    return applyMissingCheck({ category: 'CHAT', reason: 'Не похоже на объявление о продаже или покупке' });
+  }
+
+  const hasPriceHeuristic = /\b\d[\d\s.,]{1,9}\s*(?:₽|р\b|руб|тыс|т\.?р|к\b|\$|usd|eur|€)/i.test(lower) || /\bцена\s*[:\-]?\s*\d{2,}/i.test(lower) || /\b(даром|бесплатно)\b/i.test(lower);
+  const hasCityHeuristic = /\b(г\.?\s*[а-яё\-]{3,}|город\s+[а-яё\-]{3,}|москва|мск|питер|спб|санкт-петербург|казань|екб|екатеринбург|новосибирск|краснодар|сочи|ростов|самара|уфа|воронеж|пермь|тюмень|омск|волгоград|нижний новгород|челябинск|минск|область)\b/i.test(lower);
+  const hasDeliveryHeuristic = /\b(доставк|самовывоз|сдэк|почт|пересыл|отправ|тк\b|боксберри|boxberry|яндекс|встреча)\b/i.test(lower);
+  const hasContactsHeuristic =
+    hasAvitoOrAutoRuLink ||
+    /(@[a-zA-Z0-9_]{4,}|t\.me\/|wa\.me\/|(?:\+7|8|7)[\s\-\(]?\d{3}[\s\-\)]?\d{3}[\s\-]?\d{2}[\s\-]?\d{2}|\b(?:в лс|в личку|личк|звонит|пишит|тел\.?|телефон|tg|телеграм|whatsapp|ватсап)\b)/i.test(lower);
+  const mentionsAvitoWithoutLink = /\b(авито|avito|авто\.?ру)\b/i.test(lower) && !hasAvitoOrAutoRuLink;
+
+  return applyMissingCheck({
+    category: 'SALE',
+    hasCity: hasCityHeuristic,
+    hasDeliveryInfo: hasDeliveryHeuristic,
+    hasPrice: hasPriceHeuristic,
+    hasContacts: hasContactsHeuristic,
+    mentionsAvitoWithoutLink,
+    reason: 'Проверка по правилам объявления'
+  });
+}
+
+function buildIncompleteSaleWarningHtml(
+  userId: string | number,
+  authorName: string,
+  username: string | undefined,
+  missingFields: BuySellMissingField[],
+  graceMinutes: number
+): string {
+  const mention = formatBuySellUserMentionHtml(userId, authorName, username);
+  const labels: Record<BuySellMissingField, string> = {
+    photo: '📷 <b>Фотографию товара</b> (отправьте фото ответом/Reply на ваше объявление или пересоздайте пост с фото)',
+    city: '🏙 <b>Город</b> (где находится товар)',
+    delivery: '🚚 <b>Информацию о доставке</b> (самовывоз, СДЭК, ТК, Почта и т.д.)',
+    price: '💰 <b>Обязательную цену</b> (точная сумма в рублях/валюте)',
+    contacts: '📞 <b>Контакты для связи</b> (телефон, @username или «писать в ЛС»)',
+    avitoLink: '🔗 <b>Ссылку на объявление</b> (avito.ru или auto.ru, раз вы упомянули площадку)'
+  };
+  const missingList = missingFields.map(f => `• ${labels[f]}`).join('\n');
+  return (
+    `⚠️ ${mention}, ваше объявление о продаже заполнено не полностью!\n\n` +
+    `<b>Пожалуйста, добавьте:</b>\n${missingList}\n\n` +
+    `ℹ️ Если объявление размещено на Авито/Авто.ру — приложите ссылку на <code>avito.ru</code> или <code>auto.ru</code>.\n\n` +
+    `⏱ У вас есть <b>${graceMinutes} мин.</b>, чтобы внести корректировки (отредактируйте сообщение или отправьте недостающие данные/фото ответом на пост). Если не исправить — объявление будет удалено.`
+  );
+}
+
+async function runBuySellCommercialModeration(params: {
+  chatId: string;
+  effectiveChatTitle: string;
+  chatUsername?: string;
+  msgThreadId?: number;
+  topicConfig: BuySellTopicConfig;
+  messageIds: number[];
+  primaryMessageId: number;
+  postText: string;
+  from: { id: number; username?: string; first_name?: string; last_name?: string };
+}): Promise<{ matchedTrackedOrCommercial: boolean; deleted: boolean }> {
+  if (buySellGlobalConfig.enabled === false) {
+    return { matchedTrackedOrCommercial: false, deleted: false };
+  }
+
+  const {
+    chatId,
+    effectiveChatTitle,
+    chatUsername,
+    msgThreadId,
+    topicConfig,
+    messageIds,
+    primaryMessageId,
+    postText,
+    from
+  } = params;
+
+  const userId = String(from.id);
+  const username = from.username;
+  const authorName = [from.first_name, from.last_name].filter(Boolean).join(' ') || (username ? `@${username}` : `User ${userId}`);
+  const userHandle = username ? `@${username}` : `ID: ${userId}`;
+  const cleanChatId = String(chatId).startsWith('-100') ? String(chatId).replace('-100', '') : String(chatId);
+  const threadPart = msgThreadId ? `${msgThreadId}/` : '';
+  const messageLink = chatUsername
+    ? `https://t.me/${chatUsername}/${threadPart}${primaryMessageId}`
+    : `https://t.me/c/${cleanChatId}/${threadPart}${primaryMessageId}`;
+
+  const deleteAllMsgs = async () => {
+    for (const mId of messageIds) {
+      await bot?.telegram.deleteMessage(chatId, mId).catch(() => {});
+    }
+  };
+
+  // 1. Check Tracked Sellers
+  const senderIdStr = String(userId);
+  const senderUserClean = (username || '').toLowerCase().replace(/^@/, '');
+  const matchedTrackedSeller = trackedBuySellSellers.find(ts => {
+    if (!ts.active) return false;
+    const tsId = ts.userId ? String(ts.userId).trim() : '';
+    const tsUser = (ts.username || '').toLowerCase().replace(/^@/, '').trim();
+    const tsIdent = (ts.userIdentifier || '').toLowerCase().replace(/^@/, '').trim();
+    if (tsId && tsId === senderIdStr) return true;
+    if (tsUser && senderUserClean && tsUser === senderUserClean) return true;
+    if (tsIdent && (tsIdent === senderIdStr || (senderUserClean && tsIdent === senderUserClean))) return true;
+    return false;
+  });
+
+  if (matchedTrackedSeller) {
+    matchedTrackedSeller.totalAlertsTriggered = (matchedTrackedSeller.totalAlertsTriggered || 0) + 1;
+    matchedTrackedSeller.lastAlertAt = new Date().toISOString();
+    db.collection('buy_sell_tracked_sellers').doc(matchedTrackedSeller.id).set(cleanData(matchedTrackedSeller)).catch(() => {});
+
+    const alertId = `bsa_ts_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const alertRecord: BuySellCommercialAlert = {
+      id: alertId,
+      chatId: String(chatId),
+      chatTitle: effectiveChatTitle,
+      messageThreadId: msgThreadId ? Number(msgThreadId) : undefined,
+      messageId: primaryMessageId,
+      userId: String(userId),
+      username: username ? username.replace(/^@/, '') : undefined,
+      authorName,
+      confidence: 100,
+      verdict: 'COMMERCIAL',
+      matchedMarkers: [],
+      reason: `Отслеживаемый продавец из списка: ${matchedTrackedSeller.note || matchedTrackedSeller.userIdentifier}`,
+      textSnippet: postText.length > 250 ? postText.substring(0, 250) + '...' : (postText || '[Медиа/Файл]'),
+      messageText: postText,
+      timestamp: new Date().toISOString(),
+      messageLink,
+      messageUrl: messageLink,
+      isKnownSeller: true,
+      sellerNote: matchedTrackedSeller.note || 'Отслеживаемый продавец',
+      status: 'PENDING'
+    };
+
+    const isAutoActionTracked =
+      buySellGlobalConfig.autoActionEnabled &&
+      buySellGlobalConfig.autoActionTrackedSellers !== false;
+
+    let autoActionLabel = '';
+    let deleted = false;
+    if (isAutoActionTracked) {
+      const actType = buySellGlobalConfig.autoActionType || 'DELETE_AND_WARN';
+      if (actType === 'DELETE_AND_WARN') {
+        await deleteAllMsgs();
+        deleted = true;
+        const targetUserObj = { id: Number(userId), username, first_name: from.first_name };
+        await applyWarning(
+          targetUserObj,
+          'Бот (авто-модерация)',
+          'bot',
+          String(chatId),
+          effectiveChatTitle,
+          `Отслеживаемый продавец в «${topicConfig?.topicTitle || 'Купи / Продай'}»`
+        ).catch(() => {});
+        await sendBuySellTopicWarning(
+          chatId,
+          targetUserObj,
+          msgThreadId ? Number(msgThreadId) : undefined
+        ).catch(() => {});
+        alertRecord.status = 'RESOLVED_WARNED';
+        autoActionLabel = '⚠️ Пост удалён, выдан варн и предупреждение в чат';
+      } else if (actType === 'DELETE_ONLY') {
+        await deleteAllMsgs();
+        deleted = true;
+        alertRecord.status = 'RESOLVED_DELETED';
+        autoActionLabel = '🗑 Пост автоматически удалён';
+      } else if (actType === 'BAN') {
+        await deleteAllMsgs();
+        deleted = true;
+        await bot?.telegram.banChatMember(chatId, Number(userId)).catch(() => {});
+        alertRecord.status = 'RESOLVED_BANNED';
+        autoActionLabel = '🚫 Автор заблокирован в чате, пост удалён';
+        sendBanNotificationToChannel({
+          chatId,
+          chatTitle: effectiveChatTitle,
+          userId,
+          userFullName: authorName,
+          username,
+          banReason: `Отслеживаемый продавец в топике «${topicConfig?.topicTitle || 'Купи / Продай'}» (${matchedTrackedSeller.note || 'Отслеживаемый продавец'})`,
+          triggerType: 'BUY_SELL_TRACKED',
+          triggerMessageSnippet: alertRecord.textSnippet
+        }).catch(() => {});
+      }
+    }
+
+    buySellAlerts.unshift(alertRecord);
+    if (buySellAlerts.length > 200) buySellAlerts.pop();
+    db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
+
+    const shouldTag = buySellGlobalConfig.tagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
+    const tagLine = shouldTag ? `${formatAdminMentionHtml(buySellGlobalConfig.adminTagHandle)}\n\n` : '';
+    const autoActionSnippet = autoActionLabel ? `\n⚡ <b>Авто-действие:</b> ${autoActionLabel}\n` : '';
+
+    const adminAlertText =
+      `${tagLine}🚨 <b>ВНИМАНИЕ! ОТСЛЕЖИВАЕМЫЙ ПРОДАВЕЦ В ТОПИКЕ «КУПИ / ПРОДАЙ»!</b>\n\n` +
+      `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
+      `🏷️ <b>Топик:</b> «${escapeHtml(topicConfig?.topicTitle || 'Купи / Продай')}»\n` +
+      `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
+      `🆔 <b>ID:</b> <code>${userId}</code>\n` +
+      (matchedTrackedSeller.note ? `📋 <b>Заметка:</b> <i>${escapeHtml(matchedTrackedSeller.note)}</i>\n` : '') +
+      `📊 <b>Статус:</b> 🔴 <b>Отслеживаемый продавец</b> (100% контроль)\n` +
+      autoActionSnippet +
+      `\n💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+
+    const keyboard = {
+      inline_keyboard: autoActionLabel ? [
+        [{ text: '🔗 Открыть топик в чате', url: messageLink }],
+        [{ text: `⚡ Сработало: ${buySellGlobalConfig.autoActionType || 'ВАРН'}`, callback_data: 'noop' }],
+        [
+          { text: '🚫 Забанить', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+          { text: '✅ Частное (Отмена)', callback_data: `bs_dismiss_${alertId}` }
+        ]
+      ] : [
+        [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
+        [
+          { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${primaryMessageId}_${alertId}` },
+          { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${primaryMessageId}_${alertId}` }
+        ],
+        [
+          { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+          { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
+        ]
+      ]
+    };
+
+    await sendAlertToDestination(buySellGlobalConfig.notifyChannelId, adminAlertText, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true }
+    });
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SHOP',
+      user: authorName,
+      chat: effectiveChatTitle,
+      details: `⚠️ Обнаружен отслеживаемый продавец в «${topicConfig?.topicTitle || 'Купи / Продай'}»: ${authorName} (${matchedTrackedSeller.note || 'Отслеживаемый'})${autoActionLabel ? ` [${autoActionLabel}]` : ''}`
+    });
+
+    return { matchedTrackedOrCommercial: true, deleted };
+  }
+
+  // 2. Regular AI Commercial Analysis (requires at least 15 chars)
+  if ((postText || '').trim().length < 15) {
+    return { matchedTrackedOrCommercial: false, deleted: false };
+  }
+
+  const analysis = await analyzeBuySellPostForCommercial(
+    postText,
+    from,
+    effectiveChatTitle,
+    topicConfig?.topicTitle || 'Купи / Продай'
+  );
+
+  const minConf = buySellGlobalConfig.minConfidence || 70;
+  if (analysis.isCommercial && analysis.confidence >= minConf) {
+    const alertId = `bsa_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const alertRecord: BuySellCommercialAlert = {
+      id: alertId,
+      chatId: String(chatId),
+      chatTitle: effectiveChatTitle,
+      messageThreadId: msgThreadId ? Number(msgThreadId) : undefined,
+      messageId: primaryMessageId,
+      userId: String(userId),
+      username: username ? username.replace(/^@/, '') : undefined,
+      authorName,
+      confidence: analysis.confidence,
+      verdict: analysis.verdict,
+      matchedMarkers: analysis.matchedMarkers,
+      reason: analysis.reason,
+      textSnippet: postText.length > 250 ? postText.substring(0, 250) + '...' : postText,
+      messageText: postText,
+      timestamp: new Date().toISOString(),
+      messageLink,
+      messageUrl: messageLink,
+      status: 'PENDING'
+    };
+
+    const isAutoActionAi =
+      buySellGlobalConfig.autoActionEnabled &&
+      analysis.confidence >= (buySellGlobalConfig.autoActionMinConfidence || 85);
+
+    let autoActionLabel = '';
+    let deleted = false;
+    if (isAutoActionAi) {
+      const actType = buySellGlobalConfig.autoActionType || 'DELETE_AND_WARN';
+      if (actType === 'DELETE_AND_WARN') {
+        await deleteAllMsgs();
+        deleted = true;
+        const targetUserObj = { id: Number(userId), username, first_name: from.first_name };
+        await applyWarning(
+          targetUserObj,
+          'Бот (авто-модерация)',
+          'bot',
+          String(chatId),
+          effectiveChatTitle,
+          `Коммерческое объявление в «${topicConfig?.topicTitle || 'Купи / Продай'}» (${analysis.confidence}%)`
+        ).catch(() => {});
+        await sendBuySellTopicWarning(
+          chatId,
+          targetUserObj,
+          msgThreadId ? Number(msgThreadId) : undefined
+        ).catch(() => {});
+        alertRecord.status = 'RESOLVED_WARNED';
+        autoActionLabel = '⚠️ Пост удалён, выдан варн и предупреждение в чат';
+      } else if (actType === 'DELETE_ONLY') {
+        await deleteAllMsgs();
+        deleted = true;
+        alertRecord.status = 'RESOLVED_DELETED';
+        autoActionLabel = '🗑 Пост автоматически удалён';
+      } else if (actType === 'BAN') {
+        await deleteAllMsgs();
+        deleted = true;
+        await bot?.telegram.banChatMember(chatId, Number(userId)).catch(() => {});
+        alertRecord.status = 'RESOLVED_BANNED';
+        autoActionLabel = '🚫 Автор заблокирован в чате, пост удалён';
+        sendBanNotificationToChannel({
+          chatId,
+          chatTitle: effectiveChatTitle,
+          userId,
+          userFullName: authorName,
+          username,
+          banReason: `Коммерческое объявление в топике «${topicConfig?.topicTitle || 'Купи / Продай'}» (уверенность ИИ: ${analysis.confidence}%)`,
+          triggerType: 'BUY_SELL_COMMERCIAL',
+          triggerMessageSnippet: alertRecord.textSnippet
+        }).catch(() => {});
+      }
+    }
+
+    buySellAlerts.unshift(alertRecord);
+    if (buySellAlerts.length > 200) buySellAlerts.pop();
+    db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
+
+    const shouldTag = buySellGlobalConfig.tagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
+    const tagLine = shouldTag ? `${formatAdminMentionHtml(buySellGlobalConfig.adminTagHandle)}\n\n` : '';
+    const verdictColorEmoji = analysis.confidence >= 80 ? '🔴' : '🟡';
+    const markersSnippet = analysis.matchedMarkers.length > 0
+      ? analysis.matchedMarkers.map(m => `<code>${escapeHtml(m)}</code>`).join(', ')
+      : '<i>косвенные признаки коммерции</i>';
+    const autoActionSnippet = autoActionLabel ? `\n⚡ <b>Авто-действие:</b> ${autoActionLabel}\n` : '';
+
+    const adminAlertText =
+      `${tagLine}📢 <b>ПОДОЗРЕНИЕ НА КОММЕРЧЕСКОЕ ОБЪЯВЛЕНИЕ!</b>\n\n` +
+      `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
+      `🏷️ <b>Топик:</b> «${escapeHtml(topicConfig?.topicTitle || 'Купи / Продай')}»\n` +
+      `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
+      `🆔 <b>ID:</b> <code>${userId}</code>\n\n` +
+      `📊 <b>Вероятность коммерции:</b> ${verdictColorEmoji} <b>${analysis.confidence}%</b>\n` +
+      `🎯 <b>Маркеры:</b> ${markersSnippet}\n` +
+      `📝 <b>Заключение ИИ:</b>\n<i>${escapeHtml(analysis.reason)}</i>\n` +
+      autoActionSnippet +
+      `\n💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
+
+    const keyboard = {
+      inline_keyboard: autoActionLabel ? [
+        [{ text: '🔗 Открыть топик в чате', url: messageLink }],
+        [{ text: `⚡ Сработало: ${buySellGlobalConfig.autoActionType || 'ВАРН'}`, callback_data: 'noop' }],
+        [
+          { text: '🚫 Забанить', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+          { text: '✅ Частное (Отмена)', callback_data: `bs_dismiss_${alertId}` }
+        ]
+      ] : [
+        [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
+        [
+          { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${primaryMessageId}_${alertId}` },
+          { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${primaryMessageId}_${alertId}` }
+        ],
+        [
+          { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
+          { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
+        ]
+      ]
+    };
+
+    await sendAlertToDestination(buySellGlobalConfig.notifyChannelId, adminAlertText, {
+      parse_mode: 'HTML',
+      reply_markup: keyboard,
+      link_preview_options: { is_disabled: true }
+    });
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SHOP',
+      user: authorName,
+      chat: effectiveChatTitle,
+      details: `ИИ выявил коммерческое объявление в топике «${topicConfig?.topicTitle || 'Купи / Продай'}» (${analysis.confidence}%): ${analysis.reason}`
+    });
+
+    return { matchedTrackedOrCommercial: true, deleted };
+  }
+
+  return { matchedTrackedOrCommercial: false, deleted: false };
+}
+
+async function evaluatePendingBuySellPost(entry: PendingBuySellPost) {
+  if (!bot || !pendingBuySellPosts.has(entry.key)) return;
+  entry.combinedText = Object.values(entry.messageTexts).filter(Boolean).join('\n').trim();
+  const result = await classifyAndValidateBuySellMessage(
+    entry.combinedText,
+    entry.hasPhoto,
+    { id: Number(entry.userId), username: entry.username, first_name: entry.firstName, last_name: entry.lastName },
+    entry.chatTitle,
+    entry.topicTitle
+  );
+
+  // If user edited/turned it into casual off-topic chat -> remove everything
+  if (result.category === 'CHAT' && buySellGlobalConfig.deleteOffTopicChat !== false) {
+    clearPendingBuySellPost(entry.key);
+    for (const mId of entry.messageIds) {
+      await bot.telegram.deleteMessage(entry.chatId, mId).catch(() => {});
+    }
+    if (entry.warningMessageId) {
+      await bot.telegram.deleteMessage(entry.chatId, entry.warningMessageId).catch(() => {});
+    }
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'MODERATION',
+      user: entry.authorName,
+      chat: entry.chatTitle,
+      details: `Удалено сообщение в «${entry.topicTitle}» после редактирования (оффтоп/общение)`
+    });
+    return;
+  }
+
+  // If user switched post to BUY_SEARCH (looking for parts) -> clear timer, remove sale warning, send MotoBlackList scam warning
+  if (result.category === 'BUY_SEARCH') {
+    clearPendingBuySellPost(entry.key);
+    if (entry.warningMessageId) {
+      await bot.telegram.deleteMessage(entry.chatId, entry.warningMessageId).catch(() => {});
+    }
+    if (buySellGlobalConfig.warnOnBuySearch !== false) {
+      const mention = formatBuySellUserMentionHtml(entry.userId, entry.authorName, entry.username);
+      const rawWarn = buySellGlobalConfig.buySearchWarningText || DEFAULT_BUY_SEARCH_WARNING_TEXT;
+      const warnHtml = rawWarn.includes('{user}') ? rawWarn.replace(/\{user\}/gi, mention) : `${mention}\n${rawWarn}`;
+      const sendOpts: any = {
+        parse_mode: 'HTML',
+        reply_parameters: { message_id: entry.primaryMessageId },
+        link_preview_options: { is_disabled: true }
+      };
+      if (entry.messageThreadId) sendOpts.message_thread_id = entry.messageThreadId;
+      await bot.telegram.sendMessage(entry.chatId, warnHtml, sendOpts).catch(() => {});
+    }
+    return;
+  }
+
+  // SALE validated!
+  if (result.missingFields.length === 0) {
+    clearPendingBuySellPost(entry.key);
+    if (entry.warningMessageId) {
+      const mention = formatBuySellUserMentionHtml(entry.userId, entry.authorName, entry.username);
+      const confirmMsgId = entry.warningMessageId;
+      try {
+        await bot.telegram.editMessageText(
+          entry.chatId,
+          confirmMsgId,
+          undefined,
+          `✅ ${mention}, спасибо! Объявление дополнено и прошло проверку.`,
+          { parse_mode: 'HTML' }
+        );
+        setTimeout(() => {
+          bot?.telegram.deleteMessage(entry.chatId, confirmMsgId).catch(() => {});
+        }, 15000);
+      } catch {
+        await bot.telegram.deleteMessage(entry.chatId, confirmMsgId).catch(() => {});
+      }
+    }
+
+    await addLog({
+      id: Math.random().toString(36).substr(2, 9),
+      timestamp: new Date().toISOString(),
+      type: 'SHOP',
+      user: entry.authorName,
+      chat: entry.chatTitle,
+      details: `Объявление в «${entry.topicTitle}» дополнено пользователем и прошло проверку`
+    });
+
+    // Check commerciality on completed text if not checked yet
+    if (!entry.commercialChecked && entry.combinedText.length >= 15) {
+      entry.commercialChecked = true;
+      const topicCfg = buySellTopics.find(t => String(t.chatId) === String(entry.chatId));
+      if (topicCfg) {
+        await runBuySellCommercialModeration({
+          chatId: entry.chatId,
+          effectiveChatTitle: entry.chatTitle,
+          chatUsername: entry.chatUsername,
+          msgThreadId: entry.messageThreadId,
+          topicConfig: topicCfg,
+          messageIds: entry.messageIds,
+          primaryMessageId: entry.primaryMessageId,
+          postText: entry.combinedText,
+          from: { id: Number(entry.userId), username: entry.username, first_name: entry.firstName, last_name: entry.lastName }
+        }).catch(() => {});
+      }
+    }
+    return;
+  }
+
+  // Still missing some fields -> update warning message cleanly with remaining time
+  entry.missingFields = result.missingFields;
+  if (entry.warningMessageId) {
+    const remainingMin = Math.max(1, Math.ceil((entry.expiresAt - Date.now()) / 60000));
+    const updatedHtml = buildIncompleteSaleWarningHtml(
+      entry.userId,
+      entry.authorName,
+      entry.username,
+      result.missingFields,
+      remainingMin
+    );
+    await bot.telegram.editMessageText(
+      entry.chatId,
+      entry.warningMessageId,
+      undefined,
+      updatedHtml,
+      { parse_mode: 'HTML', link_preview_options: { is_disabled: true } }
+    ).catch(() => {});
+  }
+}
+
+async function handleBuySellTopicEntry(params: {
+  chatId: string;
+  effectiveChatTitle: string;
+  chatUsername?: string;
+  msgThreadId?: number;
+  topicConfig: BuySellTopicConfig;
+  from: { id: number; username?: string; first_name?: string; last_name?: string };
+  messageIds: number[];
+  messageTexts: Record<number, string>;
+  hasPhoto: boolean;
+  replyToMessageId?: number;
+}) {
+  if (!bot) return;
+  const {
+    chatId,
+    effectiveChatTitle,
+    chatUsername,
+    msgThreadId,
+    topicConfig,
+    from,
+    messageIds,
+    messageTexts,
+    hasPhoto,
+    replyToMessageId
+  } = params;
+
+  const userId = String(from.id);
+  const username = from.username;
+  const authorName = [from.first_name, from.last_name].filter(Boolean).join(' ') || (username ? `@${username}` : `User ${userId}`);
+  const primaryMessageId = messageIds[0];
+  const combinedText = Object.values(messageTexts).filter(Boolean).join('\n').trim();
+  const topicTitle = topicConfig?.topicTitle || 'Купи / Продай';
+
+  try {
+    // 1. Check if this is a follow-up (photo or reply/missing text) for an active incomplete post by the same author
+    if (buySellGlobalConfig.userAdModerationEnabled !== false) {
+      const existingPending = findPendingBuySellPostForFollowUp(chatId, userId, replyToMessageId);
+      const isDirectReplyToPending = Boolean(
+        existingPending &&
+        replyToMessageId &&
+        (replyToMessageId === existingPending.warningMessageId || existingPending.messageIds.includes(replyToMessageId))
+      );
+      const isImplicitFollowUp = Boolean(
+        existingPending &&
+        !replyToMessageId &&
+        ((hasPhoto && !existingPending.hasPhoto) || (combinedText.length > 0 && combinedText.length < 180))
+      );
+
+      if (existingPending && (isDirectReplyToPending || isImplicitFollowUp)) {
+        for (const mId of messageIds) {
+          if (!existingPending.messageIds.includes(mId)) {
+            existingPending.messageIds.push(mId);
+          }
+          if (messageTexts[mId]) {
+            existingPending.messageTexts[mId] = messageTexts[mId];
+          }
+        }
+        if (hasPhoto) existingPending.hasPhoto = true;
+        await evaluatePendingBuySellPost(existingPending);
+        return;
+      }
+    }
+
+    // 2. Priority: Tracked commercial seller check (always applies even to short posts)
+    const isSenderTrackedSeller = trackedBuySellSellers.some(ts => {
+      if (!ts.active) return false;
+      const senderUserClean = (username || '').toLowerCase().replace(/^@/, '');
+      const tsId = ts.userId ? String(ts.userId).trim() : '';
+      const tsUser = (ts.username || '').toLowerCase().replace(/^@/, '').trim();
+      const tsIdent = (ts.userIdentifier || '').toLowerCase().replace(/^@/, '').trim();
+      return (tsId && tsId === userId) || (tsUser && senderUserClean && tsUser === senderUserClean) || (tsIdent && (tsIdent === userId || (senderUserClean && tsIdent === senderUserClean)));
+    });
+
+    if (isSenderTrackedSeller && buySellGlobalConfig.enabled !== false) {
+      const resTracked = await runBuySellCommercialModeration({
+        chatId,
+        effectiveChatTitle,
+        chatUsername,
+        msgThreadId,
+        topicConfig,
+        messageIds,
+        primaryMessageId,
+        postText: combinedText,
+        from
+      });
+      if (resTracked.deleted) return;
+    }
+
+    // 3. User Ad Format Moderation & Category Classification (SALE / BUY_SEARCH / CHAT)
+    if (buySellGlobalConfig.userAdModerationEnabled !== false) {
+      const moderation = await classifyAndValidateBuySellMessage(
+        combinedText,
+        hasPhoto,
+        from,
+        effectiveChatTitle,
+        topicTitle
+      );
+
+      // 3a. Casual off-topic chatter -> delete immediately
+      if (moderation.category === 'CHAT') {
+        if (buySellGlobalConfig.deleteOffTopicChat !== false) {
+          for (const mId of messageIds) {
+            await bot.telegram.deleteMessage(chatId, mId).catch(() => {});
+          }
+          const mention = formatBuySellUserMentionHtml(userId, authorName, username);
+          const sendOpts: any = { parse_mode: 'HTML' };
+          if (msgThreadId) sendOpts.message_thread_id = Number(msgThreadId);
+          try {
+            const noticeMsg = await bot.telegram.sendMessage(
+              chatId,
+              `🚫 ${mention}, в теме «${escapeHtml(topicTitle)}» запрещено обычное общение и флуд. Здесь публикуются только объявления о продаже или поиске деталей.`,
+              sendOpts
+            );
+            setTimeout(() => {
+              bot?.telegram.deleteMessage(chatId, noticeMsg.message_id).catch(() => {});
+            }, 20000);
+          } catch {}
+
+          await addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'MODERATION',
+            user: authorName,
+            chat: effectiveChatTitle,
+            details: `Удалён оффтоп/общение в топике «${topicTitle}»: ${moderation.reason}`
+          });
+        }
+        return;
+      }
+
+      // 3b. Search / Buy parts -> allow post + warn tagging user about DM scammers & MotoBlackList
+      if (moderation.category === 'BUY_SEARCH') {
+        if (buySellGlobalConfig.warnOnBuySearch !== false) {
+          const mention = formatBuySellUserMentionHtml(userId, authorName, username);
+          const template = buySellGlobalConfig.buySearchWarningText || DEFAULT_BUY_SEARCH_WARNING_TEXT;
+          const warnHtml = template.includes('{user}') ? template.replace(/\{user\}/gi, mention) : `${mention}\n${template}`;
+          const sendOpts: any = {
+            parse_mode: 'HTML',
+            reply_parameters: { message_id: primaryMessageId },
+            link_preview_options: { is_disabled: true }
+          };
+          if (msgThreadId) sendOpts.message_thread_id = Number(msgThreadId);
+          await bot.telegram.sendMessage(chatId, warnHtml, sendOpts).catch(async () => {
+            delete sendOpts.reply_parameters;
+            await bot?.telegram.sendMessage(chatId, warnHtml, sendOpts).catch(() => {});
+          });
+
+          await addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'SHOP',
+            user: authorName,
+            chat: effectiveChatTitle,
+            details: `Выдано предупреждение о мошенниках (MotoBlackList) на запрос о поиске детали в «${topicTitle}»`
+          });
+        }
+        return;
+      }
+
+      // 3c. SALE post: run commercial check first (if enabled and not already checked as tracked)
+      let commercialChecked = isSenderTrackedSeller;
+      if (!isSenderTrackedSeller && buySellGlobalConfig.enabled !== false && combinedText.length >= 15) {
+        commercialChecked = true;
+        const commRes = await runBuySellCommercialModeration({
+          chatId,
+          effectiveChatTitle,
+          chatUsername,
+          msgThreadId,
+          topicConfig,
+          messageIds,
+          primaryMessageId,
+          postText: combinedText,
+          from
+        });
+        if (commRes.deleted) return;
+      }
+
+      // 3d. Check missing required fields on SALE post -> warn tagging user & start 10-minute grace timer
+      if (moderation.missingFields.length > 0) {
+        const graceMinutes = Math.max(1, Math.min(120, Number(buySellGlobalConfig.gracePeriodMinutes ?? 10)));
+        const warnHtml = buildIncompleteSaleWarningHtml(
+          userId,
+          authorName,
+          username,
+          moderation.missingFields,
+          graceMinutes
+        );
+        const sendOpts: any = {
+          parse_mode: 'HTML',
+          reply_parameters: { message_id: primaryMessageId },
+          link_preview_options: { is_disabled: true }
+        };
+        if (msgThreadId) sendOpts.message_thread_id = Number(msgThreadId);
+
+        let warningMessageId: number | undefined;
+        try {
+          const sentWarn = await bot.telegram.sendMessage(chatId, warnHtml, sendOpts);
+          warningMessageId = sentWarn?.message_id;
+        } catch {
+          delete sendOpts.reply_parameters;
+          const sentWarn = await bot.telegram.sendMessage(chatId, warnHtml, sendOpts).catch(() => null);
+          warningMessageId = sentWarn?.message_id;
+        }
+
+        const key = `${chatId}_${primaryMessageId}`;
+        const expiresAt = Date.now() + graceMinutes * 60 * 1000;
+        const timer = setTimeout(async () => {
+          const current = pendingBuySellPosts.get(key);
+          if (!current) return;
+          pendingBuySellPosts.delete(key);
+
+          for (const mId of current.messageIds) {
+            await bot?.telegram.deleteMessage(current.chatId, mId).catch(() => {});
+          }
+          if (current.warningMessageId) {
+            const mentionExpired = formatBuySellUserMentionHtml(current.userId, current.authorName, current.username);
+            try {
+              await bot?.telegram.editMessageText(
+                current.chatId,
+                current.warningMessageId,
+                undefined,
+                `🗑 Объявление пользователя ${mentionExpired} удалено (не были добавлены обязательные данные в течение ${graceMinutes} мин.).`,
+                { parse_mode: 'HTML' }
+              );
+              const wId = current.warningMessageId;
+              setTimeout(() => {
+                bot?.telegram.deleteMessage(current.chatId, wId).catch(() => {});
+              }, 20000);
+            } catch {
+              await bot?.telegram.deleteMessage(current.chatId, current.warningMessageId).catch(() => {});
+            }
+          }
+
+          await addLog({
+            id: Math.random().toString(36).substr(2, 9),
+            timestamp: new Date().toISOString(),
+            type: 'MODERATION',
+            user: current.authorName,
+            chat: current.chatTitle,
+            details: `Удалено неполное объявление в «${current.topicTitle}» по истечении ${graceMinutes} мин. (не указаны: ${current.missingFields.join(', ')})`
+          }).catch(() => {});
+        }, graceMinutes * 60 * 1000);
+
+        pendingBuySellPosts.set(key, {
+          key,
+          chatId: String(chatId),
+          chatTitle: effectiveChatTitle,
+          chatUsername,
+          messageThreadId: msgThreadId ? Number(msgThreadId) : undefined,
+          topicTitle,
+          userId,
+          username,
+          firstName: from.first_name,
+          lastName: from.last_name,
+          authorName,
+          primaryMessageId,
+          messageIds: [...messageIds],
+          messageTexts: { ...messageTexts },
+          hasPhoto,
+          combinedText,
+          warningMessageId,
+          missingFields: moderation.missingFields,
+          commercialChecked,
+          expiresAt,
+          timer
+        });
+
+        await addLog({
+          id: Math.random().toString(36).substr(2, 9),
+          timestamp: new Date().toISOString(),
+          type: 'SHOP',
+          user: authorName,
+          chat: effectiveChatTitle,
+          details: `Запрос корректировки объявления в «${topicTitle}» (${graceMinutes} мин.): отсутствуют ${moderation.missingFields.join(', ')}`
+        });
+      }
+      return;
+    }
+
+    // Fallback when only commercial analysis is enabled (userAdModerationEnabled === false)
+    if (!isSenderTrackedSeller && buySellGlobalConfig.enabled !== false && combinedText.length >= 15) {
+      await runBuySellCommercialModeration({
+        chatId,
+        effectiveChatTitle,
+        chatUsername,
+        msgThreadId,
+        topicConfig,
+        messageIds,
+        primaryMessageId,
+        postText: combinedText,
+        from
+      });
+    }
+  } catch (err: any) {
+    console.error('[BuySellTopic] Moderation failed:', err?.message || err);
   }
 }
 
@@ -10828,342 +11961,108 @@ async function initBot(token: string) {
           }
         }
 
-        if (isInBuySellTopic && buySellGlobalConfig.enabled !== false) {
-          const isTopicServiceMsg = Boolean(
-            msgAny?.forum_topic_created ||
-            msgAny?.forum_topic_edited ||
-            msgAny?.forum_topic_closed ||
-            msgAny?.forum_topic_reopened ||
-            msgAny?.general_forum_topic_hidden ||
-            msgAny?.general_forum_topic_unhidden ||
-            msgAny?.pinned_message
-          );
+        const isBuySellTopicActive = Boolean(
+          isInBuySellTopic &&
+          (buySellGlobalConfig.enabled !== false || buySellGlobalConfig.userAdModerationEnabled !== false)
+        );
+        const isBuySellTopicServiceMsg = Boolean(
+          msgAny?.forum_topic_created ||
+          msgAny?.forum_topic_edited ||
+          msgAny?.forum_topic_closed ||
+          msgAny?.forum_topic_reopened ||
+          msgAny?.general_forum_topic_hidden ||
+          msgAny?.general_forum_topic_unhidden ||
+          msgAny?.pinned_message
+        );
+        let isHandledByBuySellTopic = false;
+
+        if (isBuySellTopicActive && buySellTopicConfig) {
           const isSenderChatAdmin = isCurrentAdmin || await isModeratorOrAdmin(ctx, chatId, ctx.from.id);
-          const postText = (ctx.message && ('text' in ctx.message ? ctx.message.text : ('caption' in ctx.message ? ctx.message.caption : '')) || '').trim();
+          if (!isBuySellTopicServiceMsg && !isSenderChatAdmin) {
+            isHandledByBuySellTopic = true;
+            const postFullText = extractMessageFullTextWithUrls(ctx.message);
+            const hasPhotoInMsg = messageHasPhoto(ctx.message);
+            const mediaGroupId = msgAny?.media_group_id ? String(msgAny.media_group_id) : null;
+            const replyToId = msgAny?.reply_to_message?.message_id ? Number(msgAny.reply_to_message.message_id) : undefined;
+            const chatUsername = (ctx.chat as any)?.username;
 
-          if (!isTopicServiceMsg && !isSenderChatAdmin && (postText.length >= 10 || trackedBuySellSellers.length > 0)) {
-            (async () => {
-              try {
-                const authorName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || (username ? `@${username}` : `User ${userId}`);
-                const userHandle = username ? `@${username}` : `ID: ${userId}`;
-                const chatUsername = (ctx.chat as any)?.username;
-                const cleanChatId = String(chatId).startsWith('-100') ? String(chatId).replace('-100', '') : String(chatId);
-                const threadPart = msgThreadId ? `${msgThreadId}/` : '';
-                const messageLink = chatUsername
-                  ? `https://t.me/${chatUsername}/${threadPart}${ctx.message.message_id}`
-                  : `https://t.me/c/${cleanChatId}/${threadPart}${ctx.message.message_id}`;
-
-                // 1. Check if author is in the Tracked Sellers list
-                const senderIdStr = String(userId);
-                const senderUserClean = (username || '').toLowerCase().replace(/^@/, '');
-                const matchedTrackedSeller = trackedBuySellSellers.find(ts => {
-                  if (!ts.active) return false;
-                  const tsId = ts.userId ? String(ts.userId).trim() : '';
-                  const tsUser = (ts.username || '').toLowerCase().replace(/^@/, '').trim();
-                  const tsIdent = (ts.userIdentifier || '').toLowerCase().replace(/^@/, '').trim();
-                  if (tsId && tsId === senderIdStr) return true;
-                  if (tsUser && senderUserClean && tsUser === senderUserClean) return true;
-                  if (tsIdent && (tsIdent === senderIdStr || (senderUserClean && tsIdent === senderUserClean))) return true;
-                  return false;
-                });
-
-                if (matchedTrackedSeller) {
-                  matchedTrackedSeller.totalAlertsTriggered = (matchedTrackedSeller.totalAlertsTriggered || 0) + 1;
-                  matchedTrackedSeller.lastAlertAt = new Date().toISOString();
-                  db.collection('buy_sell_tracked_sellers').doc(matchedTrackedSeller.id).set(cleanData(matchedTrackedSeller)).catch(() => {});
-
-                  const alertId = `bsa_ts_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-                  const alertRecord: BuySellCommercialAlert = {
-                    id: alertId,
-                    chatId: String(chatId),
-                    chatTitle: effectiveChatTitle,
-                    messageThreadId: msgThreadId ? Number(msgThreadId) : undefined,
-                    messageId: ctx.message.message_id,
-                    userId: String(userId),
-                    username: username ? username.replace(/^@/, '') : undefined,
-                    authorName,
-                    confidence: 100,
-                    verdict: 'COMMERCIAL',
-                    matchedMarkers: [],
-                    reason: `Отслеживаемый продавец из списка: ${matchedTrackedSeller.note || matchedTrackedSeller.userIdentifier}`,
-                    textSnippet: postText.length > 250 ? postText.substring(0, 250) + '...' : (postText || '[Медиа/Файл]'),
-                    messageText: postText,
-                    timestamp: new Date().toISOString(),
-                    messageLink,
-                    messageUrl: messageLink,
-                    isKnownSeller: true,
-                    sellerNote: matchedTrackedSeller.note || 'Отслеживаемый продавец',
-                    status: 'PENDING'
-                  };
-
-                  // Auto-action for tracked seller
-                  const isAutoActionTracked =
-                    buySellGlobalConfig.autoActionEnabled &&
-                    buySellGlobalConfig.autoActionTrackedSellers !== false;
-
-                  let autoActionLabel = '';
-                  if (isAutoActionTracked) {
-                    const actType = buySellGlobalConfig.autoActionType || 'DELETE_AND_WARN';
-                    if (actType === 'DELETE_AND_WARN') {
-                      try {
-                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
-                        const targetUserObj = { id: Number(userId), username, first_name: ctx.from.first_name };
-                        await applyWarning(
-                          targetUserObj,
-                          'Бот (авто-модерация)',
-                          'bot',
-                          String(chatId),
-                          effectiveChatTitle,
-                          `Отслеживаемый продавец в «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}»`
-                        );
-                        await sendBuySellTopicWarning(
-                          chatId,
-                          targetUserObj,
-                          msgThreadId ? Number(msgThreadId) : undefined
-                        );
-                        alertRecord.status = 'RESOLVED_WARNED';
-                        autoActionLabel = '⚠️ Пост удалён, выдан варн и предупреждение в чат';
-                      } catch (e) {
-                        console.error('[BuySellTopic] Auto-warn error for tracked seller:', e);
-                      }
-                    } else if (actType === 'DELETE_ONLY') {
-                      try {
-                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
-                        alertRecord.status = 'RESOLVED_DELETED';
-                        autoActionLabel = '🗑 Пост автоматически удалён';
-                      } catch (e) {}
-                    } else if (actType === 'BAN') {
-                      try {
-                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
-                        await ctx.telegram.banChatMember(chatId, Number(userId)).catch(() => {});
-                        alertRecord.status = 'RESOLVED_BANNED';
-                        autoActionLabel = '🚫 Автор заблокирован в чате, пост удалён';
-                        sendBanNotificationToChannel({
-                          chatId,
-                          chatTitle: effectiveChatTitle,
-                          userId,
-                          userFullName: authorName,
-                          username,
-                          banReason: `Отслеживаемый продавец в топике «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}» (${matchedTrackedSeller.note || 'Отслеживаемый продавец'})`,
-                          triggerType: 'BUY_SELL_TRACKED',
-                          triggerMessageSnippet: alertRecord.textSnippet
-                        }).catch(e => console.error('[TrackedSellerBan] Alert error:', e));
-                      } catch (e) {}
-                    }
-                  }
-
-                  buySellAlerts.unshift(alertRecord);
-                  if (buySellAlerts.length > 200) buySellAlerts.pop();
-                  db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
-
-                  const shouldTag = buySellGlobalConfig.tagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
-                  const tagLine = shouldTag ? `${formatAdminMentionHtml(buySellGlobalConfig.adminTagHandle)}\n\n` : '';
-                  const autoActionSnippet = autoActionLabel ? `\n⚡ <b>Авто-действие:</b> ${autoActionLabel}\n` : '';
-
-                  const adminAlertText =
-                    `${tagLine}🚨 <b>ВНИМАНИЕ! ОТСЛЕЖИВАЕМЫЙ ПРОДАВЕЦ В ТОПИКЕ «КУПИ / ПРОДАЙ»!</b>\n\n` +
-                    `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
-                    `🏷️ <b>Топик:</b> «${escapeHtml(buySellTopicConfig?.topicTitle || 'Купи / Продай')}»\n` +
-                    `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
-                    `🆔 <b>ID:</b> <code>${userId}</code>\n` +
-                    (matchedTrackedSeller.note ? `📋 <b>Заметка:</b> <i>${escapeHtml(matchedTrackedSeller.note)}</i>\n` : '') +
-                    `📊 <b>Статус:</b> 🔴 <b>Отслеживаемый продавец</b> (100% контроль)\n` +
-                    autoActionSnippet +
-                    `\n💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
-
-                  const keyboard = {
-                    inline_keyboard: autoActionLabel ? [
-                      [{ text: '🔗 Открыть топик в чате', url: messageLink }],
-                      [{ text: `⚡ Сработало: ${buySellGlobalConfig.autoActionType || 'ВАРН'}`, callback_data: 'noop' }],
-                      [
-                        { text: '🚫 Забанить', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
-                        { text: '✅ Частное (Отмена)', callback_data: `bs_dismiss_${alertId}` }
-                      ]
-                    ] : [
-                      [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
-                      [
-                        { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
-                        { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${ctx.message.message_id}_${alertId}` }
-                      ],
-                      [
-                        { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
-                        { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
-                      ]
-                    ]
-                  };
-
-                  await sendAlertToDestination(buySellGlobalConfig.notifyChannelId, adminAlertText, {
-                    parse_mode: 'HTML',
-                    reply_markup: keyboard,
-                    link_preview_options: { is_disabled: true }
-                  });
-
-                  await addLog({
-                    id: Math.random().toString(36).substr(2, 9),
-                    timestamp: new Date().toISOString(),
-                    type: 'SHOP',
-                    user: authorName,
-                    chat: effectiveChatTitle,
-                    details: `⚠️ Обнаружен отслеживаемый продавец в «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}»: ${authorName} (${matchedTrackedSeller.note || 'Отслеживаемый'})${autoActionLabel ? ` [${autoActionLabel}]` : ''}`
-                  });
-                  return;
+            if (mediaGroupId) {
+              const groupKey = `${chatId}_${mediaGroupId}`;
+              const existingGroup = buySellMediaGroupBuffer.get(groupKey);
+              if (existingGroup) {
+                clearTimeout(existingGroup.timer);
+                if (!existingGroup.messageIds.includes(ctx.message.message_id)) {
+                  existingGroup.messageIds.push(ctx.message.message_id);
                 }
-
-                // 2. Regular AI Analysis for non-tracked users (requires at least 15 chars)
-                if (postText.length < 15) return;
-
-                const analysis = await analyzeBuySellPostForCommercial(
-                  postText,
-                  ctx.from,
-                  effectiveChatTitle,
-                  buySellTopicConfig?.topicTitle || 'Купи / Продай'
-                );
-
-                const minConf = buySellGlobalConfig.minConfidence || 70;
-                // Only alert if AI determined it is commercial AND confidence meets threshold
-                if (analysis.isCommercial && analysis.confidence >= minConf) {
-                  const alertId = `bsa_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-                  const alertRecord: BuySellCommercialAlert = {
-                    id: alertId,
-                    chatId: String(chatId),
-                    chatTitle: effectiveChatTitle,
-                    messageThreadId: msgThreadId ? Number(msgThreadId) : undefined,
-                    messageId: ctx.message.message_id,
-                    userId: String(userId),
-                    username: username ? username.replace(/^@/, '') : undefined,
-                    authorName,
-                    confidence: analysis.confidence,
-                    verdict: analysis.verdict,
-                    matchedMarkers: analysis.matchedMarkers,
-                    reason: analysis.reason,
-                    textSnippet: postText.length > 250 ? postText.substring(0, 250) + '...' : postText,
-                    messageText: postText,
-                    timestamp: new Date().toISOString(),
-                    messageLink,
-                    messageUrl: messageLink,
-                    status: 'PENDING'
-                  };
-
-                  // Auto-action for commercial ad
-                  const isAutoActionAi =
-                    buySellGlobalConfig.autoActionEnabled &&
-                    analysis.confidence >= (buySellGlobalConfig.autoActionMinConfidence || 85);
-
-                  let autoActionLabel = '';
-                  if (isAutoActionAi) {
-                    const actType = buySellGlobalConfig.autoActionType || 'DELETE_AND_WARN';
-                    if (actType === 'DELETE_AND_WARN') {
-                      try {
-                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
-                        const targetUserObj = { id: Number(userId), username, first_name: ctx.from.first_name };
-                        await applyWarning(
-                          targetUserObj,
-                          'Бот (авто-модерация)',
-                          'bot',
-                          String(chatId),
-                          effectiveChatTitle,
-                          `Коммерческое объявление в «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}» (${analysis.confidence}%)`
-                        );
-                        await sendBuySellTopicWarning(
-                          chatId,
-                          targetUserObj,
-                          msgThreadId ? Number(msgThreadId) : undefined
-                        );
-                        alertRecord.status = 'RESOLVED_WARNED';
-                        autoActionLabel = '⚠️ Пост удалён, выдан варн и предупреждение в чат';
-                      } catch (e) {
-                        console.error('[BuySellTopic] Auto-warn error for commercial ad:', e);
-                      }
-                    } else if (actType === 'DELETE_ONLY') {
-                      try {
-                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
-                        alertRecord.status = 'RESOLVED_DELETED';
-                        autoActionLabel = '🗑 Пост автоматически удалён';
-                      } catch (e) {}
-                    } else if (actType === 'BAN') {
-                      try {
-                        await ctx.telegram.deleteMessage(chatId, ctx.message.message_id).catch(() => {});
-                        await ctx.telegram.banChatMember(chatId, Number(userId)).catch(() => {});
-                        alertRecord.status = 'RESOLVED_BANNED';
-                        autoActionLabel = '🚫 Автор заблокирован в чате, пост удалён';
-                        sendBanNotificationToChannel({
-                          chatId,
-                          chatTitle: effectiveChatTitle,
-                          userId,
-                          userFullName: authorName,
-                          username,
-                          banReason: `Коммерческое объявление в топике «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}» (уверенность ИИ: ${analysis.confidence}%)`,
-                          triggerType: 'BUY_SELL_COMMERCIAL',
-                          triggerMessageSnippet: alertRecord.textSnippet
-                        }).catch(e => console.error('[CommercialAdBan] Alert error:', e));
-                      } catch (e) {}
-                    }
-                  }
-
-                  buySellAlerts.unshift(alertRecord);
-                  if (buySellAlerts.length > 200) buySellAlerts.pop();
-                  db.collection('buy_sell_alerts').doc(alertId).set(cleanData(alertRecord)).catch(() => {});
-
-                  const shouldTag = buySellGlobalConfig.tagAdmin !== false && ((settings as any)?.tagAdminOnAlerts !== false);
-                  const tagLine = shouldTag ? `${formatAdminMentionHtml(buySellGlobalConfig.adminTagHandle)}\n\n` : '';
-                  const verdictColorEmoji = analysis.confidence >= 80 ? '🔴' : '🟡';
-                  const markersSnippet = analysis.matchedMarkers.length > 0
-                    ? analysis.matchedMarkers.map(m => `<code>${escapeHtml(m)}</code>`).join(', ')
-                    : '<i>косвенные признаки коммерции</i>';
-                  const autoActionSnippet = autoActionLabel ? `\n⚡ <b>Авто-действие:</b> ${autoActionLabel}\n` : '';
-
-                  const adminAlertText =
-                    `${tagLine}📢 <b>ПОДОЗРЕНИЕ НА КОММЕРЧЕСКОЕ ОБЪЯВЛЕНИЕ!</b>\n\n` +
-                    `📍 <b>Чат:</b> ${escapeHtml(effectiveChatTitle)}\n` +
-                    `🏷️ <b>Топик:</b> «${escapeHtml(buySellTopicConfig?.topicTitle || 'Купи / Продай')}»\n` +
-                    `👤 <b>Автор:</b> <a href="tg://user?id=${userId}">${escapeHtml(authorName)}</a> (${userHandle})\n` +
-                    `🆔 <b>ID:</b> <code>${userId}</code>\n\n` +
-                    `📊 <b>Вероятность коммерции:</b> ${verdictColorEmoji} <b>${analysis.confidence}%</b>\n` +
-                    `🎯 <b>Маркеры:</b> ${markersSnippet}\n` +
-                    `📝 <b>Заключение ИИ:</b>\n<i>${escapeHtml(analysis.reason)}</i>\n` +
-                    autoActionSnippet +
-                    `\n💬 <b>Текст объявления:</b>\n<blockquote>${escapeHtml(alertRecord.textSnippet)}</blockquote>`;
-
-                  const keyboard = {
-                    inline_keyboard: autoActionLabel ? [
-                      [{ text: '🔗 Открыть топик в чате', url: messageLink }],
-                      [{ text: `⚡ Сработало: ${buySellGlobalConfig.autoActionType || 'ВАРН'}`, callback_data: 'noop' }],
-                      [
-                        { text: '🚫 Забанить', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
-                        { text: '✅ Частное (Отмена)', callback_data: `bs_dismiss_${alertId}` }
-                      ]
-                    ] : [
-                      [{ text: '🔗 Открыть сообщение в чате', url: messageLink }],
-                      [
-                        { text: '🗑 Удалить пост', callback_data: `bs_del_${chatId}_${ctx.message.message_id}_${alertId}` },
-                        { text: '⚠️ Предупредить (Варн)', callback_data: `bs_warn_${chatId}_${userId}_${ctx.message.message_id}_${alertId}` }
-                      ],
-                      [
-                        { text: '🚫 Забанить автора', callback_data: `bs_ban_${chatId}_${userId}_${alertId}` },
-                        { text: '✅ Частное (Игнорировать)', callback_data: `bs_dismiss_${alertId}` }
-                      ]
-                    ]
-                  };
-
-                  await sendAlertToDestination(buySellGlobalConfig.notifyChannelId, adminAlertText, {
-                    parse_mode: 'HTML',
-                    reply_markup: keyboard,
-                    link_preview_options: { is_disabled: true }
-                  });
-
-                  await addLog({
-                    id: Math.random().toString(36).substr(2, 9),
-                    timestamp: new Date().toISOString(),
-                    type: 'SHOP',
-                    user: authorName,
-                    chat: effectiveChatTitle,
-                    details: `ИИ выявил коммерческое объявление в топике «${buySellTopicConfig?.topicTitle || 'Купи / Продай'}» (${analysis.confidence}%): ${analysis.reason}`
-                  });
+                if (postFullText) {
+                  existingGroup.messageTexts[ctx.message.message_id] = postFullText;
                 }
-              } catch (err: any) {
-                console.error('[BuySellTopic] Analysis failed:', err?.message || err);
+                if (hasPhotoInMsg) existingGroup.hasPhoto = true;
+                if (!existingGroup.replyToMessageId && replyToId) existingGroup.replyToMessageId = replyToId;
+                existingGroup.timer = setTimeout(() => {
+                  const buf = buySellMediaGroupBuffer.get(groupKey);
+                  if (!buf) return;
+                  buySellMediaGroupBuffer.delete(groupKey);
+                  handleBuySellTopicEntry({
+                    chatId: buf.chatId,
+                    effectiveChatTitle: buf.chatTitle,
+                    chatUsername: buf.chatUsername,
+                    msgThreadId: buf.messageThreadId,
+                    topicConfig: buf.topicConfig,
+                    from: buf.from,
+                    messageIds: buf.messageIds,
+                    messageTexts: buf.messageTexts,
+                    hasPhoto: buf.hasPhoto,
+                    replyToMessageId: buf.replyToMessageId
+                  }).catch(e => console.error('[BuySellTopic] Album entry error:', e?.message || e));
+                }, 1200);
+              } else {
+                const newEntry: BuySellMediaGroupEntry = {
+                  key: groupKey,
+                  chatId: String(chatId),
+                  chatTitle: effectiveChatTitle,
+                  chatUsername,
+                  messageThreadId: msgThreadId ? Number(msgThreadId) : undefined,
+                  topicConfig: buySellTopicConfig,
+                  from: ctx.from,
+                  messageIds: [ctx.message.message_id],
+                  messageTexts: postFullText ? { [ctx.message.message_id]: postFullText } : {},
+                  hasPhoto: hasPhotoInMsg,
+                  replyToMessageId: replyToId,
+                  timer: setTimeout(() => {
+                    const buf = buySellMediaGroupBuffer.get(groupKey);
+                    if (!buf) return;
+                    buySellMediaGroupBuffer.delete(groupKey);
+                    handleBuySellTopicEntry({
+                      chatId: buf.chatId,
+                      effectiveChatTitle: buf.chatTitle,
+                      chatUsername: buf.chatUsername,
+                      msgThreadId: buf.messageThreadId,
+                      topicConfig: buf.topicConfig,
+                      from: buf.from,
+                      messageIds: buf.messageIds,
+                      messageTexts: buf.messageTexts,
+                      hasPhoto: buf.hasPhoto,
+                      replyToMessageId: buf.replyToMessageId
+                    }).catch(e => console.error('[BuySellTopic] Album entry error:', e?.message || e));
+                  }, 1200)
+                };
+                buySellMediaGroupBuffer.set(groupKey, newEntry);
               }
-            })();
+            } else {
+              handleBuySellTopicEntry({
+                chatId: String(chatId),
+                effectiveChatTitle,
+                chatUsername,
+                msgThreadId: msgThreadId ? Number(msgThreadId) : undefined,
+                topicConfig: buySellTopicConfig,
+                from: ctx.from,
+                messageIds: [ctx.message.message_id],
+                messageTexts: postFullText ? { [ctx.message.message_id]: postFullText } : {},
+                hasPhoto: hasPhotoInMsg,
+                replyToMessageId: replyToId
+              }).catch(e => console.error('[BuySellTopic] Message entry error:', e?.message || e));
+            }
           }
         }
 
@@ -12136,9 +13035,9 @@ async function initBot(token: string) {
             }
           }
 
-          if (!violation && effectiveFilters.blockLinks && (ctx.message as any).entities?.some((e: any) => e.type === 'url' || e.type === 'text_link')) {
+          if (!violation && !isHandledByBuySellTopic && effectiveFilters.blockLinks && (ctx.message as any).entities?.some((e: any) => e.type === 'url' || e.type === 'text_link')) {
             violation = 'Ссылки запрещены';
-          } else if (!violation && effectiveFilters.blockTelegramLinks) {
+          } else if (!violation && !isHandledByBuySellTopic && effectiveFilters.blockTelegramLinks) {
             const hasTelegramLink = (ctx.message as any).entities?.some((e: any) => {
               if (e.type === 'mention') return true;
               if (e.type === 'url' || e.type === 'text_link') {
@@ -12156,7 +13055,7 @@ async function initBot(token: string) {
             (ctx.message as any).forward_sender_name
           )) {
             violation = 'Пересылки запрещены';
-          } else if (!violation && effectiveFilters.blockMedia && (
+          } else if (!violation && !isHandledByBuySellTopic && effectiveFilters.blockMedia && (
             (ctx.message as any).photo || 
             (ctx.message as any).video || 
             (ctx.message as any).document || 
@@ -12429,6 +13328,29 @@ async function initBot(token: string) {
       }
 
       console.log(`Message from ${ctx.from.first_name} in ${chatType} ${chatId}: ${'text' in ctx.message ? ctx.message.text : 'non-text'}`);
+    });
+
+    // Handle Edited Messages (re-verify incomplete Buy/Sell ads within grace window)
+    bot.on('edited_message', async (ctx) => {
+      try {
+        if (settings.maintenanceMode) return;
+        const edited = ctx.editedMessage as any;
+        if (!edited || !edited.chat || !edited.message_id) return;
+        const chatId = String(edited.chat.id);
+        const editedMsgId = Number(edited.message_id);
+
+        const pendingEntry = findPendingBuySellPostByMessageId(chatId, editedMsgId);
+        if (!pendingEntry) return;
+
+        const updatedText = extractMessageFullTextWithUrls(edited);
+        pendingEntry.messageTexts[editedMsgId] = updatedText;
+        if (messageHasPhoto(edited)) {
+          pendingEntry.hasPhoto = true;
+        }
+        await evaluatePendingBuySellPost(pendingEntry);
+      } catch (err: any) {
+        console.error('[BuySellTopic] edited_message handler error:', err?.message || err);
+      }
     });
 
     // Handle Left Members
@@ -13298,7 +14220,7 @@ async function initBot(token: string) {
       if (data.startsWith('mc_offer_')) {
         const targetUserId = data.replace('mc_offer_', '');
         const senderName = (filters as any).adOfferSenderName || 'Администратор (@bookray)';
-        const offerText = (filters as any).adOfferMessageText || 'Здравствуйте! Предлагаем размещение рекламы в наших мото-чатах и каналах. Доступные варианты и тарифы:\n\n1. Пост в теме «Объявления магазинов» — 500 руб.\n2. Закреп сообщения на 24 часа — 1500 руб.\n3. Рассылка по всем чатам — 3000 руб.\n\nБудем рады сотрудничеству!';
+        const offerText = (filters as any).advertisingOfferText || (filters as any).adOfferMessageText || 'Здравствуйте! Предлагаем размещение рекламы в наших мото-чатах и каналах. Доступные варианты и тарифы:\n\n1. Пост в теме «Объявления магазинов» — 500 руб.\n2. Закреп сообщения на 24 часа — 1500 руб.\n3. Рассылка по всем чатам — 3000 руб.\n\nБудем рады сотрудничеству!';
         
         const fullOfferText = `<b>📨 Предложение о размещении рекламы от ${escapeHtml(senderName)}:</b>\n\n${escapeHtml(offerText)}`;
 

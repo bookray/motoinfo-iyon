@@ -751,17 +751,27 @@ export const Moderation: React.FC<ModerationProps> = ({
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-3 border-t border-slate-900/60">
                     <div className="md:col-span-2">
                       <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
-                        Текст предложения о рекламе
+                        Имя / подпись отправителя предложения о рекламе
+                      </label>
+                      <input
+                        type="text"
+                        value={filters.adOfferSenderName ?? 'Администратор (@bookray)'}
+                        onChange={(e) => onUpdateFilters({...filters, adOfferSenderName: e.target.value})}
+                        placeholder="Администратор (@bookray)"
+                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-mono mb-3"
+                      />
+                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
+                        Текст предложения о размещении рекламы (кнопка «Отправить предложение»)
                       </label>
                       <textarea
-                        value={filters.advertisingOfferText || ''}
-                        onChange={(e) => onUpdateFilters({...filters, advertisingOfferText: e.target.value})}
+                        value={filters.advertisingOfferText || filters.adOfferMessageText || ''}
+                        onChange={(e) => onUpdateFilters({...filters, advertisingOfferText: e.target.value, adOfferMessageText: e.target.value})}
                         rows={5}
-                        placeholder="Текст, который бот отправит пользователю по кнопке «Отправить предложение». Укажите форматы размещения и цены."
+                        placeholder="Здравствуйте! Предлагаем размещение рекламы в наших мото-чатах и каналах. Укажите форматы размещения и цены."
                         className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all resize-y"
                       />
                       <span className="text-[10px] text-slate-500 mt-1 block">
-                        Сообщение отправляется ботом и только пользователям, которые уже начали с ним личный диалог — это ограничение Telegram.
+                        Сообщение отправляется в ЛС пользователю по кнопке «Отправить предложение» (доступно, если пользователь ранее запускал диалог с ботом).
                       </span>
                     </div>
 
@@ -797,33 +807,6 @@ export const Moderation: React.FC<ModerationProps> = ({
                       <span className="text-[10px] text-slate-500 mt-1 block">
                         85% — защита от спама. Приветствия («привет», «спасибо» и т.п.) исключаются.
                       </span>
-                    </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-slate-900/60 space-y-3">
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
-                        Имя / подпись отправителя предложения о рекламе
-                      </label>
-                      <input 
-                        type="text" 
-                        value={filters.adOfferSenderName ?? 'Администратор (@bookray)'}
-                        onChange={(e) => onUpdateFilters({...filters, adOfferSenderName: e.target.value})}
-                        placeholder="Администратор (@bookray)"
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all font-mono"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 ml-1">
-                        Текст предложения о размещении рекламы (отправляется по кнопке «Отправить предложение»)
-                      </label>
-                      <textarea 
-                        rows={4}
-                        value={filters.adOfferMessageText ?? ''}
-                        onChange={(e) => onUpdateFilters({...filters, adOfferMessageText: e.target.value})}
-                        placeholder="Здравствуйте! Предлагаем размещение рекламы в наших мото-чатах и каналах..."
-                        className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 text-xs focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
-                      />
                     </div>
                   </div>
                 </div>

@@ -718,6 +718,18 @@ export interface BuySellGlobalConfig {
   autoActionType?: BuySellAutoActionType; // 'DELETE_AND_WARN' | 'DELETE_ONLY' | 'BAN'
   autoActionMinConfidence?: number; // Minimum confidence to trigger auto-action (e.g. 85%)
   autoActionTrackedSellers?: boolean; // Automatically apply action to tracked sellers (default: true)
+
+  // User Ad Format & Topic Moderation settings
+  userAdModerationEnabled?: boolean;
+  requirePhoto?: boolean;
+  requireCity?: boolean;
+  requireDeliveryInfo?: boolean;
+  requirePrice?: boolean;
+  requireContacts?: boolean;
+  gracePeriodMinutes?: number;
+  deleteOffTopicChat?: boolean;
+  warnOnBuySearch?: boolean;
+  buySearchWarningText?: string;
 }
 
 export interface BuySellCommercialAlert {
@@ -759,6 +771,11 @@ export const DEFAULT_BUY_SELL_WARNING_BUTTONS: BuySellWarningButton[] = [
   { text: '💬 Написать', url: 'https://t.me/bookray' },
   { text: '📋 Условия и цены', url: 'https://telegra.ph/Pravila-temy-Obyavleniya-magazinov-10-26' }
 ];
+
+export const DEFAULT_BUY_SEARCH_WARNING_TEXT =
+  '⚠️ {user}, будьте осторожны при поиске запчастей!\n' +
+  'Мошенники часто пишут в личные сообщения (ЛС), предлагая нужные детали по выгодной цене и прося предоплату.\n\n' +
+  '🔍 Обязательно проверяйте продавца перед переводом денег и посмотрите, нет ли информации о нём в чёрном списке: https://t.me/MotoBlackList';
 
 export const Tab = {
   STATISTICS: 'STATISTICS',
