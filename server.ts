@@ -3544,7 +3544,23 @@ app.get('/api/buy-sell-topics', authenticateToken, async (req, res) => {
 
 app.post('/api/buy-sell-topics/config', authenticateToken, async (req, res) => {
   try {
-    const { chatId, topicLinkOrId, topicTitle, enabled } = req.body;
+    const {
+      chatId,
+      topicLinkOrId,
+      topicTitle,
+      enabled,
+      useCustomModeration,
+      userAdModerationEnabled,
+      requirePhoto,
+      requireCity,
+      requireDeliveryInfo,
+      requirePrice,
+      requireContacts,
+      gracePeriodMinutes,
+      warnOnBuySearch,
+      deleteOffTopicChat,
+      commercialCheckEnabled
+    } = req.body;
     if (!chatId) return res.status(400).json({ error: 'Не указан ID чата' });
 
     let chatStr = String(chatId);
@@ -3590,7 +3606,20 @@ app.post('/api/buy-sell-topics/config', authenticateToken, async (req, res) => {
       messageThreadId: parsedThreadId,
       topicLink: resolvedLink,
       topicTitle: (topicTitle || existing?.topicTitle || 'Купи / Продай').trim(),
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
+      useCustomModeration: useCustomModeration !== undefined ? Boolean(useCustomModeration) : Boolean(existing?.useCustomModeration),
+      userAdModerationEnabled: userAdModerationEnabled !== undefined ? Boolean(userAdModerationEnabled) : existing?.userAdModerationEnabled,
+      requirePhoto: requirePhoto !== undefined ? Boolean(requirePhoto) : existing?.requirePhoto,
+      requireCity: requireCity !== undefined ? Boolean(requireCity) : existing?.requireCity,
+      requireDeliveryInfo: requireDeliveryInfo !== undefined ? Boolean(requireDeliveryInfo) : existing?.requireDeliveryInfo,
+      requirePrice: requirePrice !== undefined ? Boolean(requirePrice) : existing?.requirePrice,
+      requireContacts: requireContacts !== undefined ? Boolean(requireContacts) : existing?.requireContacts,
+      gracePeriodMinutes: typeof gracePeriodMinutes === 'number'
+        ? Math.max(1, Math.min(120, Math.round(gracePeriodMinutes)))
+        : existing?.gracePeriodMinutes,
+      warnOnBuySearch: warnOnBuySearch !== undefined ? Boolean(warnOnBuySearch) : existing?.warnOnBuySearch,
+      deleteOffTopicChat: deleteOffTopicChat !== undefined ? Boolean(deleteOffTopicChat) : existing?.deleteOffTopicChat,
+      commercialCheckEnabled: commercialCheckEnabled !== undefined ? Boolean(commercialCheckEnabled) : existing?.commercialCheckEnabled
     };
 
     const idx = buySellTopics.findIndex(t => String(t.chatId) === chatStr);
@@ -3607,7 +3636,7 @@ app.post('/api/buy-sell-topics/config', authenticateToken, async (req, res) => {
       type: 'SHOP',
       user: (req as any).user?.username || 'admin',
       chat: chatObj?.title || chatStr,
-      details: `Обновлена привязка темы «${configObj.topicTitle}» (Thread ID: ${configObj.messageThreadId || 'не задан'}, статус: ${configObj.enabled ? 'ВКЛ' : 'ВЫКЛ'})`
+      details: `Обновлена привязка темы «${configObj.topicTitle}» (Thread ID: ${configObj.messageThreadId || 'не задан'}, статус: ${configObj.enabled ? 'ВКЛ' : 'ВЫКЛ'}${configObj.useCustomModeration ? ', свои правила чата' : ''})`
     });
 
     res.json({ success: true, config: configObj });
@@ -9007,13 +9036,58 @@ function clearPendingBuySellPost(key: string) {
   }
 }
 
+interface EffectiveBuySellRules {
+  commercialCheckEnabled: boolean;
+  userAdModerationEnabled: boolean;
+  requirePhoto: boolean;
+  requireCity: boolean;
+  requireDeliveryInfo: boolean;
+  requirePrice: boolean;
+  requireContacts: boolean;
+  gracePeriodMinutes: number;
+  warnOnBuySearch: boolean;
+  deleteOffTopicChat: boolean;
+}
+
+function getEffectiveBuySellRules(topicConfig?: BuySellTopicConfig): EffectiveBuySellRules {
+  const g = buySellGlobalConfig;
+  if (!topicConfig || !topicConfig.useCustomModeration) {
+    return {
+      commercialCheckEnabled: g.enabled !== false,
+      userAdModerationEnabled: g.userAdModerationEnabled !== false,
+      requirePhoto: g.requirePhoto !== false,
+      requireCity: g.requireCity !== false,
+      requireDeliveryInfo: g.requireDeliveryInfo !== false,
+      requirePrice: g.requirePrice !== false,
+      requireContacts: g.requireContacts !== false,
+      gracePeriodMinutes: Math.max(1, Math.min(120, Number(g.gracePeriodMinutes ?? 10))),
+      warnOnBuySearch: g.warnOnBuySearch !== false,
+      deleteOffTopicChat: g.deleteOffTopicChat !== false
+    };
+  }
+  return {
+    commercialCheckEnabled: topicConfig.commercialCheckEnabled !== undefined ? Boolean(topicConfig.commercialCheckEnabled) : (g.enabled !== false),
+    userAdModerationEnabled: topicConfig.userAdModerationEnabled !== undefined ? Boolean(topicConfig.userAdModerationEnabled) : (g.userAdModerationEnabled !== false),
+    requirePhoto: topicConfig.requirePhoto !== undefined ? Boolean(topicConfig.requirePhoto) : (g.requirePhoto !== false),
+    requireCity: topicConfig.requireCity !== undefined ? Boolean(topicConfig.requireCity) : (g.requireCity !== false),
+    requireDeliveryInfo: topicConfig.requireDeliveryInfo !== undefined ? Boolean(topicConfig.requireDeliveryInfo) : (g.requireDeliveryInfo !== false),
+    requirePrice: topicConfig.requirePrice !== undefined ? Boolean(topicConfig.requirePrice) : (g.requirePrice !== false),
+    requireContacts: topicConfig.requireContacts !== undefined ? Boolean(topicConfig.requireContacts) : (g.requireContacts !== false),
+    gracePeriodMinutes: Math.max(1, Math.min(120, Number(topicConfig.gracePeriodMinutes ?? g.gracePeriodMinutes ?? 10))),
+    warnOnBuySearch: topicConfig.warnOnBuySearch !== undefined ? Boolean(topicConfig.warnOnBuySearch) : (g.warnOnBuySearch !== false),
+    deleteOffTopicChat: topicConfig.deleteOffTopicChat !== undefined ? Boolean(topicConfig.deleteOffTopicChat) : (g.deleteOffTopicChat !== false)
+  };
+}
+
 async function classifyAndValidateBuySellMessage(
   postText: string,
   hasPhoto: boolean,
   user: { id: number; username?: string; first_name?: string; last_name?: string },
   chatTitle: string,
-  topicTitle: string
+  topicTitle: string,
+  rules?: EffectiveBuySellRules
 ): Promise<BuySellUserModerationResult> {
+  const effRules = rules || getEffectiveBuySellRules();
   const trimmed = (postText || '').trim();
   const hasAvitoOrAutoRuLink = /(?:https?:\/\/)?(?:www\.|m\.)?(?:avito\.ru|auto\.ru)\b/i.test(trimmed);
 
@@ -9027,13 +9101,13 @@ async function classifyAndValidateBuySellMessage(
     };
   }
 
-  // Deterministic photo-only post without caption: cannot tell if sale/search/chat; treat as incomplete SALE so user has 10 min to add description/price/city/delivery/contacts
+  // Deterministic photo-only post without caption: cannot tell if sale/search/chat; treat as incomplete SALE so user has grace period to add description/price/city/delivery/contacts
   if (!trimmed && hasPhoto) {
     const missing: BuySellMissingField[] = [];
-    if (buySellGlobalConfig.requireCity !== false) missing.push('city');
-    if (buySellGlobalConfig.requireDeliveryInfo !== false) missing.push('delivery');
-    if (buySellGlobalConfig.requirePrice !== false) missing.push('price');
-    if (buySellGlobalConfig.requireContacts !== false) missing.push('contacts');
+    if (effRules.requireCity) missing.push('city');
+    if (effRules.requireDeliveryInfo) missing.push('delivery');
+    if (effRules.requirePrice) missing.push('price');
+    if (effRules.requireContacts) missing.push('contacts');
     return {
       category: 'SALE',
       missingFields: missing,
@@ -9096,19 +9170,19 @@ ${trimmed}
     }
 
     const missingFields: BuySellMissingField[] = [];
-    if (buySellGlobalConfig.requirePhoto !== false && !hasPhoto) {
+    if (effRules.requirePhoto && !hasPhoto) {
       missingFields.push('photo');
     }
-    if (buySellGlobalConfig.requireCity !== false && !parsed.hasCity) {
+    if (effRules.requireCity && !parsed.hasCity) {
       missingFields.push('city');
     }
-    if (buySellGlobalConfig.requireDeliveryInfo !== false && !parsed.hasDeliveryInfo) {
+    if (effRules.requireDeliveryInfo && !parsed.hasDeliveryInfo) {
       missingFields.push('delivery');
     }
-    if (buySellGlobalConfig.requirePrice !== false && !parsed.hasPrice) {
+    if (effRules.requirePrice && !parsed.hasPrice) {
       missingFields.push('price');
     }
-    if (buySellGlobalConfig.requireContacts !== false && !parsed.hasContacts) {
+    if (effRules.requireContacts && !parsed.hasContacts) {
       missingFields.push('contacts');
     }
     if (parsed.mentionsAvitoWithoutLink && !hasAvitoOrAutoRuLink) {
@@ -9216,7 +9290,8 @@ async function runBuySellCommercialModeration(params: {
   postText: string;
   from: { id: number; username?: string; first_name?: string; last_name?: string };
 }): Promise<{ matchedTrackedOrCommercial: boolean; deleted: boolean }> {
-  if (buySellGlobalConfig.enabled === false) {
+  const effectiveRules = getEffectiveBuySellRules(params.topicConfig);
+  if (!effectiveRules.commercialCheckEnabled) {
     return { matchedTrackedOrCommercial: false, deleted: false };
   }
 
@@ -9555,17 +9630,20 @@ async function runBuySellCommercialModeration(params: {
 
 async function evaluatePendingBuySellPost(entry: PendingBuySellPost) {
   if (!bot || !pendingBuySellPosts.has(entry.key)) return;
+  const topicCfg = buySellTopics.find(t => String(t.chatId) === String(entry.chatId));
+  const rules = getEffectiveBuySellRules(topicCfg);
   entry.combinedText = Object.values(entry.messageTexts).filter(Boolean).join('\n').trim();
   const result = await classifyAndValidateBuySellMessage(
     entry.combinedText,
     entry.hasPhoto,
     { id: Number(entry.userId), username: entry.username, first_name: entry.firstName, last_name: entry.lastName },
     entry.chatTitle,
-    entry.topicTitle
+    entry.topicTitle,
+    rules
   );
 
   // If user edited/turned it into casual off-topic chat -> remove everything
-  if (result.category === 'CHAT' && buySellGlobalConfig.deleteOffTopicChat !== false) {
+  if (result.category === 'CHAT' && rules.deleteOffTopicChat) {
     clearPendingBuySellPost(entry.key);
     for (const mId of entry.messageIds) {
       await bot.telegram.deleteMessage(entry.chatId, mId).catch(() => {});
@@ -9590,7 +9668,7 @@ async function evaluatePendingBuySellPost(entry: PendingBuySellPost) {
     if (entry.warningMessageId) {
       await bot.telegram.deleteMessage(entry.chatId, entry.warningMessageId).catch(() => {});
     }
-    if (buySellGlobalConfig.warnOnBuySearch !== false) {
+    if (rules.warnOnBuySearch) {
       const mention = formatBuySellUserMentionHtml(entry.userId, entry.authorName, entry.username);
       const rawWarn = buySellGlobalConfig.buySearchWarningText || DEFAULT_BUY_SEARCH_WARNING_TEXT;
       const warnHtml = rawWarn.includes('{user}') ? rawWarn.replace(/\{user\}/gi, mention) : `${mention}\n${rawWarn}`;
@@ -9616,8 +9694,8 @@ async function evaluatePendingBuySellPost(entry: PendingBuySellPost) {
     return;
   }
 
-  // SALE validated!
-  if (result.missingFields.length === 0) {
+  // SALE validated (or sale field validation was turned off for this chat)!
+  if (!rules.userAdModerationEnabled || result.missingFields.length === 0) {
     clearPendingBuySellPost(entry.key);
     if (entry.warningMessageId) {
       const mention = formatBuySellUserMentionHtml(entry.userId, entry.authorName, entry.username);
@@ -9648,9 +9726,8 @@ async function evaluatePendingBuySellPost(entry: PendingBuySellPost) {
     });
 
     // Check commerciality on completed text if not checked yet
-    if (!entry.commercialChecked && entry.combinedText.length >= 15) {
+    if (rules.commercialCheckEnabled && !entry.commercialChecked && entry.combinedText.length >= 15) {
       entry.commercialChecked = true;
-      const topicCfg = buySellTopics.find(t => String(t.chatId) === String(entry.chatId));
       if (topicCfg) {
         await runBuySellCommercialModeration({
           chatId: entry.chatId,
@@ -9721,10 +9798,11 @@ async function handleBuySellTopicEntry(params: {
   const primaryMessageId = messageIds[0];
   const combinedText = Object.values(messageTexts).filter(Boolean).join('\n').trim();
   const topicTitle = topicConfig?.topicTitle || 'Купи / Продай';
+  const rules = getEffectiveBuySellRules(topicConfig);
 
   try {
     // 1. Check if this is a follow-up (photo or reply/missing text) for an active incomplete post by the same author
-    if (buySellGlobalConfig.userAdModerationEnabled !== false) {
+    if (rules.userAdModerationEnabled) {
       const existingPending = findPendingBuySellPostForFollowUp(chatId, userId, replyToMessageId);
       const isDirectReplyToPending = Boolean(
         existingPending &&
@@ -9762,7 +9840,7 @@ async function handleBuySellTopicEntry(params: {
       return (tsId && tsId === userId) || (tsUser && senderUserClean && tsUser === senderUserClean) || (tsIdent && (tsIdent === userId || (senderUserClean && tsIdent === senderUserClean)));
     });
 
-    if (isSenderTrackedSeller && buySellGlobalConfig.enabled !== false) {
+    if (isSenderTrackedSeller && rules.commercialCheckEnabled) {
       const resTracked = await runBuySellCommercialModeration({
         chatId,
         effectiveChatTitle,
@@ -9777,19 +9855,21 @@ async function handleBuySellTopicEntry(params: {
       if (resTracked.deleted) return;
     }
 
-    // 3. User Ad Format Moderation & Category Classification (SALE / BUY_SEARCH / CHAT)
-    if (buySellGlobalConfig.userAdModerationEnabled !== false) {
+    // 3. User Ad Format Moderation, Scam Warning & Flood Removal (independent per-chat toggles)
+    const needClassification = rules.userAdModerationEnabled || rules.warnOnBuySearch || rules.deleteOffTopicChat;
+    if (needClassification) {
       const moderation = await classifyAndValidateBuySellMessage(
         combinedText,
         hasPhoto,
         from,
         effectiveChatTitle,
-        topicTitle
+        topicTitle,
+        rules
       );
 
-      // 3a. Casual off-topic chatter -> delete immediately
+      // 3a. Casual off-topic chatter -> delete immediately if deleteOffTopicChat enabled
       if (moderation.category === 'CHAT') {
-        if (buySellGlobalConfig.deleteOffTopicChat !== false) {
+        if (rules.deleteOffTopicChat) {
           for (const mId of messageIds) {
             await bot.telegram.deleteMessage(chatId, mId).catch(() => {});
           }
@@ -9821,7 +9901,7 @@ async function handleBuySellTopicEntry(params: {
 
       // 3b. Search / Buy parts -> allow post + warn tagging user about DM scammers & MotoBlackList
       if (moderation.category === 'BUY_SEARCH') {
-        if (buySellGlobalConfig.warnOnBuySearch !== false) {
+        if (rules.warnOnBuySearch) {
           const mention = formatBuySellUserMentionHtml(userId, authorName, username);
           const template = buySellGlobalConfig.buySearchWarningText || DEFAULT_BUY_SEARCH_WARNING_TEXT;
           const warnHtml = template.includes('{user}') ? template.replace(/\{user\}/gi, mention) : `${mention}\n${template}`;
@@ -9857,7 +9937,7 @@ async function handleBuySellTopicEntry(params: {
 
       // 3c. SALE post: run commercial check first (if enabled and not already checked as tracked)
       let commercialChecked = isSenderTrackedSeller;
-      if (!isSenderTrackedSeller && buySellGlobalConfig.enabled !== false && combinedText.length >= 15) {
+      if (!isSenderTrackedSeller && rules.commercialCheckEnabled && combinedText.length >= 15) {
         commercialChecked = true;
         const commRes = await runBuySellCommercialModeration({
           chatId,
@@ -9873,9 +9953,9 @@ async function handleBuySellTopicEntry(params: {
         if (commRes.deleted) return;
       }
 
-      // 3d. Check missing required fields on SALE post -> warn tagging user & start 10-minute grace timer
-      if (moderation.missingFields.length > 0) {
-        const graceMinutes = Math.max(1, Math.min(120, Number(buySellGlobalConfig.gracePeriodMinutes ?? 10)));
+      // 3d. Check missing required fields on SALE post -> warn tagging user & start grace timer
+      if (rules.userAdModerationEnabled && moderation.missingFields.length > 0) {
+        const graceMinutes = rules.gracePeriodMinutes;
         const warnHtml = buildIncompleteSaleWarningHtml(
           userId,
           authorName,
@@ -9975,8 +10055,8 @@ async function handleBuySellTopicEntry(params: {
       return;
     }
 
-    // Fallback when only commercial analysis is enabled (userAdModerationEnabled === false)
-    if (!isSenderTrackedSeller && buySellGlobalConfig.enabled !== false && combinedText.length >= 15) {
+    // Fallback when only commercial analysis is enabled
+    if (!isSenderTrackedSeller && rules.commercialCheckEnabled && combinedText.length >= 15) {
       await runBuySellCommercialModeration({
         chatId,
         effectiveChatTitle,
@@ -11983,9 +12063,16 @@ async function initBot(token: string) {
           }
         }
 
+        const chatBuySellRules = buySellTopicConfig ? getEffectiveBuySellRules(buySellTopicConfig) : null;
         const isBuySellTopicActive = Boolean(
           isInBuySellTopic &&
-          (buySellGlobalConfig.enabled !== false || buySellGlobalConfig.userAdModerationEnabled !== false)
+          chatBuySellRules &&
+          (
+            chatBuySellRules.commercialCheckEnabled ||
+            chatBuySellRules.userAdModerationEnabled ||
+            chatBuySellRules.warnOnBuySearch ||
+            chatBuySellRules.deleteOffTopicChat
+          )
         );
         const isBuySellTopicServiceMsg = Boolean(
           msgAny?.forum_topic_created ||

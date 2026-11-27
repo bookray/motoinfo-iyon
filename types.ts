@@ -678,6 +678,19 @@ export interface BuySellTopicConfig {
   topicLink?: string;
   topicTitle?: string;
   updatedAt: string;
+
+  // Per-chat moderation rules override
+  useCustomModeration?: boolean;
+  userAdModerationEnabled?: boolean;
+  requirePhoto?: boolean;
+  requireCity?: boolean;
+  requireDeliveryInfo?: boolean;
+  requirePrice?: boolean;
+  requireContacts?: boolean;
+  gracePeriodMinutes?: number;
+  warnOnBuySearch?: boolean;
+  deleteOffTopicChat?: boolean;
+  commercialCheckEnabled?: boolean;
 }
 
 export interface TrackedBuySellSeller {

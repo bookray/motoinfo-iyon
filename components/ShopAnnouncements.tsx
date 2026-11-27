@@ -158,6 +158,19 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [isSavingBuySellTopic, setIsSavingBuySellTopic] = useState<boolean>(false);
   const [buySellTopicFeedback, setBuySellTopicFeedback] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Per-chat Buy/Sell moderation rules override
+  const [chatUseCustomModeration, setChatUseCustomModeration] = useState<boolean>(false);
+  const [chatUserAdModerationEnabled, setChatUserAdModerationEnabled] = useState<boolean>(true);
+  const [chatRequirePhoto, setChatRequirePhoto] = useState<boolean>(true);
+  const [chatRequireCity, setChatRequireCity] = useState<boolean>(true);
+  const [chatRequireDeliveryInfo, setChatRequireDeliveryInfo] = useState<boolean>(true);
+  const [chatRequirePrice, setChatRequirePrice] = useState<boolean>(true);
+  const [chatRequireContacts, setChatRequireContacts] = useState<boolean>(true);
+  const [chatGracePeriodMinutes, setChatGracePeriodMinutes] = useState<number>(10);
+  const [chatWarnOnBuySearch, setChatWarnOnBuySearch] = useState<boolean>(true);
+  const [chatDeleteOffTopicChat, setChatDeleteOffTopicChat] = useState<boolean>(true);
+  const [chatCommercialCheckEnabled, setChatCommercialCheckEnabled] = useState<boolean>(true);
+
   // Buy/Sell Global Settings & Marker Words
   const [globalBuySellEnabled, setGlobalBuySellEnabled] = useState<boolean>(true);
   const [globalBuySellMinConfidence, setGlobalBuySellMinConfidence] = useState<number>(70);
@@ -360,10 +373,73 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
       );
       setBuySellTopicTitleInput(currentConfig.topicTitle || 'Купи / Продай');
       setBuySellTopicEnabledInput(currentConfig.enabled !== false);
+      const hasCustom = Boolean(currentConfig.useCustomModeration);
+      setChatUseCustomModeration(hasCustom);
+      setChatUserAdModerationEnabled(
+        hasCustom && currentConfig.userAdModerationEnabled !== undefined
+          ? Boolean(currentConfig.userAdModerationEnabled)
+          : userAdModerationEnabled
+      );
+      setChatRequirePhoto(
+        hasCustom && currentConfig.requirePhoto !== undefined
+          ? Boolean(currentConfig.requirePhoto)
+          : requirePhoto
+      );
+      setChatRequireCity(
+        hasCustom && currentConfig.requireCity !== undefined
+          ? Boolean(currentConfig.requireCity)
+          : requireCity
+      );
+      setChatRequireDeliveryInfo(
+        hasCustom && currentConfig.requireDeliveryInfo !== undefined
+          ? Boolean(currentConfig.requireDeliveryInfo)
+          : requireDeliveryInfo
+      );
+      setChatRequirePrice(
+        hasCustom && currentConfig.requirePrice !== undefined
+          ? Boolean(currentConfig.requirePrice)
+          : requirePrice
+      );
+      setChatRequireContacts(
+        hasCustom && currentConfig.requireContacts !== undefined
+          ? Boolean(currentConfig.requireContacts)
+          : requireContacts
+      );
+      setChatGracePeriodMinutes(
+        hasCustom && currentConfig.gracePeriodMinutes !== undefined
+          ? Number(currentConfig.gracePeriodMinutes)
+          : gracePeriodMinutes
+      );
+      setChatWarnOnBuySearch(
+        hasCustom && currentConfig.warnOnBuySearch !== undefined
+          ? Boolean(currentConfig.warnOnBuySearch)
+          : warnOnBuySearch
+      );
+      setChatDeleteOffTopicChat(
+        hasCustom && currentConfig.deleteOffTopicChat !== undefined
+          ? Boolean(currentConfig.deleteOffTopicChat)
+          : deleteOffTopicChat
+      );
+      setChatCommercialCheckEnabled(
+        hasCustom && currentConfig.commercialCheckEnabled !== undefined
+          ? Boolean(currentConfig.commercialCheckEnabled)
+          : globalBuySellEnabled
+      );
     } else {
       setBuySellTopicLinkInput('');
       setBuySellTopicTitleInput('Купи / Продай');
       setBuySellTopicEnabledInput(true);
+      setChatUseCustomModeration(false);
+      setChatUserAdModerationEnabled(userAdModerationEnabled);
+      setChatRequirePhoto(requirePhoto);
+      setChatRequireCity(requireCity);
+      setChatRequireDeliveryInfo(requireDeliveryInfo);
+      setChatRequirePrice(requirePrice);
+      setChatRequireContacts(requireContacts);
+      setChatGracePeriodMinutes(gracePeriodMinutes);
+      setChatWarnOnBuySearch(warnOnBuySearch);
+      setChatDeleteOffTopicChat(deleteOffTopicChat);
+      setChatCommercialCheckEnabled(globalBuySellEnabled);
     }
     setBuySellTopicFeedback(null);
   }, [selectedChatId, buySellTopics]);
@@ -392,7 +468,18 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
           chatId: selectedChatId,
           topicLinkOrId: buySellTopicLinkInput.trim(),
           topicTitle: buySellTopicTitleInput.trim() || 'Купи / Продай',
-          enabled: buySellTopicEnabledInput
+          enabled: buySellTopicEnabledInput,
+          useCustomModeration: chatUseCustomModeration,
+          userAdModerationEnabled: chatUserAdModerationEnabled,
+          requirePhoto: chatRequirePhoto,
+          requireCity: chatRequireCity,
+          requireDeliveryInfo: chatRequireDeliveryInfo,
+          requirePrice: chatRequirePrice,
+          requireContacts: chatRequireContacts,
+          gracePeriodMinutes: chatGracePeriodMinutes,
+          warnOnBuySearch: chatWarnOnBuySearch,
+          deleteOffTopicChat: chatDeleteOffTopicChat,
+          commercialCheckEnabled: chatCommercialCheckEnabled
         })
       });
       const data = await res.json();
@@ -2738,15 +2825,22 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                         <div className="text-xs font-semibold truncate">{chat.title || `Чат ${chat.id}`}</div>
                         <div className="text-[10px] text-slate-500 font-mono truncate">{chat.id}</div>
                       </div>
-                      {boundTopic ? (
-                        <span className="shrink-0 px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
-                          Привязан (#{boundTopic.messageThreadId || '?'})
-                        </span>
-                      ) : (
-                        <span className="shrink-0 px-1.5 py-0.5 rounded-md bg-slate-800 text-slate-500 text-[10px]">
-                          Нет
-                        </span>
-                      )}
+                      <div className="shrink-0 flex flex-col items-end gap-1">
+                        {boundTopic ? (
+                          <span className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 text-[10px] font-bold">
+                            Привязан (#{boundTopic.messageThreadId || '?'})
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded-md bg-slate-800 text-slate-500 text-[10px]">
+                            Нет
+                          </span>
+                        )}
+                        {boundTopic?.useCustomModeration && (
+                          <span className="px-1.5 py-0.5 rounded-md bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[9px] font-semibold">
+                            Свои правила
+                          </span>
+                        )}
+                      </div>
                     </button>
                   );
                 })}
@@ -2831,6 +2925,179 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
                       <span className="text-xs text-slate-300 font-medium">Активна (проверять посты)</span>
                     </label>
                   </div>
+                </div>
+
+                {/* Per-Chat Moderation Override */}
+                <div className="p-4 rounded-xl bg-slate-950/70 border border-slate-800 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Sliders className="w-4 h-4 text-indigo-400 shrink-0" />
+                      <div>
+                        <div className="text-xs font-bold text-white">
+                          Индивидуальные настройки модерации для этого чата
+                        </div>
+                        <div className="text-[11px] text-slate-400">
+                          {chatUseCustomModeration
+                            ? 'Для этого чата действуют собственные правила проверки вместо общих'
+                            : 'Сейчас применяются общие правила модерации из блока выше'}
+                        </div>
+                      </div>
+                    </div>
+                    <label className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-slate-700 cursor-pointer shrink-0">
+                      <input
+                        type="checkbox"
+                        checked={chatUseCustomModeration}
+                        onChange={e => setChatUseCustomModeration(e.target.checked)}
+                        className="rounded bg-slate-950 border-slate-600 text-indigo-500 focus:ring-0"
+                      />
+                      <span className="text-xs font-semibold text-indigo-300">Свои правила для чата</span>
+                    </label>
+                  </div>
+
+                  {chatUseCustomModeration && (
+                    <div className="pt-3 border-t border-slate-800/80 space-y-3">
+                      {/* 1. Проверка объявлений о продаже */}
+                      <div className="p-3 rounded-xl bg-slate-900/70 border border-slate-800 space-y-2.5">
+                        <label className="flex items-start justify-between gap-3 cursor-pointer">
+                          <div>
+                            <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Проверка объявлений о продаже</span>
+                            </div>
+                            <p className="text-[11px] text-slate-400 mt-0.5">
+                              Проверять наличие фото, города, доставки, цены и контактов. Если не хватает данных — просить дополнить, иначе удалять.
+                            </p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={chatUserAdModerationEnabled}
+                            onChange={e => setChatUserAdModerationEnabled(e.target.checked)}
+                            className="mt-0.5 rounded bg-slate-950 border-slate-700 text-emerald-500 focus:ring-0"
+                          />
+                        </label>
+
+                        {chatUserAdModerationEnabled && (
+                          <div className="pt-2 border-t border-slate-800/70 space-y-2">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                              <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950/70 border border-slate-800/80 cursor-pointer text-[11px] text-slate-200">
+                                <input
+                                  type="checkbox"
+                                  checked={chatRequirePhoto}
+                                  onChange={e => setChatRequirePhoto(e.target.checked)}
+                                  className="rounded bg-slate-900 border-slate-700 text-indigo-500 focus:ring-0"
+                                />
+                                <span>Фото товара</span>
+                              </label>
+                              <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950/70 border border-slate-800/80 cursor-pointer text-[11px] text-slate-200">
+                                <input
+                                  type="checkbox"
+                                  checked={chatRequireCity}
+                                  onChange={e => setChatRequireCity(e.target.checked)}
+                                  className="rounded bg-slate-900 border-slate-700 text-indigo-500 focus:ring-0"
+                                />
+                                <span>Город</span>
+                              </label>
+                              <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950/70 border border-slate-800/80 cursor-pointer text-[11px] text-slate-200">
+                                <input
+                                  type="checkbox"
+                                  checked={chatRequireDeliveryInfo}
+                                  onChange={e => setChatRequireDeliveryInfo(e.target.checked)}
+                                  className="rounded bg-slate-900 border-slate-700 text-indigo-500 focus:ring-0"
+                                />
+                                <span>Доставка</span>
+                              </label>
+                              <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950/70 border border-slate-800/80 cursor-pointer text-[11px] text-slate-200">
+                                <input
+                                  type="checkbox"
+                                  checked={chatRequirePrice}
+                                  onChange={e => setChatRequirePrice(e.target.checked)}
+                                  className="rounded bg-slate-900 border-slate-700 text-indigo-500 focus:ring-0"
+                                />
+                                <span>Цена (обязательно)</span>
+                              </label>
+                              <label className="flex items-center gap-2 p-2 rounded-lg bg-slate-950/70 border border-slate-800/80 cursor-pointer text-[11px] text-slate-200">
+                                <input
+                                  type="checkbox"
+                                  checked={chatRequireContacts}
+                                  onChange={e => setChatRequireContacts(e.target.checked)}
+                                  className="rounded bg-slate-900 border-slate-700 text-indigo-500 focus:ring-0"
+                                />
+                                <span>Контакты</span>
+                              </label>
+                              <div className="flex items-center justify-between gap-2 p-1.5 px-2 rounded-lg bg-slate-950/70 border border-slate-800/80 text-[11px] text-slate-300">
+                                <span>Время (мин):</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={120}
+                                  value={chatGracePeriodMinutes}
+                                  onChange={e => setChatGracePeriodMinutes(Math.max(1, Math.min(120, Number(e.target.value) || 10)))}
+                                  className="w-12 bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-center text-white font-mono text-[11px]"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 2. Проверка и уведомление о возможном мошенничестве */}
+                      <label className="flex items-start justify-between gap-3 p-3 rounded-xl bg-slate-900/70 border border-slate-800 cursor-pointer">
+                        <div>
+                          <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                            <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Проверка и уведомление о возможном мошенничестве</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Предупреждать покупателей (поиск запчастей) о мошенниках в ЛС и давать ссылку на @MotoBlackList (с автоудалением через {buySearchWarningAutoDeleteMinutes} мин).
+                          </p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={chatWarnOnBuySearch}
+                          onChange={e => setChatWarnOnBuySearch(e.target.checked)}
+                          className="mt-0.5 rounded bg-slate-950 border-slate-700 text-amber-500 focus:ring-0"
+                        />
+                      </label>
+
+                      {/* 3. Удаление флуда */}
+                      <label className="flex items-start justify-between gap-3 p-3 rounded-xl bg-slate-900/70 border border-slate-800 cursor-pointer">
+                        <div>
+                          <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                            <Ban className="w-3.5 h-3.5 text-rose-400" />
+                            <span>Удаление флуда</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Автоматически удалять постороннее общение, комментарии и сообщения не о покупке или продаже.
+                          </p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={chatDeleteOffTopicChat}
+                          onChange={e => setChatDeleteOffTopicChat(e.target.checked)}
+                          className="mt-0.5 rounded bg-slate-950 border-slate-700 text-rose-500 focus:ring-0"
+                        />
+                      </label>
+
+                      {/* 4. ИИ-контроль коммерческих объявлений */}
+                      <label className="flex items-start justify-between gap-3 p-3 rounded-xl bg-slate-900/70 border border-slate-800 cursor-pointer">
+                        <div>
+                          <div className="text-xs font-bold text-white flex items-center gap-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+                            <span>ИИ-контроль коммерческих объявлений и перекупов</span>
+                          </div>
+                          <p className="text-[11px] text-slate-400 mt-0.5">
+                            Анализировать скрытую рекламу магазинов, авторазборов и отслеживаемых продавцов.
+                          </p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={chatCommercialCheckEnabled}
+                          onChange={e => setChatCommercialCheckEnabled(e.target.checked)}
+                          className="mt-0.5 rounded bg-slate-950 border-slate-700 text-indigo-500 focus:ring-0"
+                        />
+                      </label>
+                    </div>
+                  )}
                 </div>
 
                 {buySellTopicFeedback && (
