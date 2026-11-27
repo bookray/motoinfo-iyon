@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { FilterSettings, ActiveMuteEntry } from '../types';
 import { 
-  ShieldAlert, Plus, X, Radio, Bell, Layers, RefreshCw, 
+  ShieldAlert, Plus, X, Layers, RefreshCw, 
   CheckCircle2, AlertCircle, VolumeX, Volume2, Tv, AtSign, 
-  Clock, UserX, Search, Sparkles
+  Clock, Search, ShieldCheck, BookOpen, ChevronDown, ChevronUp
 } from 'lucide-react';
 
 interface ModerationProps {
@@ -20,6 +20,8 @@ export const Moderation: React.FC<ModerationProps> = ({
   const [newWord, setNewWord] = useState('');
   const [isApplyingBulk, setIsApplyingBulk] = useState(false);
   const [statusNotice, setStatusNotice] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
+  const [activeModTab, setActiveModTab] = useState<'filters' | 'entry' | 'punishments'>('filters');
+  const [showCommandsCheatSheet, setShowCommandsCheatSheet] = useState(false);
 
   // Active Mutes state
   const [activeMutes, setActiveMutes] = useState<ActiveMuteEntry[]>([]);
@@ -188,7 +190,90 @@ export const Moderation: React.FC<ModerationProps> = ({
         </div>
       )}
 
-      {/* Active Mutes List Card */}
+      {/* Top Header & Sub-Tab Switcher */}
+      <div className="bg-slate-900 p-5 sm:p-6 rounded-2xl border border-slate-800 shadow-xl space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3.5">
+            <div className="p-3 bg-orange-500/20 rounded-xl shadow-lg shadow-orange-900/10 shrink-0">
+              <ShieldAlert className="w-7 h-7 text-orange-400" />
+            </div>
+            <div>
+              <h3 className="text-xl font-bold text-white tracking-tight">Глобальные правила модерации</h3>
+              <p className="text-xs sm:text-sm text-slate-400">Настройки по умолчанию для всех подключенных чатов и активные ограничения</p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => handleBulkApply('all')}
+              disabled={isApplyingBulk}
+              className="px-3.5 py-2 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-md transition-all cursor-pointer"
+              title="Принудительно скопировать все текущие правила в настройки каждого чата"
+            >
+              {isApplyingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
+              <span>Применить ко всем чатам</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleBulkReset}
+              disabled={isApplyingBulk}
+              className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-2 border border-slate-700 transition-all cursor-pointer"
+              title="Сбросить индивидуальные переопределения в чатах, чтобы они динамически следовали этим общим правилам"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Сбросить на по умолчанию</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-slate-800">
+          <button
+            type="button"
+            onClick={() => setActiveModTab('filters')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeModTab === 'filters'
+                ? 'bg-orange-500/20 text-orange-300 border border-orange-500/40'
+                : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white'
+            }`}
+          >
+            <ShieldAlert className="w-3.5 h-3.5" />
+            <span>Фильтры и Стоп-слова</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveModTab('entry')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeModTab === 'entry'
+                ? 'bg-blue-500/20 text-blue-300 border border-blue-500/40'
+                : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white'
+            }`}
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>Вход, Каптча и Мультичат</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveModTab('punishments')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+              activeModTab === 'punishments'
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                : 'bg-slate-950 text-slate-400 border border-slate-800 hover:text-white'
+            }`}
+          >
+            <VolumeX className="w-3.5 h-3.5" />
+            <span>Муты, Варны и Команды</span>
+            {activeMutes.length > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 tabular-nums">
+                {activeMutes.length}
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      {/* TAB 3 PART A: Active Mutes List Card */}
+      {activeModTab === 'punishments' && (
       <div className="bg-slate-900 p-6 md:p-8 rounded-2xl border border-slate-800 shadow-xl">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
           <div className="flex items-center gap-3">
@@ -282,44 +367,15 @@ export const Moderation: React.FC<ModerationProps> = ({
           </div>
         )}
       </div>
+      )}
 
       {/* Auto-Moderation Filters */}
       <div className="space-y-6">
-        <div className="bg-slate-900 p-8 rounded-2xl border border-slate-800 shadow-xl">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
-            <div className="flex items-center gap-4">
-              <div className="p-3 bg-orange-500/20 rounded-xl shadow-lg shadow-orange-900/10">
-                <ShieldAlert className="w-8 h-8 text-orange-400" />
-              </div>
-              <div>
-                <h3 className="text-2xl font-bold text-white tracking-tight">Глобальные правила модерации</h3>
-                <p className="text-sm text-slate-400">Настройки по умолчанию для всех подключенных чатов</p>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => handleBulkApply('all')}
-                disabled={isApplyingBulk}
-                className="px-3.5 py-2 bg-orange-600 hover:bg-orange-500 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-md transition-all cursor-pointer"
-                title="Принудительно скопировать все текущие правила в настройки каждого чата"
-              >
-                {isApplyingBulk ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Layers className="w-3.5 h-3.5" />}
-                <span>Применить ко всем чатам</span>
-              </button>
-              <button
-                onClick={handleBulkReset}
-                disabled={isApplyingBulk}
-                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold flex items-center gap-2 border border-slate-700 transition-all cursor-pointer"
-                title="Сбросить индивидуальные переопределения в чатах, чтобы они динамически следовали этим общим правилам"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>Сбросить на по умолчанию</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {activeModTab === 'filters' && (
+        <div className="bg-slate-900 p-6 md:p-8 rounded-2xl border border-slate-800 shadow-xl space-y-8">
+          <div>
+            <h4 className="text-sm font-bold text-slate-300 uppercase tracking-widest mb-4">Базовые фильтры сообщений</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
               <div className="flex flex-col">
                 <span className="text-slate-200 font-medium">Блокировать ссылки</span>
@@ -385,10 +441,40 @@ export const Moderation: React.FC<ModerationProps> = ({
                 <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-orange-500"></div>
               </label>
             </div>
+            </div>
           </div>
 
+          <div className="pt-8 border-t border-slate-800">
+            <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Запрещенные слова (Regex)</h4>
+            <form onSubmit={handleAddWord} className="flex gap-3 mb-6">
+              <input 
+                type="text" 
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
+                placeholder="Добавить слово или регулярное выражение..."
+                value={newWord}
+                onChange={e => setNewWord(e.target.value)}
+              />
+              <button type="submit" className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-3 rounded-xl transition-all shadow-lg cursor-pointer">
+                <Plus className="w-6 h-6" />
+              </button>
+            </form>
+            <div className="flex flex-wrap gap-2">
+              {filters.forbiddenWords.map(word => (
+                <span key={word} className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 shadow-sm">
+                  {word}
+                  <button onClick={() => handleRemoveWord(word)} className="hover:text-rose-200 transition-colors cursor-pointer"><X className="w-4 h-4" /></button>
+                </span>
+              ))}
+              {filters.forbiddenWords.length === 0 && <p className="text-slate-600 italic text-sm">Список пуст</p>}
+            </div>
+          </div>
+        </div>
+        )}
+
+        {activeModTab === 'entry' && (
+        <div className="bg-slate-900 p-6 md:p-8 rounded-2xl border border-slate-800 shadow-xl">
           {/* Channel Subscription Gate */}
-          <div className="mt-8 pt-8 border-t border-slate-800">
+          <div>
             <div className="flex items-center justify-between mb-6">
               <div className="flex flex-col">
                 <span className="text-lg font-bold text-white flex items-center gap-2">
@@ -636,7 +722,7 @@ export const Moderation: React.FC<ModerationProps> = ({
                         >
                           <div className="font-bold text-xs flex items-center justify-between mb-1">
                             <span>{t.title}</span>
-                            {isSelected && <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse"></span>}
+                            {isSelected && <span className="w-2 h-2 rounded-full bg-blue-400"></span>}
                           </div>
                           <p className="text-[11px] text-slate-400 leading-tight">{t.desc}</p>
                         </button>
@@ -813,8 +899,12 @@ export const Moderation: React.FC<ModerationProps> = ({
               )}
             </div>
           </div>
+        </div>
+        )}
 
-          <div className="mt-8 pt-8 border-t border-slate-800 space-y-6">
+        {activeModTab === 'punishments' && (
+        <div className="bg-slate-900 p-6 md:p-8 rounded-2xl border border-slate-800 shadow-xl space-y-8">
+          <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div className="flex flex-col">
                 <span className="text-lg font-bold text-white">Система предупреждений (Варны)</span>
@@ -857,102 +947,76 @@ export const Moderation: React.FC<ModerationProps> = ({
                 </span>
               </div>
             </div>
-
-            <div className="flex items-center justify-between p-4 bg-slate-950 rounded-xl border border-slate-800 hover:border-slate-700 transition-colors">
-              <div className="flex flex-col">
-                <span className="text-slate-200 font-medium">Система рейтинга и репутации</span>
-                <span className="text-xs text-slate-500">Начисление +1 за «Спасибо»/реакции 👍❤️ и -1 за 👎🤡</span>
-              </div>
-              <label className="relative inline-flex items-center cursor-pointer">
-                <input 
-                  type="checkbox" 
-                  className="sr-only peer" 
-                  checked={filters.reputationEnabled !== false} 
-                  onChange={() => onUpdateFilters({...filters, reputationEnabled: filters.reputationEnabled === false ? true : false})} 
-                />
-                <div className="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
-              </label>
-            </div>
           </div>
 
-          {/* Telegram Commands Cheat Sheet */}
-          <div className="mt-8 pt-8 border-t border-slate-800 space-y-4">
-            <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest">
-              📖 Справочник команд для администраторов в чатах Telegram
-            </h4>
-            <div className="bg-slate-950 p-6 rounded-2xl border border-slate-800 text-sm space-y-4">
-              <p className="text-xs text-slate-400">
-                Администраторы могут использовать команды прямо в чатах Telegram (с префиксом <code className="text-orange-400">/</code> или <code className="text-orange-400">!</code>, а также <code className="text-orange-400">un+</code> для отмены).
-              </p>
+          {/* Telegram Commands Cheat Sheet (Collapsible) */}
+          <div className="pt-6 border-t border-slate-800 space-y-4">
+            <button
+              type="button"
+              onClick={() => setShowCommandsCheatSheet(prev => !prev)}
+              className="w-full flex items-center justify-between p-4 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 transition-colors cursor-pointer"
+            >
+              <span className="text-sm font-bold text-slate-200 flex items-center gap-2">
+                <BookOpen className="w-4 h-4 text-orange-400" />
+                <span>Справочник команд для администраторов в чатах Telegram</span>
+              </span>
+              <span className="flex items-center gap-1.5 text-xs text-slate-400">
+                <span>{showCommandsCheatSheet ? 'Скрыть' : 'Развернуть'}</span>
+                {showCommandsCheatSheet ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </span>
+            </button>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs font-mono">
-                <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
-                  <span className="text-amber-400 font-bold block mb-1">🔇 Мут / Обеззвучивание</span>
-                  <div className="text-slate-300 space-y-1">
-                    <div><code>/mute 30m спам</code> (в ответ)</div>
-                    <div><code>/mute @user 2d флуд</code></div>
-                    <div><code>/unmute</code> (в ответ / @тег)</div>
+            {showCommandsCheatSheet && (
+              <div className="bg-slate-950 p-6 rounded-2xl border border-slate-800 text-sm space-y-4">
+                <p className="text-xs text-slate-400">
+                  Администраторы могут использовать команды прямо в чатах Telegram (с префиксом <code className="text-orange-400">/</code> или <code className="text-orange-400">!</code>, а также <code className="text-orange-400">un+</code> для отмены).
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs font-mono">
+                  <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
+                    <span className="text-amber-400 font-bold block mb-1">🔇 Мут / Обеззвучивание</span>
+                    <div className="text-slate-300 space-y-1">
+                      <div><code>/mute 30m спам</code> (в ответ)</div>
+                      <div><code>/mute @user 2d флуд</code></div>
+                      <div><code>/unmute</code> (в ответ / @тег)</div>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
+                    <span className="text-rose-400 font-bold block mb-1">🚫 Бан / Блокировка</span>
+                    <div className="text-slate-300 space-y-1">
+                      <div><code>/ban 7d реклама</code></div>
+                      <div><code>/ban @user навсегда</code></div>
+                      <div><code>/unban @user</code></div>
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
+                    <span className="text-yellow-400 font-bold block mb-1">⚠️ Варн / Предупреждение</span>
+                    <div className="text-slate-300 space-y-1">
+                      <div><code>/warn мат в чате</code></div>
+                      <div><code>/warn @user оффтоп</code></div>
+                      <div><code>/unwarn @user</code></div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
-                  <span className="text-rose-400 font-bold block mb-1">🚫 Бан / Блокировка</span>
-                  <div className="text-slate-300 space-y-1">
-                    <div><code>/ban 7d реклама</code></div>
-                    <div><code>/ban @user навсегда</code></div>
-                    <div><code>/unban @user</code></div>
-                  </div>
-                </div>
-
-                <div className="bg-slate-900/80 p-3.5 rounded-xl border border-slate-800/80">
-                  <span className="text-yellow-400 font-bold block mb-1">⚠️ Варн / Предупреждение</span>
-                  <div className="text-slate-300 space-y-1">
-                    <div><code>/warn мат в чате</code></div>
-                    <div><code>/warn @user оффтоп</code></div>
-                    <div><code>/unwarn @user</code></div>
-                  </div>
+                <div className="pt-2 border-t border-slate-900 text-xs text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <span className="font-semibold text-slate-300">Форматы времени:</span>
+                  <span><code className="text-orange-400">s</code> = секунды</span>
+                  <span><code className="text-orange-400">m</code> = минуты</span>
+                  <span><code className="text-orange-400">h</code> = часы</span>
+                  <span><code className="text-orange-400">d</code> = дни</span>
+                  <span><code className="text-orange-400">w</code> = недели</span>
+                  <span><code className="text-orange-400">M</code> = месяцы</span>
+                  <span><code className="text-orange-400">y</code> = годы</span>
+                  <span className="text-slate-500">(Мин: 30s, Макс: 356d)</span>
                 </div>
               </div>
-
-              <div className="pt-2 border-t border-slate-900 text-xs text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-2">
-                <span className="font-semibold text-slate-300">Форматы времени:</span>
-                <span><code className="text-orange-400">s</code> = секунды</span>
-                <span><code className="text-orange-400">m</code> = минуты</span>
-                <span><code className="text-orange-400">h</code> = часы</span>
-                <span><code className="text-orange-400">d</code> = дни</span>
-                <span><code className="text-orange-400">w</code> = недели</span>
-                <span><code className="text-orange-400">M</code> = месяцы</span>
-                <span><code className="text-orange-400">y</code> = годы</span>
-                <span className="text-slate-500">(Мин: 30s, Макс: 356d)</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="mt-8 pt-8 border-t border-slate-800">
-            <h4 className="text-sm font-bold text-slate-400 uppercase tracking-widest mb-6">Запрещенные слова (Regex)</h4>
-            <form onSubmit={handleAddWord} className="flex gap-3 mb-6">
-              <input 
-                type="text" 
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:ring-2 focus:ring-orange-500/50 transition-all"
-                placeholder="Добавить слово или регулярное выражение..."
-                value={newWord}
-                onChange={e => setNewWord(e.target.value)}
-              />
-              <button type="submit" className="bg-slate-800 hover:bg-slate-700 text-white px-4 py-3 rounded-xl transition-all shadow-lg">
-                <Plus className="w-6 h-6" />
-              </button>
-            </form>
-            <div className="flex flex-wrap gap-2">
-              {filters.forbiddenWords.map(word => (
-                <span key={word} className="bg-rose-500/10 text-rose-400 border border-rose-500/20 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 shadow-sm">
-                  {word}
-                  <button onClick={() => handleRemoveWord(word)} className="hover:text-rose-200 transition-colors"><X className="w-4 h-4" /></button>
-                </span>
-              ))}
-              {filters.forbiddenWords.length === 0 && <p className="text-slate-600 italic text-sm">Список пуст</p>}
-            </div>
+            )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

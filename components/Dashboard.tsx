@@ -48,6 +48,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   timezoneOffset = 3
 }) => {
   const [showRetry, setShowRetry] = useState(false);
+  const [dashboardTab, setDashboardTab] = useState<'charts' | 'heatmap' | 'tops'>('charts');
   const [activityViewMode, setActivityViewMode] = useState<'heatmap' | 'hourly'>('heatmap');
   const [activityMetric, setActivityMetric] = useState<'msgs' | 'activeUsers' | 'joins'>('msgs');
   const [hourlyChartType, setHourlyChartType] = useState<'bar' | 'area'>('bar');
@@ -587,7 +588,48 @@ export const Dashboard: React.FC<DashboardProps> = ({
         />
       </div>
 
+      {/* Dashboard Lower Sections Switcher */}
+      <div className="flex flex-wrap items-center gap-2 p-1.5 bg-slate-900 border border-slate-800 rounded-2xl">
+        <button
+          type="button"
+          onClick={() => setDashboardTab('charts')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+            dashboardTab === 'charts'
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <BarChart3 className="w-4 h-4" />
+          <span>Графики динамики</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setDashboardTab('heatmap')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+            dashboardTab === 'heatmap'
+              ? 'bg-purple-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <Grid className="w-4 h-4" />
+          <span>Тепловая карта 7×24</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setDashboardTab('tops')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+            dashboardTab === 'tops'
+              ? 'bg-emerald-600 text-white shadow-sm'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <Award className="w-4 h-4" />
+          <span>Топы участников и чатов</span>
+        </button>
+      </div>
+
       {/* Heatmap 7x24 & Hourly Activity Section */}
+      {dashboardTab === 'heatmap' && (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
         {/* Header with Title and Mode Controls */}
         <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 border-b border-slate-800 pb-5">
@@ -603,10 +645,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
                   7 дней × 24 часа
                 </span>
                 <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-[11px] font-medium">
-                  <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                  </span>
+                  <span className="inline-flex rounded-full h-2 w-2 bg-emerald-500" />
                   <span className="text-slate-400">Сейчас:</span>
                   <span className="font-mono font-bold text-white">{DAY_NAMES[currentLiveTime.dayIndex]} {currentLiveTime.timeStr}</span>
                   <span className="text-[10px] text-emerald-300/80 font-mono">
@@ -886,11 +925,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
                                 </span>
                               )}
                               {isPeakWeek && !isCurrentTimeSlot && (
-                                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-900 animate-pulse" />
+                                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-400 ring-2 ring-slate-900" />
                               )}
                               {isCurrentTimeSlot && (
                                 <span className="absolute -top-1.5 -left-1.5 flex h-3 w-3 z-30 pointer-events-none" title="Текущее время">
-                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                                   <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500 border-2 border-slate-950"></span>
                                 </span>
                               )}
@@ -1180,7 +1218,9 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
       </div>
+      )}
 
+      {dashboardTab === 'charts' && (
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl">
           <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
@@ -1271,8 +1311,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
           </div>
         </div>
       </div>
+      )}
 
       {/* Top Active Members & Admins Table */}
+      {dashboardTab === 'tops' && (
+      <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
           <h3 className="text-lg font-bold text-white mb-6 flex items-center gap-2">
@@ -1427,6 +1470,8 @@ export const Dashboard: React.FC<DashboardProps> = ({
           label="Онлайн" 
         />
       </div>
+      </div>
+      )}
     </div>
   );
 };

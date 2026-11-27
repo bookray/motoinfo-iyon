@@ -39,6 +39,7 @@ import { Chat, ChatDigestConfig, ChatDigestEntry, DigestToneStyle, TONE_STYLES, 
 
 interface SummarizationProps {
   chats: Chat[];
+  onOpenAiSettings?: () => void;
 }
 
 export const TelegramFormattedDigest: React.FC<{ text: string }> = ({ text }) => {
@@ -256,7 +257,7 @@ const TIME_SLOTS_5MIN = Array.from({ length: 288 }, (_, i) => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 });
 
-export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
+export const Summarization: React.FC<SummarizationProps> = ({ chats, onOpenAiSettings }) => {
   const [configs, setConfigs] = useState<ChatDigestConfig[]>([]);
   const [history, setHistory] = useState<ChatDigestEntry[]>([]);
   const [geminiStatus, setGeminiStatus] = useState<any>(null);
@@ -795,12 +796,10 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
                 </div>
                 {geminiStatus?.configured ? (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                     Ключ активен {geminiStatus.activeKeyMasked ? `(${geminiStatus.activeKeyMasked})` : ''}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 text-xs font-semibold">
-                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                     Ключ не настроен
                   </span>
                 )}
@@ -813,11 +812,11 @@ export const Summarization: React.FC<SummarizationProps> = ({ chats }) => {
 
           <div className="flex items-center gap-2.5 self-start md:self-center flex-wrap">
             <button
-              onClick={() => setShowAiModal(true)}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-lg shadow-blue-900/30"
+              onClick={() => (onOpenAiSettings ? onOpenAiSettings() : setShowAiModal(true))}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-sm font-bold transition-all flex items-center gap-2 shadow-lg shadow-blue-900/30 cursor-pointer"
             >
               <Sliders className="w-4 h-4" />
-              <span>Настройки ИИ и Ключ</span>
+              <span>{onOpenAiSettings ? 'Настройки ИИ (в Настройках) →' : 'Настройки ИИ и Ключ'}</span>
             </button>
 
             <button

@@ -32,7 +32,6 @@ export const AntiScam: React.FC<AntiScamProps> = ({
   authenticatedFetch, currentUser
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'keywords' | 'chat_bans' | 'multichat' | 'cleaner' | 'global_bans' | 'latest_members'>('keywords');
-  const [viewAll, setViewAll] = useState(false);
 
   const [banInput, setBanInput] = useState('');
   const [banReason, setBanReason] = useState('Подозрение в мошенничестве');
@@ -208,9 +207,9 @@ export const AntiScam: React.FC<AntiScamProps> = ({
         <div className="flex flex-wrap items-center gap-1.5">
           <button 
             type="button"
-            onClick={() => { setActiveSubTab('keywords'); setViewAll(false); }}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
-              !viewAll && activeSubTab === 'keywords'
+            onClick={() => setActiveSubTab('keywords')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer ${
+              activeSubTab === 'keywords'
                 ? 'bg-amber-500 text-slate-950 shadow-lg shadow-amber-500/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800'
             }`}
@@ -221,9 +220,9 @@ export const AntiScam: React.FC<AntiScamProps> = ({
 
           <button 
             type="button"
-            onClick={() => { setActiveSubTab('chat_bans'); setViewAll(false); }}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
-              !viewAll && activeSubTab === 'chat_bans'
+            onClick={() => setActiveSubTab('chat_bans')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer ${
+              activeSubTab === 'chat_bans'
                 ? 'bg-orange-500 text-slate-950 shadow-lg shadow-orange-500/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800'
             }`}
@@ -232,7 +231,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
             <span>Мут и бан в чатах</span>
             {activeChatBans.length > 0 && (
               <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                !viewAll && activeSubTab === 'chat_bans' ? 'bg-slate-950 text-orange-400' : 'bg-slate-800 text-slate-300'
+                activeSubTab === 'chat_bans' ? 'bg-slate-950 text-orange-400' : 'bg-slate-800 text-slate-300'
               }`}>
                 {activeChatBans.length}
               </span>
@@ -241,9 +240,9 @@ export const AntiScam: React.FC<AntiScamProps> = ({
 
           <button 
             type="button"
-            onClick={() => { setActiveSubTab('multichat'); setViewAll(false); }}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
-              !viewAll && activeSubTab === 'multichat'
+            onClick={() => setActiveSubTab('multichat')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer ${
+              activeSubTab === 'multichat'
                 ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800'
             }`}
@@ -251,7 +250,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
             <ShieldAlert className="w-4 h-4" />
             <span>Мультичат</span>
             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-              !viewAll && activeSubTab === 'multichat' ? 'bg-blue-900/60 text-blue-200' : 'bg-slate-800 text-slate-300'
+              activeSubTab === 'multichat' ? 'bg-blue-900/60 text-blue-200' : 'bg-slate-800 text-slate-300'
             }`}>
               {multiChatUsers.length}
             </span>
@@ -259,9 +258,9 @@ export const AntiScam: React.FC<AntiScamProps> = ({
 
           <button 
             type="button"
-            onClick={() => { setActiveSubTab('cleaner'); setViewAll(false); }}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
-              !viewAll && activeSubTab === 'cleaner'
+            onClick={() => setActiveSubTab('cleaner')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer ${
+              activeSubTab === 'cleaner'
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800'
             }`}
@@ -272,9 +271,9 @@ export const AntiScam: React.FC<AntiScamProps> = ({
 
           <button 
             type="button"
-            onClick={() => { setActiveSubTab('global_bans'); setViewAll(false); }}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
-              !viewAll && activeSubTab === 'global_bans'
+            onClick={() => setActiveSubTab('global_bans')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer ${
+              activeSubTab === 'global_bans'
                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800'
             }`}
@@ -282,7 +281,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
             <UserX className="w-4 h-4" />
             <span>Глобальный бан</span>
             <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-              !viewAll && activeSubTab === 'global_bans' ? 'bg-rose-900/60 text-rose-200' : 'bg-slate-800 text-slate-300'
+              activeSubTab === 'global_bans' ? 'bg-rose-900/60 text-rose-200' : 'bg-slate-800 text-slate-300'
             }`}>
               {bans.length}
             </span>
@@ -290,9 +289,9 @@ export const AntiScam: React.FC<AntiScamProps> = ({
 
           <button 
             type="button"
-            onClick={() => { setActiveSubTab('latest_members'); setViewAll(false); }}
-            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 ${
-              !viewAll && activeSubTab === 'latest_members'
+            onClick={() => setActiveSubTab('latest_members')}
+            className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all flex items-center gap-2 cursor-pointer ${
+              activeSubTab === 'latest_members'
                 ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20'
                 : 'text-slate-400 hover:text-white hover:bg-slate-800'
             }`}
@@ -301,22 +300,10 @@ export const AntiScam: React.FC<AntiScamProps> = ({
             <span>Новые участники</span>
           </button>
         </div>
-
-        <button
-          type="button"
-          onClick={() => setViewAll(!viewAll)}
-          className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all ${
-            viewAll 
-              ? 'bg-slate-800 border-amber-500/50 text-amber-300' 
-              : 'border-slate-800 text-slate-500 hover:text-slate-300 hover:bg-slate-800/50'
-          }`}
-        >
-          {viewAll ? 'Свернуть в один раздел' : 'Показать все разделы'}
-        </button>
       </div>
 
       {/* Keywords Monitoring Section */}
-      {(viewAll || activeSubTab === 'keywords') && (
+      {activeSubTab === 'keywords' && (
         <AntiScamKeywords
           authenticatedFetch={authenticatedFetch}
           currentUser={currentUser}
@@ -325,7 +312,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
       )}
 
       {/* Per-Chat Ban Section */}
-      {(viewAll || activeSubTab === 'chat_bans') && (
+      {activeSubTab === 'chat_bans' && (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl animate-in slide-in-from-top-4 duration-500">
         <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex items-center gap-3">
           <div className="p-2 bg-orange-500/20 rounded-lg">
@@ -474,7 +461,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
       )}
 
       {/* Manual Ban Section */}
-      {(viewAll || activeSubTab === 'global_bans') && (
+      {(activeSubTab === 'global_bans') && (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex items-center gap-3">
           <div className="p-2 bg-rose-500/20 rounded-lg">
@@ -553,7 +540,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
       )}
 
       {/* Multi-Chat Users Section */}
-      {(viewAll || activeSubTab === 'multichat') && (
+      {(activeSubTab === 'multichat') && (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -757,7 +744,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
       )}
 
       {/* Message Cleaner Section */}
-      {(viewAll || activeSubTab === 'cleaner') && (
+      {(activeSubTab === 'cleaner') && (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl animate-in slide-in-from-top-4 duration-500">
         <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -932,7 +919,7 @@ export const AntiScam: React.FC<AntiScamProps> = ({
         </div>
       </div>
       )}
-      {(viewAll || activeSubTab === 'latest_members') && (
+      {(activeSubTab === 'latest_members') && (
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         <div className="p-6 border-b border-slate-800 bg-slate-900/50 flex items-center gap-3">
           <div className="p-2 bg-emerald-500/20 rounded-lg">

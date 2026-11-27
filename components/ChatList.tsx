@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Chat, FilterSettings } from '../types';
-import { Settings, Trash2, Users, Clock, CheckCircle, Power, PowerOff, Shield, X, Plus, Pin, RotateCcw, Info, Layers } from 'lucide-react';
+import { Settings, Trash2, Users, Clock, CheckCircle, Power, PowerOff, Shield, X, Plus, Pin, RotateCcw, Info, Layers, ShoppingBag } from 'lucide-react';
 import { PinnedMessagesModal } from './PinnedMessagesModal';
 
 interface ChatListProps {
@@ -10,6 +10,7 @@ interface ChatListProps {
   onRemoveChat: (id: string) => void;
   onAddChat: (id: string) => void;
   authenticatedFetch?: (url: string, options?: RequestInit) => Promise<Response>;
+  onOpenBuySellForChat?: (chatId: string) => void;
 }
 
 export const ChatList: React.FC<ChatListProps> = ({ 
@@ -18,7 +19,8 @@ export const ChatList: React.FC<ChatListProps> = ({
   onUpdateChat, 
   onRemoveChat, 
   onAddChat,
-  authenticatedFetch = fetch
+  authenticatedFetch = fetch,
+  onOpenBuySellForChat
 }) => {
   const [newChatId, setNewChatId] = useState('');
   const [editingChatId, setEditingChatId] = useState<string | null>(null);
@@ -205,16 +207,29 @@ export const ChatList: React.FC<ChatListProps> = ({
                     Под каждым переключателем отображается значение <strong className="text-white">по умолчанию из общей группы</strong>.
                   </span>
                 </div>
-                {filters && (
-                  <button
-                    onClick={() => handleResetChatToGroupDefaults(chat)}
-                    className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition-all self-start sm:self-auto shrink-0"
-                    title="Сбросить все правила этого чата на значения по умолчанию из раздела Модерация"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Сбросить на настройки группы</span>
-                  </button>
-                )}
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
+                  {onOpenBuySellForChat && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenBuySellForChat(chat.id)}
+                      className="px-3 py-1.5 bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 rounded-lg text-xs font-medium flex items-center gap-1.5 border border-indigo-500/30 transition-all cursor-pointer"
+                      title="Перейти к настройкам темы «Купи / Продай» для этого чата"
+                    >
+                      <ShoppingBag className="w-3.5 h-3.5" />
+                      <span>Правила «Купи / Продай» →</span>
+                    </button>
+                  )}
+                  {filters && (
+                    <button
+                      onClick={() => handleResetChatToGroupDefaults(chat)}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-medium flex items-center gap-1.5 border border-slate-700 transition-all cursor-pointer"
+                      title="Сбросить все правила этого чата на значения по умолчанию из раздела Модерация"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Сбросить на настройки группы</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

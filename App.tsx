@@ -32,6 +32,8 @@ const App: React.FC = () => {
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
   const [activeTab, setActiveTab] = useState<Tab>(Tab.STATISTICS);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<'bot' | 'ai' | 'notifications' | 'security'>('bot');
+  const [shopInitialNav, setShopInitialNav] = useState<{ subTab: 'SHOPS' | 'BUY_SELL'; chatId?: string; buySellTab?: 'alerts' | 'chats' | 'rules' } | null>(null);
 
   // Telegram WebApp detection & state
   const [isTelegramWebApp, setIsTelegramWebApp] = useState<boolean>(false);
@@ -550,6 +552,21 @@ const App: React.FC = () => {
     } catch (e) { console.error(e); }
   };
 
+  const TAB_TITLES: Record<Tab, string> = {
+    STATISTICS: 'Статистика',
+    CHATS: 'Управление чатами',
+    SHOP_TOPICS: 'Магазины и «Купи / Продай»',
+    AI_SUMMARY: 'ИИ-Суммаризация',
+    REPUTATION: 'Репутация и предупреждения',
+    MODERATION: 'Глобальные правила',
+    ANTI_SCAM: 'Анти-мошенники',
+    SCHEDULER: 'Планировщик',
+    BROADCAST: 'Рассылка',
+    LOGS: 'Логи событий',
+    USERS: 'Пользователи',
+    SETTINGS: 'Настройки системы'
+  };
+
   const NavItem = ({ tab, icon: Icon, label }: { tab: Tab, icon: any, label: string }) => (
     <button
       onClick={() => { 
@@ -557,16 +574,21 @@ const App: React.FC = () => {
         setActiveTab(tab); 
         setSidebarOpen(false); 
       }}
-      className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 group cursor-pointer ${
+      className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm transition-all duration-150 group cursor-pointer ${
         activeTab === tab 
-          ? 'bg-blue-600/15 text-blue-400 font-semibold border border-blue-500/20 shadow-sm shadow-blue-950/40' 
-          : 'text-slate-400 hover:bg-slate-800/80 hover:text-slate-200 border border-transparent'
+          ? 'bg-blue-600/15 text-blue-400 font-semibold border border-blue-500/25 shadow-sm shadow-blue-950/30' 
+          : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200 border border-transparent'
       }`}
     >
-      <Icon className={`w-5 h-5 shrink-0 ${activeTab === tab ? 'text-blue-400' : 'text-slate-500 group-hover:text-slate-300'}`} />
+      <Icon className={`w-4 h-4 shrink-0 ${activeTab === tab ? 'text-blue-400' : 'text-slate-500 group-hover:text-slate-300'}`} />
       <span className="truncate">{label}</span>
-      {activeTab === tab && <div className="ml-auto w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse"></div>}
     </button>
+  );
+
+  const NavGroupLabel = ({ label }: { label: string }) => (
+    <div className="px-3.5 pt-3 pb-1 text-[11px] font-semibold text-slate-500 tracking-wide">
+      {label}
+    </div>
   );
 
   const handleLogout = () => {
@@ -623,25 +645,33 @@ const App: React.FC = () => {
           </button>
         </div>
 
-        <nav className="px-4 py-4 space-y-1.5 flex-1 overflow-y-auto custom-scrollbar">
+        <nav className="px-3 py-3 space-y-0.5 flex-1 overflow-y-auto custom-scrollbar">
+          <NavGroupLabel label="Мониторинг" />
           <NavItem tab={Tab.STATISTICS} icon={LayoutDashboard} label="Статистика" />
-          {currentUser.role !== UserRole.ADVERTISER && (
-            <>
-              <NavItem tab={Tab.CHATS} icon={MessageSquareText} label="Управление чатами" />
-              <NavItem tab={Tab.SHOP_TOPICS} icon={Store} label="Объявления магазинов" />
-              <NavItem tab={Tab.AI_SUMMARY} icon={Sparkles} label="ИИ-Суммаризация" />
-              <NavItem tab={Tab.REPUTATION} icon={Award} label="Репутация" />
-              <NavItem tab={Tab.MODERATION} icon={Shield} label="Глобальные правила" />
-              <NavItem tab={Tab.ANTI_SCAM} icon={Shield} label="Анти мошенники" />
-              <NavItem tab={Tab.SCHEDULER} icon={Calendar} label="Планировщик" />
-            </>
-          )}
-          <NavItem tab={Tab.BROADCAST} icon={Radio} label="Рассылка" />
           {currentUser.role !== UserRole.ADVERTISER && (
             <NavItem tab={Tab.LOGS} icon={ScrollText} label="Логи событий" />
           )}
+
+          {currentUser.role !== UserRole.ADVERTISER && (
+            <>
+              <NavGroupLabel label="Модерация" />
+              <NavItem tab={Tab.CHATS} icon={MessageSquareText} label="Управление чатами" />
+              <NavItem tab={Tab.MODERATION} icon={Shield} label="Глобальные правила" />
+              <NavItem tab={Tab.ANTI_SCAM} icon={Shield} label="Анти-мошенники" />
+              <NavItem tab={Tab.REPUTATION} icon={Award} label="Репутация" />
+
+              <NavGroupLabel label="Темы и Контент" />
+              <NavItem tab={Tab.SHOP_TOPICS} icon={Store} label="Магазины и Купи/Продай" />
+              <NavItem tab={Tab.AI_SUMMARY} icon={Sparkles} label="ИИ-Суммаризация" />
+              <NavItem tab={Tab.SCHEDULER} icon={Calendar} label="Планировщик" />
+            </>
+          )}
+          {currentUser.role === UserRole.ADVERTISER && <NavGroupLabel label="Контент" />}
+          <NavItem tab={Tab.BROADCAST} icon={Radio} label="Рассылка" />
+
           {currentUser.role === UserRole.SUPER_ADMIN && (
             <>
+              <NavGroupLabel label="Система" />
               <NavItem tab={Tab.USERS} icon={UserPlus} label="Пользователи" />
               <NavItem tab={Tab.SETTINGS} icon={SettingsIcon} label="Настройки" />
             </>
@@ -688,15 +718,14 @@ const App: React.FC = () => {
             </button>
             <div className="min-w-0">
               <h2 className="text-lg sm:text-xl font-bold text-white tracking-tight truncate">
-                {activeTab === Tab.SHOP_TOPICS ? 'Объявления магазинов' : activeTab.replace('_', ' ')}
+                {TAB_TITLES[activeTab] || activeTab}
               </h2>
             </div>
           </div>
           
-          <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-            {isLoading && <div className="text-xs text-blue-400 animate-pulse hidden sm:block">Синхронизация...</div>}
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            {isLoading && <div className="text-xs text-blue-400 hidden sm:block">Синхронизация...</div>}
             
-            {/* Telegram Mini App indicator badge */}
             {isTelegramWebApp && (
               <div className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-500/10 border border-blue-500/30 rounded-lg text-blue-400 text-xs font-semibold">
                 <Smartphone className="w-3.5 h-3.5" />
@@ -705,59 +734,19 @@ const App: React.FC = () => {
               </div>
             )}
 
-            {currentUser.role !== UserRole.ADVERTISER && (
-              <div className="hidden lg:flex items-center gap-3">
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 rounded-lg border border-slate-800">
-                  <Database className={`w-3.5 h-3.5 ${dbStatus === 'online' ? 'text-emerald-500' : 'text-rose-500'}`} />
-                  <span className="text-[10px] font-mono text-slate-400">{settings.dbType === DatabaseType.FIREBASE ? 'Firebase' : 'MySQL'}</span>
-                  <div className={`h-1.5 w-1.5 rounded-full ${dbStatus === 'online' ? 'bg-emerald-500 shadow-[0_0_6px_#10b981]' : 'bg-rose-500 animate-pulse'}`}></div>
-                </div>
-
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 rounded-lg border border-slate-800">
-                  <Bot className={`w-3.5 h-3.5 ${botStatus === 'online' ? 'text-blue-500' : 'text-rose-500'}`} />
-                  <span className="text-[10px] font-mono text-slate-400">Bot API</span>
-                  <div className={`h-1.5 w-1.5 rounded-full ${botStatus === 'online' ? 'bg-blue-500 shadow-[0_0_6px_#3b82f6]' : 'bg-rose-500 animate-pulse'}`}></div>
-                </div>
-
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 rounded-lg border border-slate-800">
-                  <Cloud className={`w-3.5 h-3.5 ${
-                    cfStatus === 'online' ? 'text-orange-500' : cfStatus === 'offline' ? 'text-rose-500' : 'text-slate-600'
-                  }`} />
-                  <span className="text-[10px] font-mono text-slate-400">Cloudflare</span>
-                  <div className={`h-1.5 w-1.5 rounded-full ${
-                    cfStatus === 'online' 
-                      ? 'bg-emerald-500 shadow-[0_0_6px_#10b981]' 
-                      : cfStatus === 'offline' 
-                        ? 'bg-rose-500 animate-pulse' 
-                        : 'bg-slate-700'
-                  }`}></div>
-                </div>
-
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-900 rounded-lg border border-slate-800">
-                  <Network className={`w-3.5 h-3.5 ${
-                    proxyStatus === 'online' ? 'text-purple-400' : proxyStatus === 'offline' ? 'text-rose-500' : 'text-slate-600'
-                  }`} />
-                  <span className="text-[10px] font-mono text-slate-400">TG Proxy</span>
-                  <div className={`h-1.5 w-1.5 rounded-full ${
-                    proxyStatus === 'online' 
-                      ? 'bg-purple-500 shadow-[0_0_6px_#a855f7]' 
-                      : proxyStatus === 'offline' 
-                        ? 'bg-rose-500 animate-pulse' 
-                        : 'bg-slate-700'
-                  }`}></div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 sm:gap-3 border-l border-slate-800 pl-3 sm:pl-4">
-              <button 
-                onClick={handleLogout}
-                className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-400 hover:text-rose-400 rounded-xl border border-slate-800 transition-all cursor-pointer shadow-sm"
-                title="Выйти"
+            {currentUser.role !== UserRole.ADVERTISER && (botStatus === 'offline' || dbStatus === 'offline') && (
+              <button
+                type="button"
+                onClick={() => currentUser.role === UserRole.SUPER_ADMIN && setActiveTab(Tab.SETTINGS)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-rose-500/10 border border-rose-500/30 rounded-lg text-rose-300 text-xs font-medium cursor-pointer hover:bg-rose-500/20 transition-colors"
+                title="Перейти в настройки подключения"
               >
-                <LogOut className="w-4 h-4" />
+                <Bot className="w-3.5 h-3.5 text-rose-400" />
+                <span className="whitespace-nowrap">
+                  {dbStatus === 'offline' ? 'БД недоступна' : 'Бот не в сети'}
+                </span>
               </button>
-            </div>
+            )}
           </div>
         </header>
 
@@ -803,17 +792,26 @@ const App: React.FC = () => {
                   onRemoveChat={handleRemoveChat}
                   onAddChat={handleAddChat}
                   authenticatedFetch={authenticatedFetch}
+                  onOpenBuySellForChat={(chatId) => {
+                    setShopInitialNav({ subTab: 'BUY_SELL', chatId, buySellTab: 'chats' });
+                    setActiveTab(Tab.SHOP_TOPICS);
+                  }}
                 />
               )}
               {activeTab === Tab.SHOP_TOPICS && (
                 <ShopAnnouncements
                   chats={filteredChats}
                   authenticatedFetch={authenticatedFetch}
+                  initialNav={shopInitialNav}
                 />
               )}
               {activeTab === Tab.AI_SUMMARY && (
                 <Summarization 
                   chats={filteredChats}
+                  onOpenAiSettings={currentUser.role === UserRole.SUPER_ADMIN ? () => {
+                    setSettingsTab('ai');
+                    setActiveTab(Tab.SETTINGS);
+                  } : undefined}
                 />
               )}
               {activeTab === Tab.REPUTATION && (
@@ -863,7 +861,8 @@ const App: React.FC = () => {
                 <Settings 
                   settings={settings} 
                   chats={chats}
-                  onUpdateSettings={handleUpdateSettings} 
+                  onUpdateSettings={handleUpdateSettings}
+                  initialTab={settingsTab}
                 />
               )}
             </>

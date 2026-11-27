@@ -30,17 +30,22 @@ import {
   Smile,
   Flame,
   Award,
-  Bell,
-  Sliders
+  Bell
 } from 'lucide-react';
 
 interface SettingsProps {
   settings: BotSettings;
   chats?: Chat[];
   onUpdateSettings: (settings: BotSettings) => void;
+  initialTab?: 'bot' | 'ai' | 'notifications' | 'security';
 }
 
-export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpdateSettings }) => {
+export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpdateSettings, initialTab = 'bot' }) => {
+  const [activeSettingsTab, setActiveSettingsTab] = useState<'bot' | 'ai' | 'notifications' | 'security'>(initialTab);
+  React.useEffect(() => {
+    setActiveSettingsTab(initialTab);
+  }, [initialTab]);
+
   const [localSettings, setLocalSettings] = useState<BotSettings>(settings);
   const [showAdminPassword, setShowAdminPassword] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -55,10 +60,6 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
   const [isTestingCompanionAi, setIsTestingCompanionAi] = useState(false);
   const [companionTestPrompt, setCompanionTestPrompt] = useState('Привет! Подскажите, как подготовить мотоцикл к зиме?');
   const [companionTestResult, setCompanionTestResult] = useState<{ success: boolean; reply?: string; error?: string } | null>(null);
-
-  // Reputation Notification Test State
-  const [isTestingRepNotify, setIsTestingRepNotify] = useState(false);
-  const [repNotifyResult, setRepNotifyResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Live ticking clock for server time & project time preview
   const [currentUtc, setCurrentUtc] = useState<Date>(new Date());
@@ -325,34 +326,6 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
     }
   };
 
-  const handleTestReputationNotification = async () => {
-    setIsTestingRepNotify(true);
-    setRepNotifyResult(null);
-    try {
-      const token = localStorage.getItem('token');
-      const res = await fetch('/api/reputation/test-notify', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
-        body: JSON.stringify({
-          chatId: localSettings.reputationNotifyChatId || localSettings.infoChatId
-        })
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setRepNotifyResult({ success: true, message: `Уведомление успешно доставлено в чат ${data.targetChatId} (ID сообщения: ${data.messageId})` });
-      } else {
-        setRepNotifyResult({ success: false, message: data.error || 'Ошибка отправки уведомления' });
-      }
-    } catch (e: any) {
-      setRepNotifyResult({ success: false, message: 'Ошибка сети: ' + (e.message || String(e)) });
-    } finally {
-      setIsTestingRepNotify(false);
-    }
-  };
-
   const handleSave = async () => {
     setIsSaving(true);
     try {
@@ -442,15 +415,15 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
           {statusMessage.text}
         </div>
       )}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-white tracking-tight">Настройки системы</h2>
-          <p className="text-slate-400 text-sm">Управление токенами, паролями и подключением к БД</p>
+          <p className="text-slate-400 text-sm">Подключение бота, единый ИИ-движок, каналы оповещений и база данных</p>
         </div>
         <button
           onClick={handleSave}
           disabled={isSaving}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-6 py-2.5 rounded-xl font-bold transition-all shadow-lg shadow-blue-900/20"
+          className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white px-6 py-2.5 rounded-xl font-bold transition-all shadow-lg shadow-blue-900/20 cursor-pointer shrink-0"
         >
           {isSaving ? (
             <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
@@ -461,8 +434,37 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
         </button>
       </div>
 
+      {/* Settings Sub-Navigation Tabs */}
+      <div className="flex flex-wrap items-center gap-2 bg-slate-900/80 p-2 rounded-2xl border border-slate-800">
+        {[
+          { id: 'bot', label: 'Бот и Подключение', icon: Bot },
+          { id: 'ai', label: 'ИИ и Второй бот', icon: Sparkles },
+          { id: 'notifications', label: 'Каналы оповещений', icon: Bell },
+          { id: 'security', label: 'Безопасность и БД', icon: Database }
+        ].map(tab => {
+          const Icon = tab.icon;
+          const isActive = activeSettingsTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveSettingsTab(tab.id as any)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                isActive
+                  ? 'bg-blue-600 text-white shadow-md shadow-blue-950/40'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/70'
+              }`}
+            >
+              <Icon className="w-4 h-4 shrink-0" />
+              <span className="whitespace-nowrap">{tab.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Server Time & Project Timezone Settings */}
+        {activeSettingsTab === 'bot' && (
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <div className="flex items-center gap-3">
@@ -493,10 +495,6 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                     <span className="font-mono font-bold text-slate-300">{serverUtcTimeStr}</span>
                   </div>
                   <div className="px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-xs flex items-center gap-2">
-                    <span className="relative flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                    </span>
                     <span className="text-emerald-400 font-medium">Время проекта:</span>
                     <span className="font-mono font-bold text-white text-sm">{projectTimeStr}</span>
                     <span className="text-emerald-300/80 font-mono text-[11px]">
@@ -631,8 +629,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             })()}
           </div>
         </div>
+        )}
 
         {/* Telegram Bot Settings */}
+        {activeSettingsTab === 'bot' && (
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm">
           <div className="flex items-center gap-3 mb-6">
             <div className="p-2 bg-blue-500/10 rounded-lg text-blue-400">
@@ -839,8 +839,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             </div>
           </div>
         </div>
+        )}
 
         {/* Telegram Mini App (TMA) Settings */}
+        {activeSettingsTab === 'bot' && (
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm">
           <div className="flex items-center gap-3 mb-6">
             <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-400">
@@ -924,9 +926,11 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             </div>
           </div>
         </div>
+        )}
 
         {/* Companion Bot Settings (Second Bot) */}
-        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm relative overflow-hidden">
+        {activeSettingsTab === 'ai' && (
+        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2 relative overflow-hidden">
           <div className="absolute top-0 right-0 w-80 h-80 bg-gradient-to-br from-indigo-500/10 via-purple-500/5 to-transparent rounded-full blur-3xl pointer-events-none" />
 
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-5 border-b border-slate-800/80">
@@ -1461,18 +1465,20 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             </div>
           </div>
         </div>
+        )}
 
-        {/* Info Chat & Reputation Notifications */}
-        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm space-y-6">
+        {/* Unified System Notification Channels */}
+        {activeSettingsTab === 'notifications' && (
+        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2 space-y-6">
           <div className="flex items-center justify-between pb-4 border-b border-slate-800">
             <div className="flex items-center gap-3">
               <div className="p-2 bg-amber-500/10 rounded-lg text-amber-400">
-                <Award className="w-6 h-6" />
+                <Bell className="w-6 h-6" />
               </div>
               <div>
-                <h3 className="text-lg font-bold text-white">Уведомления и система репутации</h3>
+                <h3 className="text-lg font-bold text-white">Системные каналы оповещений</h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Настройка каналов доставки оповещений об изменениях репутации и событиях
+                  Единая точка настройки инфо-чата и канала важных алертов для всего бота
                 </p>
               </div>
             </div>
@@ -1490,201 +1496,70 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-sm"
                 placeholder="-1004336455230 (ID группы или канала)"
               />
-              <p className="mt-1.5 text-[10px] text-slate-500">
-                Канал или чат для системных логов, уведомлений о входах/выходах и мульти-чат активности.
+              <p className="mt-1.5 text-[11px] text-slate-500">
+                Канал или чат для системных логов, уведомлений о входах/выходах и резервного канала репутации.
               </p>
             </div>
 
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
-                Чат для уведомлений о репутации
+                Канал для важных алертов (Реклама и Мультипользователи)
               </label>
               <input
                 type="text"
-                value={localSettings.reputationNotifyChatId || ''}
-                onChange={(e) => setLocalSettings({ ...localSettings, reputationNotifyChatId: e.target.value })}
+                value={localSettings.alertsChannelId || ''}
+                onChange={(e) => setLocalSettings({ ...localSettings, alertsChannelId: e.target.value })}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-sm"
-                placeholder="Оставьте пустым для использования информационного чата"
+                placeholder="@my_channel или -100123456789"
               />
-              <p className="mt-1.5 text-[10px] text-slate-500">
-                Куда слать карточки изменения репутации (если пусто — отправляется в инфо-чат).
+              <p className="mt-1.5 text-[11px] text-slate-500">
+                Сюда отправляются алерты о коммерции и подозрительной активности (если бот не админ — дублируется в ЛС).
               </p>
             </div>
           </div>
 
-          <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <span className="text-xs font-bold text-white flex items-center gap-1.5">
-                  <Bell className="w-4 h-4 text-amber-400" />
-                  <span>Канал для важных алертов (Реклама и Мультипользователи)</span>
-                </span>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  Единый канал/чат для доставки алертов о коммерции и подозрительной активности пользователей с теганьем вас
-                </p>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
-              <div>
-                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5 ml-1">
-                  Канал для алертов (ID или @username)
+          <div className="p-4 rounded-xl bg-slate-950/80 border border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-4 items-center">
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-bold text-slate-400 uppercase tracking-wider ml-1">
+                  Тег администратора для пуш-уведомлений
                 </label>
-                <input
-                  type="text"
-                  value={localSettings.alertsChannelId || ''}
-                  onChange={(e) => setLocalSettings({ ...localSettings, alertsChannelId: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-xs"
-                  placeholder="@my_channel или -100123456789"
-                />
-                <p className="mt-1 text-[10px] text-slate-500">
-                  Если указан, бот шлет алерты сюда. Если бот не админ в канале, алерт продублируется в ЛС.
-                </p>
+                <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.tagAdminOnAlerts ?? true}
+                    onChange={(e) => setLocalSettings({ ...localSettings, tagAdminOnAlerts: e.target.checked })}
+                    className="w-3.5 h-3.5 rounded text-amber-500 bg-slate-900 border-slate-700"
+                  />
+                  <span className="text-[11px] text-slate-300">Тегать в алертах</span>
+                </label>
               </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider ml-1">
-                    Тег администратора для звука
-                  </label>
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={localSettings.tagAdminOnAlerts ?? true}
-                      onChange={(e) => setLocalSettings({ ...localSettings, tagAdminOnAlerts: e.target.checked })}
-                      className="w-3.5 h-3.5 rounded text-amber-500 bg-slate-900 border-slate-700"
-                    />
-                    <span className="text-[11px] text-slate-300">Тегать</span>
-                  </label>
-                </div>
-                <input
-                  type="text"
-                  value={localSettings.alertsAdminTag ?? '@bookray'}
-                  disabled={localSettings.tagAdminOnAlerts === false}
-                  onChange={(e) => setLocalSettings({ ...localSettings, alertsAdminTag: e.target.value })}
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-xs disabled:opacity-40"
-                  placeholder="@bookray"
-                />
-                <p className="mt-1 text-[10px] text-slate-500">
-                  Кликабельная ссылка с вашим Telegram ID и @юзернеймом для пуш-уведомления со звуком.
-                </p>
-              </div>
+              <input
+                type="text"
+                value={localSettings.alertsAdminTag ?? '@bookray'}
+                disabled={localSettings.tagAdminOnAlerts === false}
+                onChange={(e) => setLocalSettings({ ...localSettings, alertsAdminTag: e.target.value })}
+                className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/50 transition-all font-mono text-xs disabled:opacity-40"
+                placeholder="@bookray"
+              />
             </div>
-          </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors cursor-pointer ${
-              localSettings.muteReputationChangeMessages
-                ? 'bg-slate-950/30 border-slate-800/40 opacity-50 cursor-not-allowed'
-                : 'bg-slate-950/60 border-slate-800 hover:border-slate-700'
-            }`}>
-              <input
-                type="checkbox"
-                checked={localSettings.reputationNotifyInGroup !== false && !localSettings.muteReputationChangeMessages}
-                disabled={localSettings.muteReputationChangeMessages}
-                onChange={(e) => setLocalSettings({ ...localSettings, reputationNotifyInGroup: e.target.checked })}
-                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500 disabled:opacity-50"
-              />
-              <div>
-                <span className="text-xs font-semibold text-white block">Ответ в чате группы</span>
-                <span className="text-[10px] text-slate-400">Публиковать подтверждение «⭐️ Репутация повышена/снижена» в группе</span>
+            <div className="p-3.5 rounded-xl bg-slate-900/70 border border-slate-800/80 text-xs text-slate-300 space-y-1">
+              <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+                <Award className="w-4 h-4 shrink-0" />
+                <span>Настройки уведомлений о репутации</span>
               </div>
-            </label>
-
-            <label className="flex items-start gap-3 p-3.5 bg-slate-950/60 rounded-xl border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
-              <input
-                type="checkbox"
-                checked={localSettings.reputationNotifyInAdminChat !== false}
-                onChange={(e) => setLocalSettings({ ...localSettings, reputationNotifyInAdminChat: e.target.checked })}
-                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500"
-              />
-              <div>
-                <span className="text-xs font-semibold text-white block">Оповещение в инфо-чат</span>
-                <span className="text-[10px] text-slate-400">Слать подробную карточку администраторам в инфо-чат</span>
-              </div>
-            </label>
-
-            <label className="flex items-start gap-3 p-3.5 bg-slate-950/60 rounded-xl border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
-              <input
-                type="checkbox"
-                checked={localSettings.reputationNotifyInDm !== false}
-                onChange={(e) => setLocalSettings({ ...localSettings, reputationNotifyInDm: e.target.checked })}
-                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500"
-              />
-              <div>
-                <span className="text-xs font-semibold text-white block">Личное сообщение в ЛС</span>
-                <span className="text-[10px] text-slate-400">Отправлять пользователю уведомление в боте, если он запустил бота</span>
-              </div>
-            </label>
-          </div>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-            <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors cursor-pointer ${
-              localSettings.muteReputationChangeMessages
-                ? 'bg-amber-500/10 border-amber-500/40 text-white'
-                : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 text-slate-300'
-            }`}>
-              <input
-                type="checkbox"
-                checked={!!localSettings.muteReputationChangeMessages}
-                onChange={(e) => {
-                  const checked = e.target.checked;
-                  setLocalSettings({
-                    ...localSettings,
-                    muteReputationChangeMessages: checked,
-                    reputationNotifyInGroup: checked ? false : localSettings.reputationNotifyInGroup
-                  });
-                }}
-                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
-              />
-              <div>
-                <span className="text-xs font-bold text-white block">1. Не выводить сообщения об изменении репутации</span>
-                <span className="text-[10px] text-slate-400 block mt-0.5">Тихий режим: бот начисляет баллы, но не пишет в чат при «Спасибо» и реакциях.</span>
-              </div>
-            </label>
-
-            <label className={`flex items-start gap-3 p-3.5 rounded-xl border transition-colors cursor-pointer ${
-              localSettings.reputationDailyDigestEnabled !== false
-                ? 'bg-amber-500/10 border-amber-500/40 text-white'
-                : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 text-slate-300'
-            }`}>
-              <input
-                type="checkbox"
-                checked={localSettings.reputationDailyDigestEnabled !== false}
-                onChange={(e) => setLocalSettings({ ...localSettings, reputationDailyDigestEnabled: e.target.checked })}
-                className="mt-0.5 rounded bg-slate-900 border-slate-700 text-amber-500 focus:ring-amber-500 shrink-0"
-              />
-              <div>
-                <span className="text-xs font-bold text-white block">2. Выводить информацию за день об изменении репутации в дайджест</span>
-                <span className="text-[10px] text-slate-400 block mt-0.5">Включает блок со сводкой благодарностей и динамикой рейтинга участников в ежедневный дайджест чата.</span>
-              </div>
-            </label>
-          </div>
-
-          <div className="pt-2">
-            <button
-              type="button"
-              onClick={handleTestReputationNotification}
-              disabled={isTestingRepNotify}
-              className="px-4 py-2.5 bg-amber-600 hover:bg-amber-500 disabled:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-lg shadow-amber-950/30 flex items-center gap-2 cursor-pointer"
-            >
-              {isTestingRepNotify ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-              <span>{isTestingRepNotify ? 'Отправка...' : 'Проверить отправку уведомления в Telegram'}</span>
-            </button>
-
-            {repNotifyResult && (
-              <div className={`mt-3 p-3 rounded-xl border text-xs flex items-center gap-2 animate-in fade-in ${
-                repNotifyResult.success ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/20' : 'bg-rose-500/10 text-rose-300 border-rose-500/20'
-              }`}>
-                {repNotifyResult.success ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" /> : <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />}
-                <span>{repNotifyResult.message}</span>
-              </div>
-            )}
+              <p className="text-[11px] text-slate-400">
+                Выбор чата, тихий режим и доставка карточек репутации теперь находятся в одном месте — в разделе <b>«Репутация → Оповещения»</b>.
+              </p>
+            </div>
           </div>
         </div>
+        )}
 
         {/* Panel Security */}
-        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm">
+        {activeSettingsTab === 'security' && (
+        <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2">
           <div className="flex items-center gap-3 mb-6">
             <div className="p-2 bg-purple-500/10 rounded-lg text-purple-400">
               <ShieldCheck className="w-6 h-6" />
@@ -1754,8 +1629,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             </div>
           </div>
         </div>
+        )}
 
         {/* AI & Gemini Configuration Card */}
+        {activeSettingsTab === 'ai' && (
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2">
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
             <div className="flex items-center gap-3">
@@ -1764,13 +1641,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-bold text-white">ИИ-провайдер и ключи API (Суммаризация)</h3>
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/20 font-medium">
-                    Управление из админки
-                  </span>
+                  <h3 className="text-lg font-bold text-white">ИИ-провайдер и ключи API</h3>
                 </div>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Настройте ключ Google Gemini или альтернативный провайдер (OpenRouter / OpenAI Proxy) для суточных дайджестов
+                  Единые настройки ИИ для дайджестов, модерации «Купи / Продай» и второго ИИ-бота
                 </p>
               </div>
             </div>
@@ -2098,8 +1972,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             </div>
           </div>
         </div>
+        )}
 
         {/* Database Connection */}
+        {activeSettingsTab === 'security' && (
         <div className="bg-slate-900/50 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm lg:col-span-2">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
             <div className="flex items-center gap-3">
@@ -2271,8 +2147,10 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             </div>
           )}
         </div>
+        )}
 
         {/* Danger Zone */}
+        {activeSettingsTab === 'security' && (
         <div className="bg-rose-500/5 border border-rose-500/20 rounded-2xl p-6 lg:col-span-2">
           <div className="flex items-center gap-3 mb-4">
             <AlertTriangle className="w-5 h-5 text-rose-500" />
@@ -2293,6 +2171,7 @@ export const Settings: React.FC<SettingsProps> = ({ settings, chats = [], onUpda
             </button>
           </div>
         </div>
+        )}
       </div>
     </div>
   );

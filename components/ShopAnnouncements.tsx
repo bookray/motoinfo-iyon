@@ -58,6 +58,11 @@ import {
 interface ShopAnnouncementsProps {
   chats: Chat[];
   authenticatedFetch: (url: string, options?: RequestInit) => Promise<Response>;
+  initialNav?: {
+    subTab: 'SHOPS' | 'BUY_SELL';
+    chatId?: string;
+    buySellTab?: 'alerts' | 'chats' | 'rules';
+  } | null;
 }
 
 function extractThreadIdFromInput(input: string): number | null {
@@ -93,7 +98,8 @@ function extractThreadIdFromInput(input: string): number | null {
 
 export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   chats,
-  authenticatedFetch
+  authenticatedFetch,
+  initialNav
 }) => {
   const [topics, setTopics] = useState<ShopTopicConfig[]>([]);
   const [vendors, setVendors] = useState<ShopVendor[]>([]);
@@ -147,7 +153,15 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
   const [isSavingEdit, setIsSavingEdit] = useState<boolean>(false);
 
   // Active sub-tab switcher: Approved Shop Topics vs Buy/Sell Topics
-  const [activeSubTab, setActiveSubTab] = useState<'SHOPS' | 'BUY_SELL'>('SHOPS');
+  const [activeSubTab, setActiveSubTab] = useState<'SHOPS' | 'BUY_SELL'>(initialNav?.subTab || 'SHOPS');
+  const [buySellSection, setBuySellSection] = useState<'chats' | 'alerts' | 'rules'>(initialNav?.buySellTab || 'chats');
+
+  useEffect(() => {
+    if (!initialNav) return;
+    if (initialNav.subTab) setActiveSubTab(initialNav.subTab);
+    if (initialNav.chatId) setSelectedChatId(String(initialNav.chatId));
+    if (initialNav.buySellTab) setBuySellSection(initialNav.buySellTab);
+  }, [initialNav]);
 
   // Buy/Sell Topic state
   const [buySellTopics, setBuySellTopics] = useState<BuySellTopicConfig[]>([]);
@@ -1023,10 +1037,10 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
             </div>
             <div>
               <h2 className="text-xl font-bold text-white tracking-tight">
-                Управление темой «Объявления магазинов»
+                Темы «Магазины» и «Купи / Продай»
               </h2>
               <p className="text-xs sm:text-sm text-slate-400 mt-1 max-w-3xl">
-                Модерация коммерческих веток в чатах с темами: белый список продавцов, контроль недельного лимита публикаций (по умолчанию 5 в неделю), автоматическое отключение через 1 месяц и удаление сообщений посторонних участников.
+                Управление коммерческими ветками магазинов (белый список и лимиты публикаций) и ИИ-модерация веток «Купи / Продай».
               </p>
             </div>
           </div>
@@ -1154,7 +1168,7 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
             <ShoppingBag className="w-4 h-4" />
             <span>🏷️ Топики «Купи / Продай» (ИИ-контроль) ({buySellTopics.length})</span>
             {buySellAlerts.filter(a => a.status === 'PENDING').length > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white animate-pulse">
+              <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white">
                 {buySellAlerts.filter(a => a.status === 'PENDING').length}
               </span>
             )}
@@ -2096,7 +2110,53 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
       {/* Buy / Sell Topics (Купи / Продай) AI Moderation Section */}
       {activeSubTab === 'BUY_SELL' && (
         <div className="space-y-6">
+          {/* Buy/Sell Inner Navigation */}
+          <div className="flex flex-wrap items-center gap-2 p-1.5 bg-slate-900 border border-slate-800 rounded-2xl">
+            <button
+              type="button"
+              onClick={() => setBuySellSection('chats')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+                buySellSection === 'chats'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <Hash className="w-3.5 h-3.5" />
+              <span>Чаты и свои правила ({buySellTopics.length})</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setBuySellSection('alerts')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+                buySellSection === 'alerts'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>Алерты и продавцы ({buySellAlerts.length})</span>
+              {buySellAlerts.filter(a => a.status === 'PENDING').length > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-500 text-white tabular-nums">
+                  {buySellAlerts.filter(a => a.status === 'PENDING').length}
+                </span>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => setBuySellSection('rules')}
+              className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 cursor-pointer ${
+                buySellSection === 'rules'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+              }`}
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              <span>Общие правила и шаблоны</span>
+            </button>
+          </div>
+
           {/* Global AI & Marker Words Settings Card */}
+          {buySellSection === 'rules' && (
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
               <div className="flex items-center gap-3">
@@ -2784,8 +2844,10 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
               </div>
             </form>
           </div>
+          )}
 
           {/* Topic Binding & Active Chats Grid */}
+          {buySellSection === 'chats' && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Left: Chat Selector */}
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-xl space-y-3">
@@ -3130,8 +3192,11 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
               </form>
             </div>
           </div>
+          )}
 
           {/* Tracked Sellers Card: Известные продавцы для персонального контроля */}
+          {buySellSection === 'alerts' && (
+          <div className="space-y-6">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
               <div className="flex items-center gap-3">
@@ -3535,6 +3600,8 @@ export const ShopAnnouncements: React.FC<ShopAnnouncementsProps> = ({
               </div>
             )}
           </div>
+          </div>
+          )}
         </div>
       )}
 
